@@ -1,0 +1,19 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# data / outputs
+recordings/
+models/
+*.wav
+*.mp3
+*.m4a
+*.json
+*.srt
+
+# macOS
+.DS_Store
