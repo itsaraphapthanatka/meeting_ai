@@ -12,14 +12,16 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def build_report(
+def build_report_parts(
     title: str,
-    transcript: transcriber.Transcript,
+    language: str,
     summary_md: str,
+    timestamped: str,
 ) -> str:
+    """ประกอบรายงาน Markdown จากชิ้นส่วนดิบ — ใช้ได้ทั้งจาก CLI และจากคลังของหน้าเว็บ."""
     return f"""# บันทึกการประชุม: {title}
 
-_สร้างโดย meeting_ai · {_stamp()} · ภาษา: {transcript.language}_
+_สร้างโดย meeting_ai · {_stamp()} · ภาษา: {language}_
 
 {summary_md}
 
@@ -29,10 +31,23 @@ _สร้างโดย meeting_ai · {_stamp()} · ภาษา: {transcript.
 <summary>📝 บทถอดเสียงเต็ม (คลิกเพื่อดู)</summary>
 
 ```
-{transcript.to_timestamped()}
+{timestamped}
 ```
 </details>
 """
+
+
+def build_report(
+    title: str,
+    transcript: transcriber.Transcript,
+    summary_md: str,
+) -> str:
+    return build_report_parts(
+        title=title,
+        language=transcript.language,
+        summary_md=summary_md,
+        timestamped=transcript.to_timestamped(),
+    )
 
 
 def process_file(
@@ -40,6 +55,7 @@ def process_file(
     title: str | None = None,
     language: str | None = None,
     out_dir: str | Path = "recordings",
+    template: str = summarizer.DEFAULT_TEMPLATE,
 ) -> dict:
     """รันทั้ง pipeline กับไฟล์เสียงหนึ่งไฟล์. คืน dict ของ path ผลลัพธ์."""
     audio_path = Path(audio_path)
@@ -52,7 +68,7 @@ def process_file(
     print(f"   ได้ {len(transcript.segments)} ช่วงประโยค")
 
     print("🧠 กำลังสรุปด้วย LLM ...")
-    summary = summarizer.summarize(transcript.text, meeting_title=title)
+    summary = summarizer.summarize(transcript.text, meeting_title=title, template=template)
 
     report = build_report(title, transcript, summary)
 

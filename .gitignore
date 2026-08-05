@@ -9,6 +9,7 @@ __pycache__/
 # data / outputs
 recordings/
 models/
+bin/
 *.wav
 *.mp3
 *.m4a

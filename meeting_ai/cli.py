@@ -37,7 +37,7 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
 def _cmd_summarize(args: argparse.Namespace) -> int:
     from . import summarizer
     text = Path(args.transcript).read_text(encoding="utf-8")
-    md = summarizer.summarize(text, meeting_title=args.title)
+    md = summarizer.summarize(text, meeting_title=args.title, template=args.template)
     if args.output:
         Path(args.output).write_text(md, encoding="utf-8")
         print(f"✅ เขียนสรุป: {args.output}")
@@ -48,8 +48,33 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
 
 def _cmd_process(args: argparse.Namespace) -> int:
     from . import pipeline
-    pipeline.process_file(args.audio, title=args.title, language=args.lang, out_dir=args.out_dir)
+    pipeline.process_file(args.audio, title=args.title, language=args.lang,
+                          out_dir=args.out_dir, template=args.template)
     return 0
+
+
+def _cmd_web(args: argparse.Namespace) -> int:
+    from . import web
+    web.serve(host=args.host, port=args.port, open_browser=not args.no_open)
+    return 0
+
+
+def _cmd_worker(args: argparse.Namespace) -> int:
+    from . import worker
+    from .config import config
+    token = args.token or config.worker_token
+    if not token:
+        print("❌ ต้องมี token — ใส่ --token หรือตั้ง WORKER_TOKEN ใน .env", file=sys.stderr)
+        return 2
+    return worker.run(api=args.api, token=token, once=args.once, poll=args.poll)
+
+
+def _add_template_arg(sp: argparse.ArgumentParser) -> None:
+    from . import summarizer
+    sp.add_argument(
+        "--template", default=summarizer.DEFAULT_TEMPLATE, choices=list(summarizer.TEMPLATES),
+        help="รูปแบบสรุป: " + ", ".join(f"{k}={v['label']}" for k, v in summarizer.TEMPLATES.items()),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("transcript", help="ไฟล์ข้อความ transcript")
     sp.add_argument("-o", "--output", help="ไฟล์ผลลัพธ์ (ไม่ใส่ = พิมพ์ออกจอ)")
     sp.add_argument("--title", help="ชื่อการประชุม")
+    _add_template_arg(sp)
     sp.set_defaults(func=_cmd_summarize)
 
     sp = sub.add_parser("process", help="ครบวงจร: ไฟล์เสียง → ถอดเสียง → สรุป → Markdown")
@@ -88,7 +114,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--title", help="ชื่อการประชุม")
     sp.add_argument("--lang", help="ภาษา (th/en/auto)")
     sp.add_argument("--out-dir", default="recordings", help="โฟลเดอร์ผลลัพธ์")
+    _add_template_arg(sp)
     sp.set_defaults(func=_cmd_process)
+
+    sp = sub.add_parser("web", help="เปิดหน้าเว็บ: อัปโหลด/อัดสด/ค้นหาคลังการประชุม")
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="interface ที่ผูก (ค่าเริ่มต้นเปิดได้จากเครื่องนี้เท่านั้น)")
+    sp.add_argument("--port", type=int, default=8765, help="พอร์ต (ค่าเริ่มต้น 8765)")
+    sp.add_argument("--no-open", action="store_true", help="ไม่ต้องเปิดเบราว์เซอร์ให้อัตโนมัติ")
+    sp.set_defaults(func=_cmd_web)
+
+    sp = sub.add_parser(
+        "worker",
+        help="รับงานถอดเสียงจากเซิร์ฟเวอร์ (ใช้ตอนเว็บอยู่บน cloud ที่ไม่มี GPU)",
+    )
+    sp.add_argument("--api", default="http://127.0.0.1:8765",
+                    help="ที่อยู่เซิร์ฟเวอร์ เช่น https://xxx.vercel.app")
+    sp.add_argument("--token", help="WORKER_TOKEN (ไม่ใส่ = อ่านจาก .env)")
+    sp.add_argument("--once", action="store_true", help="ทำงานเดียวแล้วออก (ใช้ทดสอบ)")
+    sp.add_argument("--poll", type=float, default=3.0, help="วินาทีที่รอเมื่อคิวว่าง")
+    sp.set_defaults(func=_cmd_worker)
 
     return p
 

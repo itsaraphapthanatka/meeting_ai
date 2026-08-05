@@ -46,6 +46,11 @@ class Config:
     mic_device: str = _get("MIC_DEVICE", "0")
     system_device: str = _get("SYSTEM_DEVICE", "1")
 
+    # Worker แยกเครื่อง (โหมด cloud) — เว็บทำหน้าที่แค่คุมคิว งานหนักไปอยู่เครื่องที่มี GPU
+    # REMOTE_WORKER=1 = ไม่ต้องประมวลผลในโพรเซสเดียวกับเว็บ รอ worker มารับงานเอง
+    remote_worker: bool = _get("REMOTE_WORKER", "0").lower() in ("1", "true", "yes", "on")
+    worker_token: str = _get("WORKER_TOKEN", "")
+
     root: Path = ROOT
 
     @classmethod

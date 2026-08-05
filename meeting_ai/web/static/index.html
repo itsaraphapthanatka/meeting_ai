@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meeting_ai — บันทึกและสรุปการประชุม</title>
+<!-- ฝัง favicon เป็น data URI ไปเลย เบราว์เซอร์จะได้ไม่ยิงหา /favicon.ico แล้วได้ 404 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%99%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🎙️</span>
+    <span>meeting_ai</span>
+  </div>
+  <div id="stats" class="stats"></div>
+  <button id="btn-new" class="btn btn-primary">+ ประชุมใหม่</button>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main class="layout">
+  <aside class="sidebar">
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="ค้นหาในชื่อ สรุป และบทถอดเสียง…" autocomplete="off">
+    </div>
+    <div id="jobs" class="jobs"></div>
+    <ul id="list" class="list"></ul>
+  </aside>
+  <section id="panel" class="panel"></section>
+</main>
+
+<!-- ---------- หน้าจอ: ประชุมใหม่ ---------- -->
+<template id="tpl-new">
+  <div class="pane">
+    <h2>ประชุมใหม่</h2>
+
+    <div class="field-row">
+      <label class="field">
+        <span>ชื่อการประชุม</span>
+        <input id="f-title" type="text" placeholder="เช่น ประชุมทีม Product ประจำสัปดาห์">
+      </label>
+      <label class="field field-sm">
+        <span>ภาษาที่พูด</span>
+        <select id="f-lang">
+          <option value="th">ไทย</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+          <option value="zh">中文</option>
+          <option value="auto">ตรวจอัตโนมัติ</option>
+        </select>
+      </label>
+      <label class="field field-sm">
+        <span>รูปแบบสรุป</span>
+        <select id="f-template"></select>
+      </label>
+    </div>
+
+    <div class="field-row diarize-row">
+      <label class="check-inline">
+        <input id="f-diarize" type="checkbox" checked>
+        <span>แยกผู้พูด (ระบุว่าใครพูดประโยคไหน)</span>
+      </label>
+      <label class="field field-xs">
+        <span>จำนวนคน</span>
+        <select id="f-speakers">
+          <option value="0">ให้ระบบเดา</option>
+          <option value="2">2 คน</option>
+          <option value="3">3 คน</option>
+          <option value="4">4 คน</option>
+          <option value="5">5 คน</option>
+          <option value="6">6 คน</option>
+          <option value="8">8 คน</option>
+        </select>
+      </label>
+      <p id="diarize-note" class="hint" hidden></p>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <h3>📁 อัปโหลดไฟล์</h3>
+        <p class="muted">ไฟล์ที่ Meet/Teams/Zoom อัดไว้ — mp3, m4a, wav, mp4, webm ฯลฯ</p>
+        <div id="drop" class="drop">
+          <p>ลากไฟล์มาวางที่นี่</p>
+          <p class="muted">หรือ</p>
+          <button id="btn-pick" class="btn" type="button">เลือกไฟล์</button>
+          <input id="f-file" type="file" accept="audio/*,video/*" hidden>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>⏺️ อัดสดจากเบราว์เซอร์</h3>
+        <p class="muted">
+          ดักเสียงประชุมจากแท็บได้เลย ไม่ต้องลงโปรแกรมเสริมอย่าง VB-CABLE
+        </p>
+        <div class="checks">
+          <label><input id="c-tab" type="checkbox" checked> เสียงประชุม (แชร์แท็บ)</label>
+          <label><input id="c-mic" type="checkbox" checked> ไมโครโฟนของฉัน</label>
+          <label><input id="c-live" type="checkbox" checked> แสดงข้อความสดระหว่างประชุม</label>
+        </div>
+        <div id="rec-idle">
+          <button id="btn-rec" class="btn btn-rec" type="button">เริ่มอัด</button>
+          <p class="hint">
+            ตอนเลือกแท็บ <strong>ต้องติ๊ก “แชร์เสียงแท็บ”</strong> ด้วย ไม่งั้นจะได้ไฟล์เงียบ
+          </p>
+          <p class="hint">
+            อัดสองแหล่งพร้อมกัน = แยกเป็น 2 แทร็ก รู้แน่ว่าประโยคไหนคุณพูด ประโยคไหนอีกฝ่ายพูด
+          </p>
+        </div>
+        <div id="rec-live" hidden>
+          <div class="rec-status">
+            <span class="dot"></span>
+            <span id="rec-time" class="rec-time">00:00</span>
+          </div>
+          <div class="meter"><div id="meter-bar" class="meter-bar"></div></div>
+          <p id="rec-warn" class="warn" hidden></p>
+          <button id="btn-stop" class="btn btn-stop" type="button">หยุดอัดแล้วสรุป</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="live-wrap" class="live-wrap" hidden>
+      <div class="section-head">
+        <h3>📝 ข้อความสด</h3>
+        <span id="live-status" class="muted"></span>
+      </div>
+      <div id="live-text" class="live-text"></div>
+    </div>
+  </div>
+</template>
+
+<!-- ---------- หน้าจอ: รายละเอียดการประชุม ---------- -->
+<template id="tpl-detail">
+  <div class="pane">
+    <div class="detail-head">
+      <h2 id="d-title" class="title-edit" contenteditable="true" spellcheck="false"></h2>
+      <div class="detail-actions">
+        <select id="d-export-fmt" class="mini-select" title="ฟอร์แมตที่จะดาวน์โหลด"></select>
+        <button id="d-export" class="btn btn-sm" type="button">⬇ ดาวน์โหลด</button>
+        <button id="d-delete" class="btn btn-sm btn-danger" type="button">ลบ</button>
+      </div>
+    </div>
+    <p id="d-meta" class="muted meta"></p>
+    <div id="d-speakers" class="chips"></div>
+
+    <audio id="d-audio" controls preload="metadata"></audio>
+
+    <div class="section-head">
+      <h3>สรุป</h3>
+      <div>
+        <select id="d-lang" class="mini-select" title="ภาษาของสรุป"></select>
+        <button id="d-translate" class="btn btn-sm" type="button">แปล</button>
+        <button id="d-resummarize" class="btn btn-sm" type="button">สรุปใหม่ด้วย AI</button>
+        <button id="d-edit" class="btn btn-sm" type="button">แก้ไข</button>
+        <button id="d-save" class="btn btn-sm btn-primary" type="button" hidden>บันทึก</button>
+        <button id="d-cancel" class="btn btn-sm" type="button" hidden>ยกเลิก</button>
+      </div>
+    </div>
+    <p id="d-summary-err" class="notice" hidden></p>
+    <div id="d-summary" class="md"></div>
+    <textarea id="d-editor" class="editor" hidden spellcheck="false"></textarea>
+
+    <div class="section-head">
+      <h3>บทถอดเสียง</h3>
+      <div>
+        <button id="t-edit" class="btn btn-sm" type="button">แก้ไข</button>
+        <button id="t-save" class="btn btn-sm btn-primary" type="button" hidden>บันทึก</button>
+        <button id="t-cancel" class="btn btn-sm" type="button" hidden>ยกเลิก</button>
+      </div>
+    </div>
+    <p class="hint">คลิกบรรทัดไหนก็ได้เพื่อกระโดดไปฟังเสียงตรงจุดนั้น</p>
+    <div id="d-transcript" class="transcript-list"></div>
+  </div>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

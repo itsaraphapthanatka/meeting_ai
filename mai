@@ -2,4 +2,8 @@
 # ตัวเรียกใช้ meeting_ai — รันจากที่ไหนก็ได้ (คงโฟลเดอร์ปัจจุบันไว้เพื่ออ้างไฟล์แบบ relative ได้)
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="$DIR:$PYTHONPATH"
-exec python3 -m meeting_ai "$@"
+export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
+
+# บน Windows/Git Bash `python3` มักเป็น Store stub ที่รันไม่ได้ — ทดสอบก่อนแล้วถอยไป `python`
+if python3 -c '' >/dev/null 2>&1; then PY=python3; else PY=python; fi
+exec "$PY" -m meeting_ai "$@"
