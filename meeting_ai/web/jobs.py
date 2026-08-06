@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import tempfile
 import threading
+import time
 import traceback
 from collections import deque
 from datetime import datetime
@@ -21,7 +23,8 @@ from pathlib import Path
 
 from .. import runner, transcriber
 from ..config import config
-from . import store
+from . import backend
+from .backend import cloud, store
 
 _jobs: dict[str, dict] = {}
 _drafts: dict[str, dict] = {}
@@ -46,12 +49,16 @@ def _set(job_id: str, **fields) -> None:
 
 
 def get(job_id: str) -> dict | None:
+    if cloud:
+        return store.job_get(job_id)
     with _cv:
         job = _jobs.get(job_id)
         return dict(job) if job else None
 
 
 def active() -> list[dict]:
+    if cloud:
+        return store.job_active()
     with _cv:
         return [public(j) for j in _jobs.values() if j["status"] in ("queued", "running")]
 
@@ -62,6 +69,10 @@ def public(job: dict) -> dict:
 
 
 def draft(mid: str) -> dict | None:
+    """ข้อมูลการประชุมที่ยังรออัปโหลดไฟล์ครบ."""
+    if cloud:
+        job = store.job_get(mid)
+        return (job or {}).get("_spec") or None
     with _cv:
         d = _drafts.get(mid)
         return dict(d) if d else None
@@ -76,23 +87,38 @@ def create_draft(
     want_diarize: bool,
     num_speakers: int,
     source: str,
+    owner_id: str | None = None,
 ) -> str:
     mid = store.new_id()
-    with _cv:
-        _drafts[mid] = {
-            "id": mid,
-            "title": title,
-            "language": language,
-            "template": template,
-            "diarize": want_diarize,
-            "num_speakers": num_speakers,
-            "source": source,
-            "tracks": {},
-        }
+    spec = {
+        "id": mid,
+        "title": title,
+        "language": language,
+        "template": template,
+        "diarize": want_diarize,
+        "num_speakers": num_speakers,
+        "source": source,
+        "owner_id": owner_id,
+        "tracks": {},
+    }
+    if cloud:
+        store.job_upsert(mid, "process", title, spec, status="draft")
+    else:
+        with _cv:
+            _drafts[mid] = spec
     return mid
 
 
 def register_track(mid: str, name: str, path: Path) -> bool:
+    if cloud:
+        job = store.job_get(mid)
+        if job is None:
+            return False
+        spec = dict(job.get("_spec") or {})
+        tracks = dict(spec.get("tracks") or {})
+        tracks[name] = str(path)
+        spec["tracks"] = tracks
+        return store.job_set_spec(mid, spec)
     with _cv:
         d = _drafts.get(mid)
         if d is None:
@@ -103,7 +129,14 @@ def register_track(mid: str, name: str, path: Path) -> bool:
 
 # ---------- คิว ----------
 
-def _enqueue(job_id: str, title: str, kind: str, **extra) -> dict:
+def _enqueue(job_id: str, title: str, kind: str, spec: dict | None = None, **extra) -> dict:
+    if cloud:
+        job = store.job_upsert(job_id, kind, title, spec or {}, status="queued",
+                               meeting_id=extra.get("_meeting"))
+        if not config.remote_worker:
+            _ensure_worker()
+        return public(job)
+
     job = {
         "id": job_id,
         "status": "queued",
@@ -129,23 +162,37 @@ def _enqueue(job_id: str, title: str, kind: str, **extra) -> dict:
 def start(mid: str) -> dict | None:
     """สั่งประมวลผล draft ที่อัปโหลดแทร็กครบแล้ว."""
     d = draft(mid)
-    if d is None or not d["tracks"]:
+    if d is None or not d.get("tracks"):
         return None
+    if cloud:
+        job = store.job_start(mid)
+        if job is None:
+            return None
+        if not config.remote_worker:
+            _ensure_worker()
+        return public(job)
     return _enqueue(mid, d["title"], "process")
 
 
 def submit_summarize(meeting_id: str, title: str) -> dict:
     """สรุปใหม่จากบทถอดเสียงที่เก็บไว้แล้ว (ไม่ต้องถอดเสียงซ้ำ)."""
-    return _enqueue(meeting_id, title, "summarize", _meeting=meeting_id)
+    return _enqueue(meeting_id, title, "summarize",
+                    spec={"kind": "summarize", "meeting": meeting_id},
+                    _meeting=meeting_id)
 
 
 def submit_translate(meeting_id: str, title: str, lang: str) -> dict:
     # คั่นด้วยจุดเพราะปลอดภัยใน URL (`#` จะกลายเป็น fragment)
     return _enqueue(f"{meeting_id}.tr.{lang}", title, "translate",
+                    spec={"kind": "translate", "meeting": meeting_id, "lang": lang},
                     _meeting=meeting_id, _lang=lang)
 
 
 # ---------- spec: สิ่งที่ฝั่งประมวลผลต้องรู้ ----------
+
+def _meeting_of(job: dict) -> str | None:
+    return job.get("_meeting") or (job.get("_spec") or {}).get("meeting") or job.get("meeting_id")
+
 
 def build_spec(job_id: str) -> dict | None:
     """แปลงงานในคิวเป็น spec ที่ runner เอาไปทำได้ (ไม่มี path เครื่องอยู่ในนี้)."""
@@ -156,20 +203,20 @@ def build_spec(job_id: str) -> dict | None:
 
     if kind == "process":
         d = draft(job_id)
-        if d is None:
+        if d is None or not d.get("tracks"):
             return None
         return {
             "id": job_id,
             "kind": kind,
             "title": d["title"],
-            "language": d["language"],
-            "template": d["template"],
-            "diarize": d["diarize"],
-            "num_speakers": d["num_speakers"],
+            "language": d.get("language"),
+            "template": d.get("template"),
+            "diarize": d.get("diarize"),
+            "num_speakers": d.get("num_speakers"),
             "tracks": sorted(d["tracks"]),
         }
 
-    mid = job.get("_meeting")
+    mid = _meeting_of(job)
     meeting = store.get(mid) if mid else None
     if meeting is None:
         return None
@@ -182,7 +229,7 @@ def build_spec(job_id: str) -> dict | None:
     if kind == "summarize":
         spec["segments"] = meeting.get("segments_list") or []
     else:
-        spec["lang"] = job.get("_lang")
+        spec["lang"] = job.get("_lang") or (job.get("_spec") or {}).get("lang")
         spec["summary"] = meeting.get("summary") or ""
     return spec
 
@@ -192,7 +239,7 @@ def track_path(job_id: str, name: str) -> Path | None:
     d = draft(job_id)
     if d is None:
         return None
-    raw = d["tracks"].get(name)
+    raw = (d.get("tracks") or {}).get(name)
     return Path(raw) if raw else None
 
 
@@ -216,48 +263,72 @@ def apply_result(job_id: str, result: dict) -> None:
             mid=job_id,
             title=d["title"],
             audio_name=audio_name,
-            source=d["source"],
+            source=d.get("source") or "upload",
             language=result.get("language") or config.whisper_lang,
             duration=result.get("duration") or 0.0,
             segments=result.get("segments") or [],
             summary=result.get("summary") or "",
             summary_error=result.get("summary_error"),
-            template=d["template"],
+            template=d.get("template") or "general",
             speakers=result.get("speakers") or [],
+            owner_id=d.get("owner_id"),
         )
-        with _cv:
-            _drafts.pop(job_id, None)
+        if not cloud:
+            with _cv:
+                _drafts.pop(job_id, None)
         meeting_id = job_id
 
     elif kind == "summarize":
-        meeting_id = job["_meeting"]
+        meeting_id = _meeting_of(job)
         store.set_summary(meeting_id, result.get("summary") or "",
                           error=result.get("summary_error"))
     else:
-        meeting_id = job["_meeting"]
+        meeting_id = _meeting_of(job)
         store.set_translation(meeting_id, result["lang"], result["text"])
 
     warning = result.get("warning")
     if result.get("summary_error"):
         warning = (f"สรุปไม่สำเร็จ: {result['summary_error']} — บทถอดเสียงเก็บไว้แล้ว "
                    "กด “สรุปใหม่ด้วย AI” เพื่อลองอีกครั้ง")
-    _set(job_id, status="done",
-         step="ถอดเสียงเสร็จ แต่สรุปไม่ได้" if result.get("summary_error") else "เสร็จ",
-         progress=1.0, meeting_id=meeting_id, warning=warning)
+    step = "ถอดเสียงเสร็จ แต่สรุปไม่ได้" if result.get("summary_error") else "เสร็จ"
+    if cloud:
+        store.job_done(job_id, meeting_id, step, warning)
+    else:
+        _set(job_id, status="done", step=step, progress=1.0,
+             meeting_id=meeting_id, warning=warning)
 
 
 def fail(job_id: str, error: str) -> None:
-    _set(job_id, status="error", step="ผิดพลาด", error=error)
+    if cloud:
+        store.job_fail(job_id, error)
+    else:
+        _set(job_id, status="error", step="ผิดพลาด", error=error)
 
 
 def report_progress(job_id: str, step: str, progress: float) -> None:
-    _set(job_id, status="running", step=step, progress=max(0.0, min(1.0, progress)))
+    if cloud:
+        store.job_progress(job_id, step, progress)
+    else:
+        _set(job_id, status="running", step=step, progress=max(0.0, min(1.0, progress)))
 
 
 # ---------- ฝั่ง worker แยกเครื่อง ----------
 
 def claim() -> dict | None:
     """หยิบงานถัดไปให้ worker ที่อยู่ไกล — คืน spec หรือ None ถ้าคิวว่าง."""
+    if cloud:
+        # คืนงานที่ worker เก่าหลุดไปกลางทางกลับเข้าคิวก่อน
+        store.jobs_reap(30)
+        while True:
+            job = store.job_claim()
+            if job is None:
+                return None
+            spec = build_spec(job["id"])
+            if spec is None:
+                fail(job["id"], "ข้อมูลของงานนี้หายไปก่อนจะได้ประมวลผล")
+                continue
+            return spec
+
     with _cv:
         while _pending:
             job_id = _pending.popleft()
@@ -273,6 +344,8 @@ def claim() -> dict | None:
 
 def requeue(job_id: str) -> bool:
     """คืนงานกลับคิว (worker หลุดกลางทาง)."""
+    if cloud:
+        return store.job_requeue(job_id)
     with _cv:
         if job_id not in _jobs:
             return False
@@ -284,51 +357,103 @@ def requeue(job_id: str) -> bool:
 
 # ---------- ถอดเสียงสด ----------
 
-def transcribe_clip(path: Path, language: str | None) -> str:
+def transcribe_clip(path: Path, language: str | None, prompt: str | None = None) -> str:
     """ถอดเสียงคลิปสั้นสำหรับแสดงสดระหว่างประชุม.
 
     ใช้ lock แยกจากคิวหลัก คลิปสดจะได้ไม่ต้องรอหลังงานถอดเสียงไฟล์ยาว
+    prompt = ข้อความจากคลิปก่อนหน้า ช่วยให้ถอดต่อเนื่องแม่นขึ้น
     """
     with _live_lock:
-        return transcriber.transcribe(path, language=language).text
+        return transcriber.transcribe(path, language=language, prompt=prompt).text
 
 
 # ---------- เธรดประมวลผลในเครื่อง ----------
 
-def _run_local(job_id: str) -> None:
-    spec = build_spec(job_id)
-    if spec is None:
-        raise RuntimeError("ไม่พบข้อมูลของงานนี้ (อาจถูกลบไปแล้ว)")
+def _execute(spec: dict) -> None:
+    """ทำงานตาม spec ในโพรเซสนี้.
+
+    ไฟล์เสียงอาจอยู่บนดิสก์ (โหมดในเครื่อง) หรือในที่เก็บภายนอกอย่าง R2 (โหมด cloud)
+    ต้องผ่าน storage เสมอ ห้ามสมมติว่าเป็น path บนดิสก์
+    """
+    job_id = spec["id"]
 
     def progress(step: str, value: float) -> None:
         report_progress(job_id, step, value)
 
-    if spec["kind"] == "process":
-        def fetch(name: str) -> Path:
-            path = track_path(job_id, name)
-            if path is None or not path.exists():
-                raise RuntimeError(f"ไม่พบไฟล์แทร็ก {name}")
-            return path
+    if spec["kind"] != "process":
+        return apply_result(job_id, runner.HANDLERS[spec["kind"]](spec, progress))
 
-        store.WEB_DIR.mkdir(parents=True, exist_ok=True)
-        result = runner.transcribe_job(spec, fetch, progress, store.WEB_DIR)
-    else:
-        result = runner.HANDLERS[spec["kind"]](spec, progress)
+    storage = backend.storage()
+    external = storage.kind != "local"
+
+    with tempfile.TemporaryDirectory(prefix="mai-job-") as tmpdir:
+        tmp = Path(tmpdir)
+
+        def fetch(name: str) -> Path:
+            ref = track_path(job_id, name)
+            if ref is None:
+                raise RuntimeError(f"ไม่มีข้อมูลแทร็ก {name}")
+            key = ref.name
+            local = storage.local_path(key)
+            if local is not None:
+                return local
+            if not storage.exists(key):
+                raise RuntimeError(f"ไม่พบไฟล์แทร็ก {name} ในที่เก็บ ({key})")
+            dest = tmp / key
+            dest.write_bytes(storage.get(key))
+            return dest
+
+        if external:
+            mix_dir = tmp
+        else:
+            store.WEB_DIR.mkdir(parents=True, exist_ok=True)
+            mix_dir = store.WEB_DIR
+
+        result = runner.transcribe_job(spec, fetch, progress, mix_dir)
+
+        # ไฟล์เสียงผสมเกิดในโฟลเดอร์ชั่วคราว ต้องส่งขึ้นที่เก็บก่อนโฟลเดอร์ถูกลบ
+        playback = result.get("playback")
+        if external and playback:
+            src = Path(playback)
+            progress("อัปโหลดไฟล์เสียงผสม", runner.SUMMARY_END)
+            storage.put(src.name, src.read_bytes())
+            result["playback"] = src.name
 
     apply_result(job_id, result)
 
 
+def _next_spec() -> dict | None:
+    """หยิบงานถัดไปให้เธรดในเครื่อง — โหมด cloud อ่านคิวจาก DB, โหมดไฟล์รอที่ condition."""
+    if cloud:
+        return claim()
+    with _cv:
+        while not _pending:
+            _cv.wait()
+        job_id = _pending.popleft()
+    spec = build_spec(job_id)
+    if spec is None:
+        fail(job_id, "ไม่พบข้อมูลของงานนี้ (อาจถูกลบไปแล้ว)")
+        return None
+    return spec
+
+
 def _loop() -> None:
     while True:
-        with _cv:
-            while not _pending:
-                _cv.wait()
-            job_id = _pending.popleft()
         try:
-            _run_local(job_id)
+            spec = _next_spec()
+        except Exception:
+            traceback.print_exc()
+            time.sleep(2.0)
+            continue
+        if spec is None:
+            if cloud:
+                time.sleep(1.5)   # คิวว่าง — DB ไม่มี notify ต้อง poll
+            continue
+        try:
+            _execute(spec)
         except Exception as e:
             traceback.print_exc()
-            fail(job_id, str(e))
+            fail(spec["id"], str(e))
 
 
 def _ensure_worker() -> None:

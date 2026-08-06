@@ -120,6 +120,8 @@ def create(
     summary_error: str | None = None,
     template: str = "general",
     speakers: list[str] | None = None,
+    owner_id: str | None = None,      # ไม่ใช้ในโหมดไฟล์ — มีไว้ให้ signature ตรงกับ pgstore
+    visibility: str = "private",      # เช่นกัน
 ) -> dict:
     """บันทึกการประชุมใหม่ คืน metadata ที่เก็บลง index.
 
@@ -269,7 +271,7 @@ def _snippet(text: str, query: str) -> str:
     return ("…" if start else "") + text[start:end].replace("\n", " ") + ("…" if end < len(text) else "")
 
 
-def search(query: str = "") -> list[dict]:
+def search(query: str = "", user_id: str | None = None) -> list[dict]:
     """คืนรายการการประชุม ถ้ามี query จะกรองด้วยชื่อเรื่อง/สรุป/บทถอดเสียง.
 
     ใช้การค้นแบบ substring เพราะภาษาไทยไม่มีช่องว่างระหว่างคำ การตัดคำจะพลาดมากกว่า
@@ -296,7 +298,7 @@ def search(query: str = "") -> list[dict]:
     return results
 
 
-def stats() -> dict:
+def stats(user_id: str | None = None) -> dict:
     with _lock:
         meetings = _load_index()
     return {

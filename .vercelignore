@@ -1,0 +1,20 @@
+# ห้ามอัปโหลดขึ้น Vercel — ของหนักที่ใช้เฉพาะฝั่ง worker บนเครื่องที่มี GPU
+# (vercel.json > excludeFiles คุมแค่ bundle ของ function ไม่ได้คุมสิ่งที่ CLI อัปโหลด)
+bin/
+models/
+recordings/
+
+# ความลับ — env vars ตั้งบน Vercel dashboard ไม่ใช่ในไฟล์
+.env
+.env.*
+!.env.example
+
+# ของที่ไม่จำเป็นตอนรัน
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+setup.sh
+README.md
+*.md

@@ -22,6 +22,7 @@ from pathlib import Path
 
 from . import runner
 from .config import config
+from .web.blobstore import open_url
 
 POLL_IDLE = 3.0        # วินาที รอเมื่อคิวว่าง
 POLL_ERROR_MAX = 60.0  # เพดาน backoff เมื่อต่อเซิร์ฟเวอร์ไม่ได้
@@ -73,10 +74,15 @@ class Client:
         return body if status == 200 else None
 
     def download(self, path: str, dest: Path) -> Path:
-        req = urllib.request.Request(self.api + path)
-        req.add_header("Authorization", f"Bearer {self.token}")
+        # URL เต็ม = presigned ของที่เก็บภายนอก ห้ามแนบ Authorization ของเราไปด้วย
+        # (S3/R2 จะปฏิเสธเมื่อมีกลไก auth สองแบบพร้อมกัน)
+        external = path.startswith(("http://", "https://"))
+        req = urllib.request.Request(path if external else self.api + path)
+        if not external:
+            req.add_header("Authorization", f"Bearer {self.token}")
         try:
-            with urllib.request.urlopen(req, timeout=600) as resp, dest.open("wb") as fh:
+            # open_url เลือก IPv4 ก่อน — เครื่องที่ไม่มีเส้น IPv6 จะไม่เสียเวลารอ timeout
+            with open_url(req, timeout=900) as resp, dest.open("wb") as fh:
                 while True:
                     chunk = resp.read(CHUNK)
                     if not chunk:
@@ -88,6 +94,16 @@ class Client:
 
     def upload(self, path: str, src: Path) -> dict:
         data = src.read_bytes()
+        if path.startswith(("http://", "https://")):
+            # presigned PUT ตรงเข้าที่เก็บ — ไม่ผ่านเซิร์ฟเวอร์ เลี่ยงเพดานขนาด body
+            req = urllib.request.Request(path, data=data, method="PUT")
+            req.add_header("Content-Type", "application/octet-stream")
+            try:
+                with open_url(req, timeout=900):
+                    pass
+            except urllib.error.URLError as e:
+                raise WorkerError(f"อัปโหลดไฟล์เสียงผสมไม่สำเร็จ: {e}") from e
+            return {}
         return self._request("POST", path, data=data,
                              ctype="application/octet-stream", timeout=600)[1] or {}
 
@@ -133,11 +149,16 @@ def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
     if playback:
         src = Path(playback)
         print("   อัปโหลดไฟล์เสียงผสม …")
-        out = client.upload(
-            f"/api/worker/jobs/{urllib.parse.quote(job_id)}/audio?ext={src.suffix.lstrip('.')}",
-            src,
-        )
-        result["playback"] = out.get("playback") or None
+        target = spec.get("playback_upload_url")
+        if target:
+            client.upload(target, src)
+            result["playback"] = spec.get("playback_key") or src.name
+        else:
+            out = client.upload(
+                f"/api/worker/jobs/{urllib.parse.quote(job_id)}/audio?ext={src.suffix.lstrip('.')}",
+                src,
+            )
+            result["playback"] = out.get("playback") or None
     return result
 
 

@@ -54,8 +54,29 @@ def _cmd_process(args: argparse.Namespace) -> int:
 
 
 def _cmd_web(args: argparse.Namespace) -> int:
+    import os
+
+    if args.cloud:
+        # ต้องตั้งก่อน import web เพราะ backend เลือกแบ็กเอนด์ตอน import
+        # เขียนชื่อตัวแปรตรงๆ ห้าม import จาก .web.backend มาอ่านค่าคงที่
+        # เพราะการ import นั้นเองจะทำให้ backend เลือกโหมดไปก่อนที่เราจะตั้งค่า
+        os.environ["MEETING_AI_CLOUD"] = "1"
     from . import web
     web.serve(host=args.host, port=args.port, open_browser=not args.no_open)
+    return 0
+
+
+def _cmd_db_init(args: argparse.Namespace) -> int:
+    from .web import db
+    gaps = db.missing_pieces()
+    if gaps:
+        print("❌ ยังขาด: " + "; ".join(gaps), file=sys.stderr)
+        return 2
+    tables = db.init()
+    print("✅ สร้าง/อัปเดต schema `meeting_ai` เรียบร้อย")
+    for t in tables:
+        print(f"   - {t}")
+    print("\nเปิดเว็บด้วย `mai web` แล้วสมัครบัญชีแรก — คนแรกจะเป็นแอดมินอัตโนมัติ")
     return 0
 
 
@@ -122,7 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="interface ที่ผูก (ค่าเริ่มต้นเปิดได้จากเครื่องนี้เท่านั้น)")
     sp.add_argument("--port", type=int, default=8765, help="พอร์ต (ค่าเริ่มต้น 8765)")
     sp.add_argument("--no-open", action="store_true", help="ไม่ต้องเปิดเบราว์เซอร์ให้อัตโนมัติ")
+    sp.add_argument("--cloud", action="store_true",
+                    help="ใช้ Postgres + ระบบล็อกอิน/แชร์ (ต้องตั้ง DATABASE_URL) "
+                         "ไม่ใส่ = เก็บเป็นไฟล์ในเครื่อง ไม่มีล็อกอิน")
     sp.set_defaults(func=_cmd_web)
+
+    sp = sub.add_parser("db-init", help="สร้างตารางใน Postgres (โหมด cloud — ต้องตั้ง DATABASE_URL)")
+    sp.set_defaults(func=_cmd_db_init)
 
     sp = sub.add_parser(
         "worker",

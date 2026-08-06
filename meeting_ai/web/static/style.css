@@ -35,6 +35,10 @@
 
 * { box-sizing: border-box; }
 
+/* คลาสของเราที่ตั้ง display (เช่น .field, .chips, .userbox) ชนะ [hidden] ของ UA stylesheet
+   ทำให้ hidden=true ไม่ซ่อนจริง — ประกาศทับให้ชนะทุกกรณี */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -421,5 +425,76 @@ audio { width: 100%; margin-bottom: 20px; }
   background: color-mix(in srgb, var(--warn) 12%, var(--surface));
   font-size: 13.5px;
 }
+
+/* ---------- ผู้ใช้บน topbar ---------- */
+
+.userbox { display: flex; align-items: center; gap: 8px; }
+.userbox .who { font-size: 13px; color: var(--muted); max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- หน้าเข้าสู่ระบบ ---------- */
+
+/* ตอนยังไม่ล็อกอินไม่ต้องมีแถบข้าง จะเหลือแต่ฟอร์มกลางจอ */
+body.auth-only .sidebar { display: none; }
+body.auth-only .layout { grid-template-columns: 1fr; }
+body.auth-only #btn-new,
+body.auth-only #stats { display: none; }
+
+.auth-wrap { display: flex; justify-content: center; padding: 40px 16px; }
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  box-shadow: var(--shadow);
+}
+
+.auth-card h2 { margin-bottom: 6px; }
+.auth-card .field { margin-bottom: 14px; }
+.auth-card > .muted { margin: 0 0 18px; }
+.btn-wide { width: 100%; padding: 10px; }
+
+.auth-switch { margin: 14px 0 0; text-align: center; font-size: 13.5px; color: var(--muted); }
+
+.linkbtn {
+  border: none;
+  background: none;
+  padding: 0 0 0 4px;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* ---------- กล่องแชร์ ---------- */
+
+.share-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 14px 16px;
+  margin: 0 0 18px;
+}
+
+.share-row { display: flex; gap: 8px; margin-bottom: 10px; }
+
+.share-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.share-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.share-actions .muted { font-size: 12.5px; }
 
 .center { text-align: center; color: var(--muted); padding: 60px 20px; }

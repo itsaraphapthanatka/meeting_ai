@@ -7,6 +7,11 @@
 <!-- ฝัง favicon เป็น data URI ไปเลย เบราว์เซอร์จะได้ไม่ยิงหา /favicon.ico แล้วได้ 404 -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%99%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="meeting_ai">
+<link rel="apple-touch-icon" href="/static/icon.svg">
 </head>
 <body>
 
@@ -16,6 +21,7 @@
     <span>meeting_ai</span>
   </div>
   <div id="stats" class="stats"></div>
+  <div id="userbox" class="userbox" hidden></div>
   <button id="btn-new" class="btn btn-primary">+ ประชุมใหม่</button>
 </header>
 
@@ -31,6 +37,41 @@
   </aside>
   <section id="panel" class="panel"></section>
 </main>
+
+<!-- ---------- หน้าจอ: เข้าสู่ระบบ / สมัคร (โหมด cloud) ---------- -->
+<template id="tpl-auth">
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <h2 id="a-title">เข้าสู่ระบบ</h2>
+      <p id="a-note" class="muted"></p>
+
+      <label class="field">
+        <span>อีเมล</span>
+        <input id="a-email" type="email" autocomplete="username" placeholder="you@company.com">
+      </label>
+      <label class="field">
+        <span>รหัสผ่าน</span>
+        <input id="a-password" type="password" autocomplete="current-password"
+               placeholder="อย่างน้อย 8 ตัวอักษร">
+      </label>
+      <label class="field" id="a-name-wrap" hidden>
+        <span>ชื่อที่ให้คนอื่นเห็น</span>
+        <input id="a-name" type="text" placeholder="ไม่ใส่ก็ได้">
+      </label>
+      <label class="field" id="a-invite-wrap" hidden>
+        <span>รหัสเชิญ</span>
+        <input id="a-invite" type="text" placeholder="ขอจากแอดมินของทีม">
+      </label>
+
+      <p id="a-error" class="notice" hidden></p>
+      <button id="a-submit" class="btn btn-primary btn-wide" type="button">เข้าสู่ระบบ</button>
+      <p class="auth-switch">
+        <span id="a-switch-text"></span>
+        <button id="a-switch" class="linkbtn" type="button"></button>
+      </p>
+    </div>
+  </div>
+</template>
 
 <!-- ---------- หน้าจอ: ประชุมใหม่ ---------- -->
 <template id="tpl-new">
@@ -137,12 +178,34 @@
     <div class="detail-head">
       <h2 id="d-title" class="title-edit" contenteditable="true" spellcheck="false"></h2>
       <div class="detail-actions">
+        <select id="d-visibility" class="mini-select" title="ใครเห็นการประชุมนี้" hidden>
+          <option value="private">🔒 เฉพาะฉัน</option>
+          <option value="team">👥 ทั้งทีม</option>
+        </select>
+        <button id="d-share" class="btn btn-sm" type="button" hidden>🔗 แชร์</button>
         <select id="d-export-fmt" class="mini-select" title="ฟอร์แมตที่จะดาวน์โหลด"></select>
         <button id="d-export" class="btn btn-sm" type="button">⬇ ดาวน์โหลด</button>
         <button id="d-delete" class="btn btn-sm btn-danger" type="button">ลบ</button>
       </div>
     </div>
     <p id="d-meta" class="muted meta"></p>
+
+    <div id="share-box" class="share-box" hidden>
+      <div class="share-row">
+        <input id="share-link" type="text" readonly>
+        <button id="share-copy" class="btn btn-sm" type="button">คัดลอก</button>
+      </div>
+      <label class="check-inline">
+        <input id="share-edit" type="checkbox">
+        <span>ให้คนที่ได้ลิงก์แก้สรุป/บทถอดเสียงได้</span>
+      </label>
+      <div class="share-actions">
+        <button id="share-new" class="btn btn-sm btn-primary" type="button">สร้างลิงก์ใหม่</button>
+        <button id="share-revoke" class="btn btn-sm btn-danger" type="button">ยกเลิกทุกลิงก์</button>
+        <span id="share-count" class="muted"></span>
+      </div>
+    </div>
+
     <div id="d-speakers" class="chips"></div>
 
     <audio id="d-audio" controls preload="metadata"></audio>

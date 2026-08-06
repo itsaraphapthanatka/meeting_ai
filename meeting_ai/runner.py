@@ -129,8 +129,11 @@ def transcribe_job(spec: dict, fetch: FetchFn, progress: ProgressFn, mix_dir: Pa
             # ฝั่งผู้ร่วมประชุมอาจมีหลายคน — แยกต่อได้ถ้าเปิด diarization
             if want_diarize and segs:
                 progress("แยกผู้พูดฝั่งผู้ร่วมประชุม", TRANSCRIBE_END)
+                # จำนวนคนที่ผู้ใช้ระบุคือทั้งห้อง ซึ่งรวมตัวเราที่อยู่ในแทร็กไมค์แล้ว
+                # ฝั่งแท็บจึงเหลือน้อยกว่าหนึ่งคน (0 = ให้ระบบเดาเอง)
+                others = max(0, num_speakers - 1) if num_speakers else 0
                 try:
-                    _diarize_into(paths[name], segs, num_speakers,
+                    _diarize_into(paths[name], segs, others,
                                   lambda i: f"{OTHERS_LABEL} {i + 1}")
                 except Exception:
                     traceback.print_exc()

@@ -3,7 +3,14 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-const LIVE_MS = 15000;   // ความยาวคลิปที่ส่งไปถอดเสียงสดแต่ละรอบ
+/* การถอดเสียงสด: ตัดคลิปตอน "เงียบ" ไม่ใช่ตามเวลาตายตัว
+   ตัดกลางคำทำให้คำนั้นเพี้ยนทั้งสองชิ้น รอจังหวะที่ไม่มีใครพูดจะได้รอยต่อที่สะอาด
+   และเล็งความยาวใกล้ 30 วิ ซึ่งเป็นหน้าต่างที่ whisper ถูกเทรนมา */
+const LIVE_MIN_MS = 12000;      // สั้นกว่านี้ไม่ตัด แม้จะเงียบ
+const LIVE_MAX_MS = 28000;      // ถ้าไม่เงียบเลยก็ตัดที่นี่
+const LIVE_QUIET_LEVEL = 0.012; // ระดับที่ถือว่าเงียบ
+const LIVE_QUIET_HOLD = 260;    // ต้องเงียบต่อเนื่องกี่ ms ถึงถือว่าจบประโยค
+const LIVE_PROMPT_CHARS = 300;  // ส่งท้ายข้อความเดิมไปเป็นบริบทเท่านี้
 
 const state = {
   meetings: [],
@@ -13,7 +20,17 @@ const state = {
   query: '',
   polling: null,
   config: {},
+  user: null,        // ผู้ใช้ที่ล็อกอิน (โหมด cloud)
+  share: null,       // {meeting_id, can_edit} ถ้าเปิดมาจากลิงก์แชร์
+  firstRun: false,   // ยังไม่มีผู้ใช้ในระบบ -> สมัครคนแรกได้เลย เป็นแอดมิน
 };
+
+/** โหมด cloud ที่ยังไม่ได้ล็อกอินและไม่ได้ถือลิงก์แชร์ = ต้องเข้าสู่ระบบก่อน */
+const needsAuth = () => state.config.auth_required && !state.user && !state.share;
+/** แก้ของได้ไหม — เจ้าของ/คนในทีม แก้ได้ คนถือลิงก์ต้องมี can_edit */
+const canEdit = () => !state.config.auth_required || !!state.user
+  || !!(state.share && state.share.can_edit);
+const isAdmin = () => !!(state.user && state.user.is_admin);
 
 /* ---------------- utils ---------------- */
 
@@ -190,12 +207,130 @@ async function refresh() {
 async function refreshConfig() {
   try {
     state.config = await api('/api/config');
+    state.user = state.config.user || null;
     const s = state.config.stats || {};
     $('#stats').textContent = `${s.count || 0} การประชุม · รวม ${fmtDuration(s.total_duration)}`;
+    if (state.config.auth_required) {
+      const me = await api('/api/auth/me').catch(() => ({}));
+      state.user = me.user || state.user;
+      state.share = me.share || null;
+      state.firstRun = !!me.first_run;
+    }
+    renderUserBox();
     if (!state.config.llm_ready) {
-      banner('ยังไม่ได้ตั้ง LLM_API_KEY ใน .env — ถอดเสียงได้ แต่จะสรุปไม่ได้');
+      banner('ยังไม่ได้ตั้ง LLM_API_KEY — ถอดเสียงได้ แต่จะสรุปไม่ได้');
     }
   } catch (e) { /* ไม่สำคัญพอจะรบกวนผู้ใช้ */ }
+}
+
+function renderUserBox() {
+  const box = $('#userbox');
+  if (!state.config.auth_required) { box.hidden = true; return; }
+  box.hidden = false;
+  if (state.user) {
+    box.innerHTML = `<span class="who">${esc(state.user.name || state.user.email)}</span>`
+      + (isAdmin() ? '<button id="btn-invite" class="btn btn-sm" type="button">เชิญสมาชิก</button>' : '')
+      + '<button id="btn-logout" class="btn btn-sm" type="button">ออกจากระบบ</button>';
+    $('#btn-logout').onclick = async () => {
+      await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+      location.href = '/';
+    };
+    const inv = $('#btn-invite');
+    if (inv) inv.onclick = inviteMember;
+  } else if (state.share) {
+    box.innerHTML = '<span class="who">เปิดจากลิงก์แชร์'
+      + (state.share.can_edit ? ' (แก้ได้)' : ' (อ่านอย่างเดียว)') + '</span>';
+  } else {
+    box.innerHTML = '';
+  }
+  $('#btn-new').hidden = !canEdit() || !!state.share;
+  // คนถือลิงก์แชร์เห็นได้อันเดียว สถิติรวมกับช่องค้นหาจึงไม่มีความหมาย
+  const shareOnly = !!state.share && !state.user;
+  $('#stats').hidden = shareOnly;
+  $('.search-wrap').hidden = shareOnly;
+}
+
+async function inviteMember() {
+  const email = prompt('เชิญอีเมลไหน? (เว้นว่าง = ใครก็ใช้รหัสนี้ได้)', '');
+  if (email === null) return;
+  try {
+    const out = await api('/api/auth/invite', jsonPost({ email: email.trim() || null }));
+    const link = `${location.origin}/?invite=${encodeURIComponent(out.code)}`;
+    await copyText(out.code);
+    banner(`รหัสเชิญ (คัดลอกให้แล้ว): ${out.code}${out.email ? ' — สำหรับ ' + out.email : ''}`);
+    console.log('ลิงก์สมัคร:', link);
+  } catch (e) { banner(`สร้างรหัสเชิญไม่สำเร็จ: ${e.message}`); }
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    return false;   // เบราว์เซอร์ไม่ให้ (ต้อง https) — ผู้ใช้ค่อยเลือกเองจากช่อง
+  }
+}
+
+/* ---------------- หน้าเข้าสู่ระบบ ---------------- */
+
+function showAuth(mode) {
+  // ครั้งแรกของระบบยังไม่มีใคร ต้องสมัครก่อน
+  const signup = mode === 'signup' || (mode === undefined && state.firstRun);
+  document.body.classList.add('auth-only');
+  const panel = $('#panel');
+  panel.innerHTML = '';
+  panel.append($('#tpl-auth').content.cloneNode(true));
+
+  const first = state.firstRun;
+  $('#a-title').textContent = signup ? (first ? 'สร้างบัญชีแรก' : 'สมัครสมาชิก') : 'เข้าสู่ระบบ';
+  $('#a-note').textContent = signup
+    ? (first ? 'ยังไม่มีใครในระบบ — บัญชีแรกจะเป็นแอดมินและเชิญคนอื่นได้'
+             : 'ต้องมีรหัสเชิญจากแอดมินของทีม')
+    : '';
+  $('#a-name-wrap').hidden = !signup;
+  $('#a-invite-wrap').hidden = !signup || first;
+  $('#a-password').autocomplete = signup ? 'new-password' : 'current-password';
+  $('#a-submit').textContent = signup ? 'สมัครและเข้าใช้งาน' : 'เข้าสู่ระบบ';
+  $('#a-switch-text').textContent = signup ? 'มีบัญชีอยู่แล้ว?' : 'ได้รับรหัสเชิญมา?';
+  $('#a-switch').textContent = signup ? 'เข้าสู่ระบบ' : 'สมัครสมาชิก';
+  // บัญชีแรกยังไม่มีอะไรให้สลับไป ซ่อนทั้งบรรทัดไม่ให้เหลือข้อความค้าง
+  $('.auth-switch').hidden = first;
+  $('#a-switch').onclick = () => showAuth(signup ? 'login' : 'signup');
+
+  // รหัสเชิญมาทาง ?invite= ก็เติมให้เลย
+  const fromUrl = new URLSearchParams(location.search).get('invite');
+  if (fromUrl && signup) $('#a-invite').value = fromUrl;
+
+  const fail = (msg) => {
+    const el = $('#a-error');
+    el.hidden = false;
+    el.textContent = msg;
+  };
+
+  const submit = async () => {
+    const email = $('#a-email').value.trim();
+    const password = $('#a-password').value;
+    if (!email || !password) return fail('กรอกอีเมลและรหัสผ่านให้ครบ');
+    $('#a-error').hidden = true;
+    $('#a-submit').disabled = true;
+    try {
+      const body = signup
+        ? { email, password, name: $('#a-name').value.trim(), invite: $('#a-invite').value.trim() }
+        : { email, password };
+      await api(`/api/auth/${signup ? 'signup' : 'login'}`, jsonPost(body));
+      location.href = '/';    // โหลดใหม่ทั้งหน้าให้สถานะสะอาด
+    } catch (e) {
+      fail(e.message);
+      $('#a-submit').disabled = false;
+    }
+  };
+
+  $('#a-submit').onclick = submit;
+  for (const id of ['#a-email', '#a-password', '#a-invite', '#a-name']) {
+    const el = $(id);
+    if (el) el.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  }
+  $('#a-email').focus();
 }
 
 /* ---------------- job polling ---------------- */
@@ -320,8 +455,30 @@ async function submitMeeting(tracks, { source, fallbackTitle }) {
   }));
 
   for (const [name, { blob, ext }] of Object.entries(tracks)) {
-    await api(`/api/meetings/${draft.id}/tracks/${name}?ext=${encodeURIComponent(ext)}`,
-      { method: 'POST', body: blob });
+    const q = `ext=${encodeURIComponent(ext)}`;
+    // ถามก่อนว่าให้อัปตรงเข้าที่เก็บภายนอกได้ไหม (เลี่ยงเพดาน body ของ serverless)
+    let slot = null;
+    try {
+      slot = await api(`/api/meetings/${draft.id}/tracks/${name}/upload-url?${q}`);
+    } catch (e) { /* เซิร์ฟเวอร์รุ่นเก่า/โหมดไฟล์ — ส่งไบต์ตรงไปเลย */ }
+
+    if (slot && slot.url) {
+      let put;
+      try {
+        put = await fetch(slot.url, { method: 'PUT', body: blob });
+      } catch (e) {
+        // fetch ข้ามโดเมนที่ถูก CORS บล็อกจะขึ้นแค่ "Failed to fetch" ไม่บอกสาเหตุ
+        const host = new URL(slot.url).host;
+        throw new Error(`อัปโหลดเข้าที่เก็บไฟล์ (${host}) ไม่ได้ — `
+          + `ตรวจว่า CORS ของ bucket อนุญาต origin "${location.origin}" `
+          + `และ method PUT แล้วหรือยัง (${e.message})`);
+      }
+      if (!put.ok) throw new Error(`อัปโหลดเข้าที่เก็บไม่สำเร็จ (HTTP ${put.status})`);
+      await api(`/api/meetings/${draft.id}/tracks/${name}?${q}&key=${encodeURIComponent(slot.key)}`,
+        { method: 'POST' });
+    } else {
+      await api(`/api/meetings/${draft.id}/tracks/${name}?${q}`, { method: 'POST', body: blob });
+    }
   }
 
   const job = await api(`/api/meetings/${draft.id}/process`, { method: 'POST' });
@@ -351,7 +508,7 @@ const rec = {
   recorders: {},      // ชื่อแทร็ก -> {recorder, chunks}
   streams: [], ctx: null, dest: null,
   liveRecorder: null, liveTimer: null, liveBusy: false, liveText: [],
-  timer: null, raf: null, started: 0, peak: 0, recording: false,
+  timer: null, raf: null, started: 0, peak: 0, level: 0, recording: false,
 };
 
 function pickMime() {
@@ -379,6 +536,7 @@ async function startRecording() {
   banner('');
 
   const mime = pickMime();
+  let step = 'เตรียม AudioContext';
   try {
     const ctx = new AudioContext();
     const dest = ctx.createMediaStreamDestination();
@@ -389,11 +547,25 @@ async function startRecording() {
     rec.liveText = [];
 
     if (wantTab) {
+      step = 'ขอแชร์แท็บ (getDisplayMedia)';
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        throw new Error(window.isSecureContext
+          ? 'เบราว์เซอร์นี้แชร์เสียงแท็บไม่ได้ — ใช้ Chrome หรือ Edge'
+          : 'ต้องเปิดผ่าน http://127.0.0.1 หรือ https เท่านั้น (เบราว์เซอร์ปิดการเข้าถึงเสียงบนหน้าที่ไม่ปลอดภัย)');
+      }
       // Chrome/Edge จะเสนอ "แชร์เสียงแท็บ" ได้ต่อเมื่อขอ video มาด้วย — ขอเฟรมเรตต่ำสุดแล้วไม่ใช้ภาพ
-      const ds = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 1 },
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      });
+      let ds;
+      try {
+        ds = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 1 },
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        });
+      } catch (e) {
+        if (e.name === 'NotAllowedError' || e.name === 'AbortError') throw e;
+        // บางเบราว์เซอร์ไม่รับ constraint dictionary ของ display capture — ลองแบบง่ายสุดอีกที
+        console.warn('getDisplayMedia แบบมี constraint ไม่ผ่าน, ลองแบบง่าย:', e.name, e.message);
+        ds = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      }
       rec.streams.push(ds);
       if (!ds.getAudioTracks().length) {
         cleanupRecording();
@@ -402,16 +574,23 @@ async function startRecording() {
       }
       const tabOnly = new MediaStream(ds.getAudioTracks());
       ctx.createMediaStreamSource(tabOnly).connect(dest);
+      step = 'สร้างตัวอัดของแทร็กแท็บ';
       rec.recorders.system = newRecorder(tabOnly, mime);
       ds.getVideoTracks().forEach((t) => { t.onended = () => stopRecording(); });
     }
 
     if (wantMic) {
+      step = 'ขอสิทธิ์ไมโครโฟน (getUserMedia)';
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('เบราว์เซอร์นี้เข้าถึงไมค์ไม่ได้ในหน้านี้ '
+          + '(ต้องเปิดผ่าน http://127.0.0.1 หรือ https)');
+      }
       const ms = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true },
       });
       rec.streams.push(ms);
       ctx.createMediaStreamSource(ms).connect(dest);
+      step = 'สร้างตัวอัดของแทร็กไมค์';
       rec.recorders.mic = newRecorder(ms, mime);
     }
 
@@ -449,6 +628,7 @@ async function startRecording() {
       let sum = 0;
       for (const v of buf) { const d = (v - 128) / 128; sum += d * d; }
       const level = Math.sqrt(sum / buf.length);
+      rec.level = level;            // ตัวตัดคลิปสดใช้ค่านี้หาจังหวะเงียบ
       rec.peak = Math.max(rec.peak, level);
       $('#meter-bar').style.width = `${Math.min(100, level * 320)}%`;
       rec.raf = requestAnimationFrame(tick);
@@ -456,15 +636,23 @@ async function startRecording() {
     tick();
   } catch (e) {
     cleanupRecording();
-    banner(e.name === 'NotAllowedError'
-      ? 'ไม่ได้รับอนุญาตให้เข้าถึงเสียง — กดอนุญาตในเบราว์เซอร์แล้วลองอีกครั้ง'
-      : `เริ่มอัดไม่ได้: ${e.message}`);
+    console.error('startRecording ล้มเหลวที่ขั้น:', step, e);
+    if (e.name === 'NotAllowedError') {
+      banner('ไม่ได้รับอนุญาตให้เข้าถึงเสียง — กดอนุญาตในเบราว์เซอร์แล้วลองอีกครั้ง '
+        + '(ถ้าเคยกดปฏิเสธไว้ ต้องไปแก้ที่ไอคอนรูปกุญแจข้าง URL)');
+    } else if (e.name === 'AbortError' || e.name === 'NotFoundError') {
+      banner('ยกเลิกการเลือกแท็บ/ไม่พบอุปกรณ์เสียง — ลองอีกครั้ง');
+    } else {
+      // บอกขั้นที่พังกับชื่อ error ด้วย ไม่งั้นข้อความอย่าง "Not supported" ไล่ต่อไม่ได้
+      banner(`เริ่มอัดไม่ได้ที่ขั้น "${step}" — ${e.name || 'Error'}: ${e.message}`);
+    }
   }
 }
 
-/** ถอดเสียงสด: ตัดคลิปสมบูรณ์ทุก LIVE_MS แล้วส่งไปถอดทีละชิ้น
+/** ถอดเสียงสด: ตัดคลิปที่สมบูรณ์ในตัวเองแล้วส่งไปถอดทีละชิ้น
     (chunk ของ MediaRecorder ชิ้นหลังๆ ถอดเดี่ยวๆ ไม่ได้เพราะ header อยู่ชิ้นแรก
-     จึงต้องปิด recorder แล้วเปิดใหม่เพื่อให้ได้ไฟล์ที่สมบูรณ์ในตัวเอง) */
+     จึงต้องปิด recorder แล้วเปิดใหม่ทุกรอบ)
+    จุดตัดเลือกตอนเงียบ เพื่อไม่ให้คำถูกหักครึ่งที่รอยต่อ */
 function cycleLive(mime) {
   if (!rec.recording) return;
   const chunks = [];
@@ -477,18 +665,37 @@ function cycleLive(mime) {
   };
   r.start();
   rec.liveRecorder = r;
-  rec.liveTimer = setTimeout(() => {
-    if (r.state !== 'inactive') r.stop();
-  }, LIVE_MS);
+
+  const startedAt = Date.now();
+  let quietSince = null;
+  const watch = () => {
+    if (!rec.recording || r.state === 'inactive') return;
+    const age = Date.now() - startedAt;
+    if ((rec.level ?? 1) < LIVE_QUIET_LEVEL) {
+      if (quietSince === null) quietSince = Date.now();
+    } else {
+      quietSince = null;
+    }
+    const quiet = quietSince !== null && Date.now() - quietSince >= LIVE_QUIET_HOLD;
+    if (age >= LIVE_MAX_MS || (age >= LIVE_MIN_MS && quiet)) {
+      r.stop();
+      return;
+    }
+    rec.liveTimer = setTimeout(watch, 120);
+  };
+  rec.liveTimer = setTimeout(watch, 120);
 }
 
 async function sendLive(blob, ext) {
   if (rec.liveBusy) return;   // ยังถอดชิ้นก่อนไม่เสร็จ ข้ามชิ้นนี้ไปดีกว่าให้กองคิว
   rec.liveBusy = true;
   const lang = $('#f-lang')?.value || 'th';
+  // ส่งท้ายข้อความที่ได้มาแล้วไปเป็นบริบท ให้ whisper ถอดต่อได้ต่อเนื่อง
+  const prompt = rec.liveText.join(' ').slice(-LIVE_PROMPT_CHARS);
   try {
-    const out = await api(`/api/live?ext=${ext}&lang=${encodeURIComponent(lang)}`,
-      { method: 'POST', body: blob });
+    const q = `ext=${ext}&lang=${encodeURIComponent(lang)}`
+      + (prompt ? `&prompt=${encodeURIComponent(prompt)}` : '');
+    const out = await api(`/api/live?${q}`, { method: 'POST', body: blob });
     const text = (out.text || '').trim();
     if (text) {
       rec.liveText.push(text);
@@ -825,6 +1032,69 @@ async function openMeeting(id) {
     location.href = `/api/meetings/${id}/export.${$('#d-export-fmt').value}`;
   };
 
+  /* --- แชร์ / ใครเห็น (เจ้าของเท่านั้น) --- */
+  const owner = state.config.auth_required && state.user
+    && (!m.owner_id || m.owner_id === state.user.id);
+  if (owner) {
+    const vis = $('#d-visibility');
+    vis.hidden = false;
+    vis.value = m.visibility || 'private';
+    vis.onchange = async () => {
+      try {
+        state.meeting = await api(`/api/meetings/${id}/visibility`,
+          jsonPatch({ visibility: vis.value }));
+        banner(vis.value === 'team' ? 'ทุกคนในทีมเห็นการประชุมนี้แล้ว' : 'กลับเป็นเฉพาะคุณแล้ว');
+        await refresh();
+      } catch (e) {
+        banner(`เปลี่ยนไม่สำเร็จ: ${e.message}`);
+        vis.value = m.visibility || 'private';
+      }
+    };
+
+    const box = $('#share-box');
+    $('#d-share').hidden = false;
+    $('#d-share').onclick = async () => {
+      box.hidden = !box.hidden;
+      if (!box.hidden) await loadShares(id);
+    };
+    $('#share-new').onclick = async () => {
+      try {
+        const out = await api(`/api/meetings/${id}/share`,
+          jsonPost({ can_edit: $('#share-edit').checked }));
+        const url = location.origin + out.path;
+        $('#share-link').value = url;
+        const copied = await copyText(url);
+        banner(copied ? 'คัดลอกลิงก์แชร์แล้ว' : 'สร้างลิงก์แล้ว — กดคัดลอกในช่องได้เลย');
+        await loadShares(id);
+      } catch (e) { banner(`สร้างลิงก์ไม่สำเร็จ: ${e.message}`); }
+    };
+    $('#share-copy').onclick = async () => {
+      const v = $('#share-link').value;
+      if (!v) return;
+      $('#share-link').select();
+      banner(await copyText(v) ? 'คัดลอกแล้ว' : 'กด Ctrl+C เพื่อคัดลอก');
+    };
+    $('#share-revoke').onclick = async () => {
+      if (!confirm('ยกเลิกลิงก์แชร์ทั้งหมดของการประชุมนี้?')) return;
+      try {
+        const out = await api(`/api/meetings/${id}/share`, { method: 'DELETE' });
+        $('#share-link').value = '';
+        banner(`ยกเลิกไปแล้ว ${out.revoked} ลิงก์`);
+        await loadShares(id);
+      } catch (e) { banner(`ยกเลิกไม่สำเร็จ: ${e.message}`); }
+    };
+  }
+
+  // คนถือลิงก์แบบอ่านอย่างเดียว ซ่อนปุ่มที่กดไปก็ 403
+  if (!canEdit()) {
+    for (const sel of ['#d-edit', '#d-save', '#d-cancel', '#d-resummarize', '#d-translate',
+                       '#d-delete', '#t-edit', '#t-save', '#t-cancel']) {
+      const el = $(sel);
+      if (el) el.hidden = true;
+    }
+    $('#d-title').contentEditable = 'false';
+  }
+
   $('#d-delete').onclick = async () => {
     if (!confirm(`ลบ “${m.title}” ทิ้ง? ลบแล้วเอากลับไม่ได้`)) return;
     try {
@@ -866,9 +1136,28 @@ window.addEventListener('hashchange', () => {
   applyHash();
 });
 
+// PWA: ลงทะเบียนเฉพาะ secure context (https หรือ localhost) ไม่งั้นเบราว์เซอร์ปฏิเสธอยู่ดี
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
+async function loadShares(id) {
+  try {
+    const out = await api(`/api/meetings/${id}/share`);
+    const n = (out.shares || []).length;
+    $('#share-count').textContent = n ? `มี ${n} ลิงก์ที่ใช้ได้อยู่` : 'ยังไม่มีลิงก์';
+  } catch (e) { /* ไม่ต้องรบกวน */ }
+}
+
 (async function init() {
   await refreshConfig();
+  if (needsAuth()) { showAuth(); return; }
+
   await refresh();
+  // คนถือลิงก์แชร์เปิดได้แค่การประชุมนั้น พาไปเลยไม่ต้องผ่านรายการ
+  if (state.share) return openMeeting(state.share.meeting_id);
   if (location.hash) applyHash();
   else if (state.meetings.length) openMeeting(state.meetings[0].id);
   else showNew();

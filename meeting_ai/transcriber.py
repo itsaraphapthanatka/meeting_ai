@@ -16,6 +16,9 @@ from .config import config
 
 _PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+)%")
 
+# ความยาว prompt สูงสุดที่ส่งให้ whisper — ยาวกว่านี้ไม่ช่วย แต่กินหน้าต่างบริบท
+PROMPT_MAX_CHARS = 400
+
 
 @dataclass
 class Segment:
@@ -104,10 +107,12 @@ def transcribe(
     audio_path: str | Path,
     language: str | None = None,
     on_progress: Callable[[float], None] | None = None,
+    prompt: str | None = None,
 ) -> Transcript:
     """ถอดเสียงไฟล์ -> Transcript (มี timestamp รายประโยค).
 
     on_progress: ถ้าส่งมา จะถูกเรียกด้วยค่า 0.0-1.0 ระหว่างถอดเสียง
+    prompt: ข้อความก่อนหน้า ใช้เป็นบริบทให้ถอดต่อได้แม่นขึ้น (สำคัญกับการถอดสดที่ตัดเป็นคลิป)
     """
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -136,6 +141,9 @@ def transcribe(
             "-oj",                     # เขียนผลเป็น JSON
             "-of", str(out_prefix),
         ]
+        if prompt:
+            # จำกัดความยาว — prompt ยาวเกินไปกินหน้าต่างบริบทของโมเดลเอง
+            cmd += ["--prompt", prompt.strip()[-PROMPT_MAX_CHARS:]]
         # ไม่ต้องรายงาน % ก็ปิด output รกไปเลย
         cmd.append("--print-progress" if on_progress else "-np")
         _run_whisper(cmd, on_progress)

@@ -132,7 +132,15 @@ def label_segments(
     if not turns:
         return segments
 
-    def name_of(idx: int) -> str:
+    # เลข cluster ที่โมเดลให้มาอาจไม่เริ่มที่ 0 หรือมีช่องว่าง (เช่นได้ 1 คนแต่เลขเป็น 1)
+    # เรียงใหม่ให้ต่อเนื่องตามลำดับที่ปรากฏก่อน จะได้ "ผู้พูด 1, 2, 3" ไม่ข้ามเลข
+    order: dict[int, int] = {}
+    for turn in sorted(turns, key=lambda t: t.start):
+        if turn.speaker not in order:
+            order[turn.speaker] = len(order)
+
+    def name_of(raw: int) -> str:
+        idx = order.get(raw, raw)
         return namer(idx) if namer else f"ผู้พูด {idx + 1}"
 
     for seg in segments:

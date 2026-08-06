@@ -50,9 +50,13 @@ Copy-Item .env.example .env
 | ระบบ | คำสั่ง |
 |---|---|
 | macOS / Linux / Git Bash | `./mai ...` |
-| Windows (cmd / PowerShell) | `mai.cmd ...` |
+| Windows PowerShell | `.\mai.cmd ...` |
+| Windows cmd.exe | `mai.cmd ...` |
 
-ตัวอย่างในเอกสารนี้เขียนเป็น `./mai` — บน Windows เปลี่ยนเป็น `mai.cmd` ได้ตรงๆ
+ตัวอย่างในเอกสารนี้เขียนเป็น `./mai` — บน Windows เปลี่ยนเป็น `.\mai.cmd` ได้ตรงๆ
+
+> PowerShell ไม่รันคำสั่งจากโฟลเดอร์ปัจจุบันถ้าไม่มี `.\` นำหน้า (จะขึ้น
+> *"is not recognized as the name of a cmdlet"*) — cmd.exe ไม่ต้องใส่
 
 ---
 
@@ -87,6 +91,58 @@ Copy-Item .env.example .env
 
 **เบราว์เซอร์:** การอัดสดต้องใช้ Chrome หรือ Edge — Firefox/Safari ยังแชร์เสียงแท็บไม่ได้
 (อัปโหลดไฟล์ใช้ได้ทุกเบราว์เซอร์)
+
+---
+
+## Deploy ขึ้น Vercel (ทีม/แชร์/มือถือ)
+
+สถาปัตยกรรม: **Vercel ถือ UI + ข้อมูล + คิว ส่วนงานหนักอยู่บนเครื่องที่มี GPU ของคุณ**
+Vercel ไม่มี GPU และ function ยาวสุด 5 นาที ถอดเสียงบนนั้นไม่ได้
+
+```
+เบราว์เซอร์/มือถือ ──► Vercel (API + Postgres + ล็อกอิน + ลิงก์แชร์)
+        │                          │
+        └── อัปไฟล์ตรงเข้า ──► Cloudflare R2 ◄── worker ดึงไปถอดเสียง
+                                              (mai worker บนเครื่องคุณ)
+```
+
+**ทำไมต้องอัปตรงเข้า R2:** Vercel Function รับ body ได้แค่ 4.5 MB ไฟล์ประชุมผ่านไม่ได้
+เบราว์เซอร์จึง PUT ตรงด้วย presigned URL (เซ็น SigV4 เอง ไม่ต้องลง boto3)
+
+### ขั้นตอน
+
+```bash
+# 1) ฐานข้อมูล — สร้าง project ที่ neon.com เอา connection string (ตัวที่มี -pooler) ใส่ .env
+./mai db-init                       # สร้างตารางใน schema meeting_ai
+
+# 2) ที่เก็บไฟล์เสียง — สร้าง R2 bucket ที่ Cloudflare แล้วออก API token (Object Read & Write)
+#    ใส่ S3_ENDPOINT / S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY ใน .env
+#    แล้วตั้ง CORS ของ bucket ให้ origin ของเว็บ PUT/GET ได้
+
+# 3) ลองในเครื่องก่อน deploy
+./mai web --cloud                   # จะมีหน้าสมัคร/ล็อกอิน คนแรกเป็นแอดมิน
+
+# 4) ขึ้น Vercel
+npm i -g vercel && vercel login
+vercel deploy --prod
+```
+
+env ที่ต้องตั้งบน Vercel: `MEETING_AI_CLOUD=1`, `REMOTE_WORKER=1`, `WORKER_TOKEN`,
+`DATABASE_URL`, `LLM_API_KEY`, และชุด `S3_*`
+
+> เลือก region ของ Vercel ให้ตรงกับ Neon (ค่าเริ่มต้น `iad1` = us-east-1)
+> ไม่งั้นทุก query จะเดินทางข้ามทวีป
+
+CORS ของ R2 bucket (แก้ origin เป็นโดเมนจริงของคุณ):
+```json
+[{ "AllowedOrigins": ["https://your-app.vercel.app"],
+   "AllowedMethods": ["GET", "PUT", "HEAD"],
+   "AllowedHeaders": ["*"], "MaxAgeSeconds": 3600 }]
+```
+
+### มือถือ
+หน้าเว็บเป็น PWA — เปิดบนมือถือแล้ว "เพิ่มไปหน้าจอโฮม" ได้ ใช้ดู/ค้น/แก้สรุปได้ครบ
+**อัดเสียงได้เฉพาะไมค์** เพราะมือถือไม่มี `getDisplayMedia` (แชร์เสียงแท็บไม่ได้)
 
 ---
 

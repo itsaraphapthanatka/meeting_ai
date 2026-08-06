@@ -8,7 +8,7 @@ import zipfile
 from xml.sax.saxutils import escape
 
 from .. import pipeline
-from . import store
+from .backend import store
 
 FORMATS = {
     "md": ("text/markdown; charset=utf-8", ".md"),
