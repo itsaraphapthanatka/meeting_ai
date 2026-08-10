@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import runner, stt
+from . import runner
 from .config import config
 from .web.blobstore import open_url
 
@@ -209,7 +209,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     current: dict = {"id": None, "status": "idle"}
     worker_name = (name or socket.gethostname())[:80]
     gpu = describe_gpu()
-    caps = stt.capabilities()
+    caps = runner.machine_caps()
 
     def on_signal(signum, frame):
         stopping["flag"] = True
@@ -226,6 +226,10 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     ways = [k for k in ("local", "api") if caps.get(k)]
     print(f"   ถอดเสียงได้: {', '.join(ways) or '(ไม่มีเลย!)'}"
           + (f"   API -> {caps['stt_host']} ({caps['stt_model']})" if caps.get("api") else ""))
+    if caps.get("diarize"):
+        print("   แยกผู้พูดได้ (sherpa-onnx)")
+    else:
+        print("   แยกผู้พูดไม่ได้ ขาด: " + "; ".join(caps.get("diarize_missing") or []))
     if not config.llm_api_key:
         print("⚠️  worker ตัวนี้ยังไม่มี LLM_API_KEY — ถอดเสียงได้แต่จะสรุปไม่ได้")
     print("   กด Ctrl+C เพื่อหยุด\n", flush=True)

@@ -35,6 +35,19 @@ ProgressFn = Callable[[str, float], None]
 FetchFn = Callable[[str], Path]
 
 
+def machine_caps() -> dict:
+    """สิ่งที่เครื่องนี้ทำกับงานได้ — worker ส่งไปกับ heartbeat ทุกครั้ง.
+
+    ฝั่ง cloud (Vercel) ไม่มี whisper/sherpa-onnx/โมเดล ของตัวเองเลย
+    ถ้าไปดูความสามารถของตัวเองจะปิดตัวเลือกให้ผู้ใช้ทั้งที่ worker ทำได้ จึงต้องถามจาก worker
+    """
+    return {
+        **stt.capabilities(),
+        "diarize": diarize.available(),
+        "diarize_missing": diarize.missing_pieces(),
+    }
+
+
 def audio_duration(path: Path) -> float:
     """ความยาวไฟล์เสียงเป็นวินาที — 0.0 ถ้าอ่านไม่ได้."""
     try:

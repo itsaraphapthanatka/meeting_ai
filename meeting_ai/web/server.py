@@ -57,6 +57,23 @@ def _worker_caps() -> dict | None:
         return {"workers": 0}
 
 
+def _diarize_state(caps: dict | None) -> tuple[bool, list[str]]:
+    """แยกผู้พูดได้ไหม + ขาดอะไร — ดูจาก worker ถ้าอยู่ในโหมด worker แยกเครื่อง."""
+    if caps is None:
+        return diarize.available(), diarize.missing_pieces()
+    if not caps.get("workers"):
+        return False, ["ยังไม่มีเครื่องประมวลผลออนไลน์ — เปิด worker ก่อน"]
+    if caps.get("diarize"):
+        return True, []
+    missing = caps.get("diarize_missing")
+    if not missing:
+        # worker รุ่นก่อนหน้ายังไม่ได้ส่ง caps ตัวนี้มา จะเดาว่าไม่ได้ก็ผิด เดาว่าได้ก็ผิด
+        # บอกตามจริงว่าไม่รู้ แล้วให้อัปเดต worker
+        return False, ["worker ยังไม่ได้รายงานว่าแยกผู้พูดได้ไหม — อัปเดตโค้ดบนเครื่อง worker "
+                       "แล้วรีสตาร์ตมันหนึ่งครั้ง"]
+    return False, [f"เครื่องประมวลผลขาด: {m}" for m in missing]
+
+
 def _live_available() -> bool:
     """เซิร์ฟเวอร์นี้ถอดเสียงเองได้ไหม (ต้องมี whisper + โมเดล + ffmpeg)."""
     import shutil
@@ -261,19 +278,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อน")
 
         if parts == ["config"] and get:
+            # โหมด worker แยกเครื่อง: คนทำงานจริงคือ worker ไม่ใช่เซิร์ฟเวอร์นี้
+            # จึงต้องรายงานความสามารถของ worker ไม่ใช่ของตัวเอง
+            caps = _worker_caps()
+            diarize_ok, diarize_missing = _diarize_state(caps)
             return self._json({
                 "llm_ready": bool(config.llm_api_key and "your-key" not in config.llm_api_key),
                 "llm_model": config.llm_model,
                 "lang": config.whisper_lang,
-                "diarize_available": diarize.available(),
-                "diarize_missing": diarize.missing_pieces(),
+                "diarize_available": diarize_ok,
+                "diarize_missing": diarize_missing,
                 # ถอดเสียงสดทำที่ฝั่งเซิร์ฟเวอร์ ต้องมี whisper + โมเดล + ffmpeg ครบ
                 # บน cloud อย่าง Vercel ไม่มีทั้งสามอย่าง ต้องบอกหน้าเว็บให้ปิดตัวเลือกนี้
                 "live_available": _live_available(),
-                # โหมด worker แยกเครื่อง: คนถอดเสียงคือ worker ไม่ใช่เซิร์ฟเวอร์นี้
-                # จึงต้องรายงานความสามารถของ worker ไม่ใช่ของตัวเอง
                 "stt_providers": [
-                    {"key": k, **v} for k, v in stt.providers(_worker_caps()).items()
+                    {"key": k, **v} for k, v in stt.providers(caps).items()
                 ],
                 "stt_default": config.stt_provider,
                 "templates": [

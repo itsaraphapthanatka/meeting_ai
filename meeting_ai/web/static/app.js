@@ -186,6 +186,18 @@ function fmtAgo(sec) {
   return `${Math.floor(sec / 86400)} วันที่แล้ว`;
 }
 
+const CAP_LABELS = { local: 'whisper ในเครื่อง', api: 'API', diarize: 'แยกผู้พูด' };
+
+/** เครื่องนี้ทำอะไรได้ — worker รุ่นเก่ายังไม่ส่ง caps มา จะไม่แสดงบรรทัดนี้ */
+function workerCan(w) {
+  const can = w.can;
+  if (!can) return '';
+  const has = can.map((k) => CAP_LABELS[k] || k);
+  const lacks = Object.keys(CAP_LABELS).filter((k) => !can.includes(k)).map((k) => CAP_LABELS[k]);
+  return (has.length ? `ทำได้: ${esc(has.join(', '))}` : 'ยังทำอะไรไม่ได้')
+    + (lacks.length ? ` · ขาด: ${esc(lacks.join(', '))}` : '');
+}
+
 function renderWorkers() {
   const el = $('#workers');
   const ws = state.workers || [];
@@ -204,6 +216,7 @@ function renderWorkers() {
         <span class="wk-name">${esc(w.name)}</span>
         <span class="wk-sub">${label} · ${detail}</span>
         <span class="wk-sub">${w.gpu ? esc(w.gpu) + ' · ' : ''}ทำเสร็จ ${w.jobs_done} งาน</span>
+        ${w.alive ? `<span class="wk-sub">${workerCan(w)}</span>` : ''}
       </div>
     </div>`;
   }).join('');

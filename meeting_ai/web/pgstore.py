@@ -697,16 +697,23 @@ def worker_capabilities() -> dict:
                where last_seen > now() - make_interval(secs => %s)""",
             (WORKER_STALE_SECONDS,),
         ).fetchall()
-    out: dict = {"workers": len(rows), "local": False, "api": False,
-                 "stt_model": None, "stt_host": None, "by": {}}
+    out: dict = {"workers": len(rows), "local": False, "api": False, "diarize": False,
+                 "stt_model": None, "stt_host": None, "by": {}, "diarize_missing": []}
     for caps, name in rows:
         caps = caps or {}
-        for key in ("local", "api"):
+        for key in ("local", "api", "diarize"):
             if caps.get(key):
                 out[key] = True
                 out["by"].setdefault(key, []).append(name)
         out["stt_model"] = caps.get("stt_model") or out["stt_model"]
         out["stt_host"] = caps.get("stt_host") or out["stt_host"]
+        # งานหนึ่งงานไปลงที่ worker ตัวใดตัวหนึ่ง มีตัวไหนทำได้ก็ถือว่าทำได้
+        # แต่ถ้าไม่มีใครทำได้เลย ต้องบอกว่าขาดอะไร -> เก็บรายการจากตัวที่ขาดไว้ก่อน
+        for piece in caps.get("diarize_missing") or []:
+            if piece not in out["diarize_missing"]:
+                out["diarize_missing"].append(piece)
+    if out["diarize"]:
+        out["diarize_missing"] = []
     return out
 
 
@@ -726,7 +733,7 @@ def workers_list() -> list[dict]:
         rows = conn.execute(
             """select w.name, w.status, w.job_id, w.jobs_done, w.gpu,
                       extract(epoch from (now() - w.last_seen))::int as quiet_for,
-                      w.started_at, j.title
+                      w.started_at, j.title, w.caps
                from meeting_ai.workers w
                left join meeting_ai.jobs j on j.id = w.job_id
                order by w.last_seen desc"""
@@ -734,6 +741,7 @@ def workers_list() -> list[dict]:
     out = []
     for r in rows:
         alive = r[5] is not None and r[5] <= WORKER_STALE_SECONDS
+        caps = r[8] or {}
         out.append({
             "name": r[0],
             "status": r[1] if alive else "gone",
@@ -744,6 +752,8 @@ def workers_list() -> list[dict]:
             "quiet_for": r[5],
             "alive": alive,
             "started": r[6].isoformat(timespec="seconds") if r[6] else None,
+            # ให้หน้าเว็บบอกได้ว่าเครื่องไหนขาดอะไร ไม่ต้องไปไล่ดูทีละเครื่อง
+            "can": [k for k in ("local", "api", "diarize") if caps.get(k)],
         })
     return out
 
