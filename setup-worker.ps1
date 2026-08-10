@@ -122,6 +122,22 @@ if (Test-Path $modelFile) {
     Ok "โมเดล: $([math]::Round((Get-Item $modelFile).Length/1MB)) MB"
 }
 
+# ---------- 4b. โมเดล VAD ----------
+Step "4b" "ดาวน์โหลดโมเดล VAD (กันข้อความหลอนบนช่วงเงียบ)"
+$vadFile = Join-Path $modelDir "ggml-silero-v5.1.2.bin"
+if (Test-Path $vadFile) {
+    Skip "มีอยู่แล้ว"
+} else {
+    curl.exe -L --fail --progress-bar -o $vadFile `
+        "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin"
+    if ($LASTEXITCODE -eq 0) {
+        Ok "โมเดล VAD ($([math]::Round((Get-Item $vadFile).Length/1KB)) KB)"
+    } else {
+        Remove-Item $vadFile -ErrorAction SilentlyContinue
+        Warn "ดาวน์โหลดไม่สำเร็จ — ยังถอดเสียงได้ แต่แทร็กที่เงียบอาจได้ข้อความขยะ"
+    }
+}
+
 # ---------- 5. แยกผู้พูด (ออปชัน) ----------
 Step 5 "ติดตั้งตัวแยกผู้พูด"
 if ($NoDiarize) {

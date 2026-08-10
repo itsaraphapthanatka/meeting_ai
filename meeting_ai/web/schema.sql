@@ -131,3 +131,7 @@ create table if not exists meeting_ai.workers (
 );
 
 create index if not exists workers_seen_idx on meeting_ai.workers (last_seen desc);
+
+-- worker ทำอะไรได้บ้าง (ถอดเสียงในเครื่องได้ไหม / มีคีย์ API ไหม / รุ่นโมเดล)
+-- สำคัญเพราะฝั่ง cloud ไม่มี whisper เอง จะบอกผู้ใช้ว่าเลือกอะไรได้ต้องดูจาก worker
+alter table meeting_ai.workers add column if not exists caps jsonb not null default '{}'::jsonb;

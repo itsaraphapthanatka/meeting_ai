@@ -47,6 +47,16 @@ class BadBody(ValueError):
     """body ของคำขออ่านไม่ได้ — ตอบ 400 ไม่ใช่ 500."""
 
 
+def _worker_caps() -> dict | None:
+    """ความสามารถที่ worker รายงานมา — None ถ้าเซิร์ฟเวอร์นี้ถอดเสียงเองอยู่แล้ว."""
+    if not (backend.cloud and config.remote_worker):
+        return None
+    try:
+        return store.worker_capabilities()
+    except Exception:
+        return {"workers": 0}
+
+
 def _live_available() -> bool:
     """เซิร์ฟเวอร์นี้ถอดเสียงเองได้ไหม (ต้องมี whisper + โมเดล + ffmpeg)."""
     import shutil
@@ -260,8 +270,10 @@ class Handler(BaseHTTPRequestHandler):
                 # ถอดเสียงสดทำที่ฝั่งเซิร์ฟเวอร์ ต้องมี whisper + โมเดล + ffmpeg ครบ
                 # บน cloud อย่าง Vercel ไม่มีทั้งสามอย่าง ต้องบอกหน้าเว็บให้ปิดตัวเลือกนี้
                 "live_available": _live_available(),
+                # โหมด worker แยกเครื่อง: คนถอดเสียงคือ worker ไม่ใช่เซิร์ฟเวอร์นี้
+                # จึงต้องรายงานความสามารถของ worker ไม่ใช่ของตัวเอง
                 "stt_providers": [
-                    {"key": k, **v} for k, v in stt.providers().items()
+                    {"key": k, **v} for k, v in stt.providers(_worker_caps()).items()
                 ],
                 "stt_default": config.stt_provider,
                 "templates": [
@@ -531,8 +543,10 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 return self._error(HTTPStatus.BAD_REQUEST, "ต้องส่งชื่อ worker")
             if backend.cloud:
+                caps = body.get("caps") if isinstance(body.get("caps"), dict) else None
                 store.worker_seen(name, str(body.get("status") or "idle")[:16],
-                                  body.get("job") or None, str(body.get("gpu") or "")[:120] or None)
+                                  body.get("job") or None,
+                                  str(body.get("gpu") or "")[:120] or None, caps)
             return self._json({"ok": True, "stale_after": 75})
 
         if rest == ["claim"] and self.command == "POST":

@@ -141,6 +141,13 @@ def transcribe(
             "-oj",                     # เขียนผลเป็น JSON
             "-of", str(out_prefix),
         ]
+        # VAD ตัดช่วงเงียบออกก่อน — กันอาการหลอนคำซ้ำเมื่อป้อนความเงียบให้โมเดล
+        # (เจอจริง: แทร็กไมค์ที่ไม่มีคนพูด ได้ "เจ้าไหรือ" ซ้ำ 20 รอบยาว 30 วิพอดี)
+        vad = config.vad_model_path()
+        if vad:
+            cmd += ["--vad", "--vad-model", str(vad)]
+        # ไม่เอา token ที่ไม่ใช่คำพูด เช่น (เสียงดนตรี) [เสียงหัวเราะ]
+        cmd.append("--suppress-nst")
         if prompt:
             # จำกัดความยาว — prompt ยาวเกินไปกินหน้าต่างบริบทของโมเดลเอง
             cmd += ["--prompt", prompt.strip()[-PROMPT_MAX_CHARS:]]
@@ -161,4 +168,41 @@ def transcribe(
             )
         )
     detected = data.get("result", {}).get("language", lang)
-    return Transcript(language=detected, segments=segments)
+    return Transcript(language=detected, segments=drop_hallucinations(segments))
+
+
+# ---------- ตัวกรองข้อความหลอน ----------
+
+# ถ้า VAD ไม่ได้ทำงาน (ไม่มีไฟล์โมเดล) หรือปล่อยเสียงเบาๆ ผ่านมา โมเดลจะวนคำเดิมซ้ำ
+# เช่น "ที่สุด" ×40 หรือ "เจ้าไหรือ" ×20 — ทิ้งช่วงพวกนี้ ดีกว่าปล่อยขยะเข้าบทถอดเสียง
+REPEAT_MIN_LEN = 2      # ความยาววลีที่จะไล่หา (ตัวอักษร)
+REPEAT_MAX_LEN = 12
+REPEAT_TIMES = 6        # ซ้ำเกินเท่านี้ถือว่าหลอน
+REPEAT_COVER = 0.7      # และต้องกินพื้นที่ข้อความเกินสัดส่วนนี้
+
+
+REPEAT_MAX_SKIP = 24    # การวนอาจเริ่มหลังคำนำ เช่น "ที่สุดท้าย" แล้วค่อยวน "ที่สุด"
+
+
+def looks_hallucinated(text: str) -> bool:
+    """จริงไหมว่าข้อความนี้เป็นการวนคำเดิมซ้ำๆ."""
+    squashed = re.sub(r"\s+", "", text)
+    if len(squashed) < REPEAT_MIN_LEN * REPEAT_TIMES:
+        return False
+    for start in range(0, min(REPEAT_MAX_SKIP, len(squashed))):
+        rest = squashed[start:]
+        if len(rest) < REPEAT_MIN_LEN * REPEAT_TIMES:
+            break
+        for size in range(REPEAT_MIN_LEN, REPEAT_MAX_LEN + 1):
+            phrase = rest[:size]
+            times = 0
+            while rest[times * size:(times + 1) * size] == phrase:
+                times += 1
+            # ต้องซ้ำถี่ และกินพื้นที่เกือบทั้งข้อความ (นับจากต้นจริงๆ ไม่ใช่จากจุดที่เริ่มวน)
+            if times >= REPEAT_TIMES and times * size >= len(squashed) * REPEAT_COVER:
+                return True
+    return False
+
+
+def drop_hallucinations(segments: list[Segment]) -> list[Segment]:
+    return [s for s in segments if not looks_hallucinated(s.text)]

@@ -23,4 +23,9 @@ bin/
 # ไฟล์ที่เผลอสร้างจากการก็อปคำสั่ง (เคยทำให้คีย์หลุดเข้า commit)
 *.ps1 -*.txt
 powershell*.txt
-setup-worker.zip
+# ไฟล์ zip ที่ทำไว้ย้ายข้ามเครื่อง ห้ามเข้า git (GitHub จำกัด 100MB ต่อไฟล์)
+*.zip
+
+# ของที่เกิดตอนรัน ไม่ใช่ซอร์ส
+logs/
+run-worker-hidden.ps1

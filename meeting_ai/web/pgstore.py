@@ -669,17 +669,45 @@ WORKER_STALE_SECONDS = 75
 
 
 def worker_seen(name: str, status: str = "idle", job_id: str | None = None,
-                gpu: str | None = None) -> None:
+                gpu: str | None = None, caps: dict | None = None) -> None:
     """อัปเดต heartbeat ของ worker — เรียกทั้งตอนว่างและตอนกำลังทำงาน."""
     with db.connect() as conn:
         conn.execute(
-            """insert into meeting_ai.workers (name, status, job_id, gpu, last_seen)
-               values (%s, %s, %s, %s, now())
+            """insert into meeting_ai.workers (name, status, job_id, gpu, caps, last_seen)
+               values (%s, %s, %s, %s, coalesce(%s::jsonb, '{}'::jsonb), now())
                on conflict (name) do update set
                  status = excluded.status, job_id = excluded.job_id,
-                 gpu = coalesce(excluded.gpu, workers.gpu), last_seen = now()""",
-            (name[:80], status, job_id, gpu),
+                 gpu = coalesce(excluded.gpu, workers.gpu),
+                 caps = case when excluded.caps = '{}'::jsonb then workers.caps
+                             else excluded.caps end,
+                 last_seen = now()""",
+            (name[:80], status, job_id, gpu,
+             json.dumps(caps, ensure_ascii=False) if caps else None),
         )
+
+
+def worker_capabilities() -> dict:
+    """รวมความสามารถของ worker ที่ยังมีชีวิต — ใช้บอกผู้ใช้ว่าเลือกตัวถอดเสียงอะไรได้.
+
+    ฝั่ง cloud ไม่มี whisper เอง จึงต้องถามจาก worker ไม่ใช่ดูจากตัวเอง
+    """
+    with db.connect() as conn:
+        rows = conn.execute(
+            """select caps, name from meeting_ai.workers
+               where last_seen > now() - make_interval(secs => %s)""",
+            (WORKER_STALE_SECONDS,),
+        ).fetchall()
+    out: dict = {"workers": len(rows), "local": False, "api": False,
+                 "stt_model": None, "stt_host": None, "by": {}}
+    for caps, name in rows:
+        caps = caps or {}
+        for key in ("local", "api"):
+            if caps.get(key):
+                out[key] = True
+                out["by"].setdefault(key, []).append(name)
+        out["stt_model"] = caps.get("stt_model") or out["stt_model"]
+        out["stt_host"] = caps.get("stt_host") or out["stt_host"]
+    return out
 
 
 def worker_finished(name: str) -> None:

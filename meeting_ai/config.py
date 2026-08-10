@@ -47,6 +47,9 @@ class Config:
     whisper_model: str = _get("WHISPER_MODEL", "models/ggml-large-v3-turbo-q5_0.bin")
     whisper_lang: str = _get("WHISPER_LANG", "th")
     whisper_threads: str = _get("WHISPER_THREADS", "8")
+    # โมเดล VAD — ข้ามช่วงเงียบก่อนป้อนให้ whisper กันอาการหลอนคำซ้ำบนความเงียบ
+    # ว่าง/ไม่มีไฟล์ = ไม่ใช้ VAD (ยังถอดได้ แต่แทร็กที่เงียบจะได้ข้อความขยะ)
+    vad_model: str = _get("VAD_MODEL", "models/ggml-silero-v5.1.2.bin")
 
     # Recording
     ffmpeg_bin: str = _get("FFMPEG_BIN", "ffmpeg")
@@ -64,6 +67,14 @@ class Config:
     def whisper_model_path(cls) -> Path:
         p = Path(cls.whisper_model)
         return p if p.is_absolute() else cls.root / p
+
+    @classmethod
+    def vad_model_path(cls) -> Path | None:
+        if not cls.vad_model:
+            return None
+        p = Path(cls.vad_model)
+        p = p if p.is_absolute() else cls.root / p
+        return p if p.exists() else None
 
     @classmethod
     def stt_base_url(cls) -> str:

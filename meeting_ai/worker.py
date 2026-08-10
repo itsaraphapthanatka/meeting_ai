@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import runner
+from . import runner, stt
 from .config import config
 from .web.blobstore import open_url
 
@@ -88,11 +88,15 @@ class Client:
         return body if status == 200 else None
 
     def heartbeat(self, worker: str, status: str, job: str | None = None,
-                  gpu: str | None = None) -> None:
-        """บอกเซิร์ฟเวอร์ว่ายังอยู่ — ทำแม้ตอนว่าง หน้าเว็บจะได้เห็นว่ามีเครื่องพร้อม."""
+                  gpu: str | None = None, caps: dict | None = None) -> None:
+        """บอกเซิร์ฟเวอร์ว่ายังอยู่ — ทำแม้ตอนว่าง หน้าเว็บจะได้เห็นว่ามีเครื่องพร้อม.
+
+        ส่ง caps ไปด้วยเพราะฝั่ง cloud ถอดเสียงเองไม่ได้ ต้องรู้ว่าเครื่องนี้ทำอะไรได้
+        """
         try:
             self.post_json("/api/worker/heartbeat",
-                           {"worker": worker, "status": status, "job": job, "gpu": gpu},
+                           {"worker": worker, "status": status, "job": job,
+                            "gpu": gpu, "caps": caps},
                            timeout=20)
         except WorkerError:
             pass  # heartbeat หลุดไม่ใช่เรื่องคอขาดบาดตาย งานยังเดินได้
@@ -205,6 +209,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     current: dict = {"id": None, "status": "idle"}
     worker_name = (name or socket.gethostname())[:80]
     gpu = describe_gpu()
+    caps = stt.capabilities()
 
     def on_signal(signum, frame):
         stopping["flag"] = True
@@ -218,6 +223,9 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
 
     print(f"🛠️  worker พร้อม — เซิร์ฟเวอร์: {client.api}")
     print(f"   ชื่อเครื่อง: {worker_name}" + (f"   GPU: {gpu}" if gpu else "   (ไม่มี GPU)"))
+    ways = [k for k in ("local", "api") if caps.get(k)]
+    print(f"   ถอดเสียงได้: {', '.join(ways) or '(ไม่มีเลย!)'}"
+          + (f"   API -> {caps['stt_host']} ({caps['stt_model']})" if caps.get("api") else ""))
     if not config.llm_api_key:
         print("⚠️  worker ตัวนี้ยังไม่มี LLM_API_KEY — ถอดเสียงได้แต่จะสรุปไม่ได้")
     print("   กด Ctrl+C เพื่อหยุด\n", flush=True)
@@ -225,7 +233,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     # เต้นทุก HEARTBEAT_SEC วินาที ให้หน้าเว็บรู้ว่าเครื่องนี้ยังอยู่ แม้ตอนว่าง
     def beat() -> None:
         while not stopping["flag"]:
-            client.heartbeat(worker_name, current["status"], current["id"], gpu)
+            client.heartbeat(worker_name, current["status"], current["id"], gpu, caps)
             for _ in range(int(HEARTBEAT_SEC * 2)):
                 if stopping["flag"]:
                     return
@@ -279,7 +287,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
         finally:
             current["id"] = None
             current["status"] = "idle"
-            client.heartbeat(worker_name, "idle", None, gpu)
+            client.heartbeat(worker_name, "idle", None, gpu, caps)
 
         if once:
             stopping["flag"] = True

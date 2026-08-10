@@ -33,27 +33,75 @@ COMPRESS_BITRATE = "24k"
 CHUNK_SECONDS = 900
 
 
-def providers() -> dict[str, dict]:
-    """ตัวถอดเสียงที่ใช้ได้จริงบนเครื่องนี้."""
+def local_available() -> bool:
     import shutil
 
-    local_ok = config.whisper_model_path().exists() and (
+    return config.whisper_model_path().exists() and (
         shutil.which(config.whisper_bin) is not None or Path(config.whisper_bin).exists()
     )
+
+
+def api_host() -> str:
+    import urllib.parse
+
+    return urllib.parse.urlparse(config.stt_base_url()).netloc or config.stt_base_url()
+
+
+def capabilities() -> dict:
+    """ความสามารถของเครื่องนี้ — worker ส่งค่านี้ไปให้เซิร์ฟเวอร์ตอน heartbeat."""
+    return {
+        "local": local_available(),
+        "api": bool(config.stt_key()),
+        "stt_model": config.stt_model,
+        "stt_host": api_host(),
+    }
+
+
+def providers(caps: dict | None = None) -> dict[str, dict]:
+    """ตัวถอดเสียงที่เลือกได้.
+
+    caps = ความสามารถที่ worker รายงานมา (โหมด cloud ที่ตัวเซิร์ฟเวอร์ถอดเสียงเองไม่ได้)
+    ไม่ส่งมา = ดูจากเครื่องที่รันโค้ดนี้เอง
+    """
+    from_worker = caps is not None
+    if from_worker:
+        local_ok = bool(caps.get("local"))
+        api_ok = bool(caps.get("api"))
+        model = caps.get("stt_model") or config.stt_model
+        host = caps.get("stt_host") or ""
+        no_worker = not caps.get("workers")
+    else:
+        local_ok = local_available()
+        api_ok = bool(config.stt_key())
+        model = config.stt_model
+        host = api_host()
+        no_worker = False
+
+    if no_worker:
+        why_local = why_api = "ยังไม่มีเครื่องประมวลผลออนไลน์ — เปิด worker ก่อน"
+    else:
+        why_local = "" if local_ok else (
+            "เครื่องประมวลผลยังไม่ได้ติดตั้ง whisper.cpp หรือไม่มีไฟล์โมเดล" if from_worker
+            else "ยังไม่ได้ติดตั้ง whisper.cpp หรือไม่มีไฟล์โมเดล")
+        why_api = "" if api_ok else (
+            "เครื่องประมวลผลยังไม่ได้ตั้ง STT_API_KEY" if from_worker
+            else "ยังไม่ได้ตั้ง STT_API_KEY (หรือ LLM_API_KEY)")
+
     return {
         LOCAL: {
             "label": "ในเครื่อง (whisper.cpp)",
             "available": local_ok,
-            "why": "" if local_ok else "ยังไม่ได้ติดตั้ง whisper.cpp หรือไม่มีไฟล์โมเดล",
-            "note": "ฟรี เสียงไม่ออกจากเครื่อง",
+            "why": why_local,
+            "note": "ฟรี ใช้ GPU ของเครื่องประมวลผล เสียงไม่ออกไปที่อื่น",
         },
         API: {
-            "label": f"API ({config.stt_model})",
+            # บอกปลายทางด้วย ไม่งั้นไม่รู้ว่า "API" คืออะไรของใคร
+            "label": f"API — {host} ({model})" if host else f"API ({model})",
             # เช็คได้แค่ว่ามีคีย์ ยืนยันไม่ได้ว่าคีย์นั้นเข้าถึงโมเดลถอดเสียงได้จริง
             # จนกว่าจะยิงจริง — error ตอนใช้จะบอกเองว่าคีย์ไม่มีสิทธิ์
-            "available": bool(config.stt_key()),
-            "why": "" if config.stt_key() else "ยังไม่ได้ตั้ง STT_API_KEY (หรือ LLM_API_KEY)",
-            "note": ("ไม่ต้องมี GPU แต่เสียเงินและเสียงออกจากเครื่อง "
+            "available": api_ok,
+            "why": why_api,
+            "note": ("ไม่ต้องมี GPU แต่เสียเงินและเสียงถูกอัปโหลดไปที่ผู้ให้บริการ "
                      "— คีย์ต้องมีสิทธิ์เข้าโมเดลถอดเสียงด้วย"),
         },
     }
