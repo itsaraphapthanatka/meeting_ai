@@ -402,6 +402,15 @@ function showNew() {
   $('#f-template').innerHTML = (state.config.templates || [])
     .map((t) => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
 
+  // เซิร์ฟเวอร์บน cloud ไม่มี whisper/ffmpeg จึงถอดเสียงสดให้ไม่ได้
+  if (state.config.live_available === false) {
+    const live = $('#c-live');
+    live.checked = false;
+    live.disabled = true;
+    live.closest('label').title = 'เซิร์ฟเวอร์นี้ถอดเสียงเองไม่ได้ — ข้อความสดใช้ได้เฉพาะตอนรันในเครื่อง';
+    live.closest('label').lastChild.textContent = ' แสดงข้อความสดระหว่างประชุม (เซิร์ฟเวอร์นี้ทำไม่ได้)';
+  }
+
   const diarizeBox = $('#f-diarize');
   if (!state.config.diarize_available) {
     diarizeBox.checked = false;

@@ -47,6 +47,19 @@ class BadBody(ValueError):
     """body ของคำขออ่านไม่ได้ — ตอบ 400 ไม่ใช่ 500."""
 
 
+def _live_available() -> bool:
+    """เซิร์ฟเวอร์นี้ถอดเสียงเองได้ไหม (ต้องมี whisper + โมเดล + ffmpeg)."""
+    import shutil
+
+    from ..config import config as cfg
+    if not cfg.whisper_model_path().exists():
+        return False
+    for binary in (cfg.whisper_bin, cfg.ffmpeg_bin):
+        if shutil.which(binary) is None and not Path(binary).exists():
+            return False
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "meeting_ai"
     protocol_version = "HTTP/1.1"
@@ -244,6 +257,9 @@ class Handler(BaseHTTPRequestHandler):
                 "lang": config.whisper_lang,
                 "diarize_available": diarize.available(),
                 "diarize_missing": diarize.missing_pieces(),
+                # ถอดเสียงสดทำที่ฝั่งเซิร์ฟเวอร์ ต้องมี whisper + โมเดล + ffmpeg ครบ
+                # บน cloud อย่าง Vercel ไม่มีทั้งสามอย่าง ต้องบอกหน้าเว็บให้ปิดตัวเลือกนี้
+                "live_available": _live_available(),
                 "templates": [
                     {"key": k, "label": v["label"]} for k, v in summarizer.TEMPLATES.items()
                 ],
@@ -591,6 +607,10 @@ class Handler(BaseHTTPRequestHandler):
         ext = (q.get("ext") or "webm").lower().lstrip(".")
         if ext not in ALLOWED_EXT:
             return self._error(HTTPStatus.BAD_REQUEST, f"นามสกุล '{ext}' ไม่รองรับ")
+        if not _live_available():
+            return self._error(HTTPStatus.NOT_IMPLEMENTED,
+                               "เซิร์ฟเวอร์นี้ถอดเสียงเองไม่ได้ (ไม่มี whisper/ffmpeg) "
+                               "— ข้อความสดใช้ได้เฉพาะตอนรันบนเครื่องที่ติดตั้งครบ")
         lang = (q.get("lang") or "").strip() or None
         # ข้อความจากคลิปก่อนหน้า ใช้เป็นบริบทให้ถอดต่อเนื่องแม่นขึ้น
         prompt = (q.get("prompt") or "").strip()[:600] or None
