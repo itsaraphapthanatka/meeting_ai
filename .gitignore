@@ -19,3 +19,8 @@ bin/
 # macOS
 .DS_Store
 .vercel
+
+# ไฟล์ที่เผลอสร้างจากการก็อปคำสั่ง (เคยทำให้คีย์หลุดเข้า commit)
+*.ps1 -*.txt
+powershell*.txt
+setup-worker.zip
