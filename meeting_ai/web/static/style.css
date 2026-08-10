@@ -62,9 +62,20 @@ body {
   z-index: 10;
 }
 
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; flex: none; }
 .logo { font-size: 20px; }
 .stats { color: var(--muted); font-size: 13px; margin-left: auto; }
+#btn-new { flex: none; white-space: nowrap; }
+
+/* จอมือถือ: บีบ padding เอาที่คืนให้เนื้อหา และให้สถิติย่อด้วย …
+   ไม่งั้น "1 การประชุม · รวม 1 นาที 30 วิ" ตัดเป็นสามบรรทัดดัน topbar สูงจนเสียที่ */
+@media (max-width: 560px) {
+  .topbar { padding: 10px 12px; gap: 10px; }
+  .brand { font-size: 15px; }
+  .stats { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .panel { padding: 16px 12px; }
+  .banner { padding: 10px 12px; }
+}
 
 .banner {
   padding: 10px 20px;
@@ -158,8 +169,12 @@ h2 { font-size: 20px; margin: 0 0 18px; }
 h3 { font-size: 15.5px; margin: 0 0 6px; }
 
 .field-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
-.field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 260px; }
-.field-sm { flex: 0 0 180px; }
+/* min-width:0 สำคัญ — flex item ตั้งต้นเป็น min-width:auto ซึ่งยุบต่ำกว่าความกว้าง
+   min-content ของลูกไม่ได้ ชื่ออุปกรณ์เสียงบน Windows ยาวมาก
+   ("Microphone Array (Intel Smart Sound Technology for Digital Microphones)")
+   select จะกว้างตาม option ที่ยาวที่สุดแล้วดันหน้าเว็บล้นออกไปทั้งหน้า */
+.field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 260px; min-width: 0; }
+.field-sm { flex: 0 1 180px; }
 .field > span { font-size: 13px; color: var(--muted); }
 
 .field input, .field select {
@@ -169,9 +184,19 @@ h3 { font-size: 15.5px; margin: 0 0 6px; }
   background: var(--surface);
   color: var(--text);
   font: inherit;
+  /* ตัดชื่อยาวด้วย … แทนที่จะดันกล่องให้กว้างตามข้อความ */
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
 }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+/* min(300px, 100%) — ไม่ใส่ min() ช่องจะกว้าง 300px ตายตัวแม้จอแคบกว่านั้น
+   แล้วดันให้เลื่อนซ้ายขวาบนจอ 320px (iPhone SE / Android เครื่องเล็ก) */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  gap: 16px;
+}
 
 .card {
   background: var(--surface);
@@ -278,12 +303,14 @@ h3 { font-size: 15.5px; margin: 0 0 6px; }
 
 audio { width: 100%; margin-bottom: 20px; }
 
+/* ต้อง wrap ทั้งสองชั้น — แถวปุ่ม "แปล / สรุปใหม่ด้วย AI / แก้ไข" กว้าง ~337px
+   บนจอ 360-414px จึงล้นออกไปทำให้เลื่อนซ้ายขวาได้ทั้งหน้า */
 .section-head {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; margin-bottom: 10px; padding-top: 4px;
+  gap: 12px; margin-bottom: 10px; padding-top: 4px; flex-wrap: wrap;
 }
 .section-head h3 { margin: 0; }
-.section-head > div { display: flex; gap: 6px; }
+.section-head > div { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .editor {
   width: 100%;
@@ -438,7 +465,8 @@ audio { width: 100%; margin-bottom: 20px; }
 }
 
 .diarize-row { align-items: flex-end; gap: 18px; }
-.field-xs { flex: 0 0 140px; }
+/* 0 1 = ยุบได้เมื่อจอแคบ (0 0 จะไม่ยอมยุบแล้วดันแถวล้น) */
+.field-xs { flex: 0 1 140px; }
 .check-inline { display: flex; align-items: center; gap: 8px; cursor: pointer; padding-bottom: 8px; }
 
 .notice {
