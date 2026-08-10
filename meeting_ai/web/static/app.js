@@ -505,6 +505,150 @@ function showNew() {
 
   $('#btn-rec').onclick = startRecording;
   $('#btn-stop').onclick = stopRecording;
+  setupSources();
+}
+
+/* ---------------- แหล่งเสียง (โหมดอัด + อุปกรณ์) ---------------- */
+
+/* โหมดอัด:
+   room   = ไมค์ตัวเดียว ไม่มีกล่องขออนุญาตแชร์หน้าจอ -> ได้ทุกคนในห้องรวมอยู่แทร็กเดียว
+   device = ไมค์ + อุปกรณ์อินพุตที่วนเสียงลำโพงกลับเข้ามา -> 2 แทร็ก แยกได้ว่าใครพูด
+   tab    = แชร์แท็บ (getDisplayMedia) -> 2 แทร็ก เสียงอีกฝ่ายสะอาดที่สุด */
+const REC_MODE_KEY = 'mai.recmode';
+const MIC_DEV_KEY = 'mai.mic';
+const SYS_DEV_KEY = 'mai.sysdev';
+
+/* ชื่ออุปกรณ์อินพุตที่จริงๆ คือเสียงที่ออกลำโพงวนกลับเข้ามา
+   ครอบทั้งชื่อไทย/อังกฤษ และไดรเวอร์เสมือนยอดนิยม */
+const LOOPBACK_RE = new RegExp([
+  'stereo\\s*mix', 'สเตอริโอ', 'what\\s*u\\s*hear', 'loopback', 'ลูปแบ็ค',
+  'cable\\s*output', 'vb-?audio', 'voicemeeter', 'wave\\s*out', 'wasapi',
+  'soundflower', 'blackhole', 'มิกซ์',
+].join('|'), 'i');
+
+const isLoopback = (d) => LOOPBACK_RE.test(d.label || '');
+
+const recMode = () => $('#rec-modes input:checked')?.value || 'room';
+
+const store = {
+  get: (k, dflt = '') => { try { return localStorage.getItem(k) ?? dflt; } catch { return dflt; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* โหมดส่วนตัวเขียนไม่ได้ */ } },
+};
+
+const devices = { list: [], asked: false };
+
+function setupSources() {
+  const saved = store.get(REC_MODE_KEY);
+  const savedRadio = saved && $(`#rec-modes input[value="${saved}"]`);
+  if (savedRadio) savedRadio.checked = true;
+
+  // แชร์แท็บใช้ได้แค่บนเบราว์เซอร์เดสก์ท็อป — บนมือถือไม่มี API นี้เลย
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    const tab = $('#rec-modes input[value="tab"]');
+    tab.disabled = true;
+    tab.closest('.mode').title = 'เบราว์เซอร์นี้แชร์เสียงแท็บไม่ได้ (มือถือส่วนใหญ่ทำไม่ได้)';
+    if (tab.checked) $('#rec-modes input[value="room"]').checked = true;
+  }
+
+  $$('#rec-modes input').forEach((r) => {
+    r.onchange = () => { store.set(REC_MODE_KEY, r.value); renderSources(); };
+  });
+  $('#d-mic').onchange = (e) => store.set(MIC_DEV_KEY, e.target.value);
+  $('#d-sys').onchange = (e) => store.set(SYS_DEV_KEY, e.target.value);
+
+  // เบราว์เซอร์ปิดชื่ออุปกรณ์ไว้จนกว่าจะเคยได้สิทธิ์ไมค์ -> ครั้งแรกจะได้แค่รายการเปล่า
+  // ถ้าเคยอนุญาตไว้แล้ว (permission ค้างอยู่) จะได้ชื่อครบตั้งแต่โหลดหน้า
+  refreshDevices();
+  navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
+  renderSources();
+}
+
+async function refreshDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    devices.list = all.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default');
+  } catch {
+    devices.list = [];
+  }
+  fillDeviceSelect($('#d-mic'), devices.list, store.get(MIC_DEV_KEY), 'ค่าเริ่มต้นของระบบ');
+  const loops = devices.list.filter(isLoopback);
+  fillDeviceSelect($('#d-sys'), loops.length ? loops : devices.list,
+    store.get(SYS_DEV_KEY) || loops[0]?.deviceId, '— เลือกอุปกรณ์ —');
+  renderSources();
+}
+
+function fillDeviceSelect(sel, items, want, placeholder) {
+  const named = items.filter((d) => d.label);
+  sel.innerHTML = `<option value="">${esc(placeholder)}</option>`
+    + named.map((d) => `<option value="${esc(d.deviceId)}">${esc(d.label)}</option>`).join('');
+  if (want && named.some((d) => d.deviceId === want)) sel.value = want;
+}
+
+/** อนุญาตไมค์หนึ่งครั้งเพื่อปลดล็อกชื่ออุปกรณ์ แล้วปิดสตรีมทิ้งทันที */
+async function unlockDeviceNames() {
+  devices.asked = true;
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    s.getTracks().forEach((t) => t.stop());
+  } catch (e) {
+    banner(`ขอสิทธิ์ไมค์ไม่ผ่าน: ${e.name === 'NotAllowedError' ? 'ถูกปฏิเสธ' : e.message}`);
+  }
+  await refreshDevices();
+}
+
+/* เตือนตอนอัดไปแล้วแต่ยังไม่ได้ยินเสียง — สาเหตุต่างกันตามโหมด */
+const SILENT_WARN = {
+  room: 'ยังไม่ได้ยินเสียงเลย — ตรวจว่าเลือกไมค์ถูกตัว ไมค์ไม่ได้ปิด (mute) และเสียงประชุมเปิดออกลำโพงอยู่',
+  device: 'ยังไม่ได้ยินเสียงเลย — อุปกรณ์วนเสียงกลับมักเงียบถ้าเสียงระบบถูกปิด '
+    + 'ลองเปิดเพลงทดสอบ หรือสลับไปโหมดไมค์เดียว',
+  tab: 'ยังไม่ได้ยินเสียงเลย — ตรวจว่าติ๊ก “แชร์เสียงแท็บ” และเสียงประชุมไม่ได้ปิดอยู่',
+};
+
+const REC_HINTS = {
+  room: 'เปิดลำโพงไว้ ไมค์จะได้ทั้งเสียงคุณและอีกฝ่าย '
+    + 'ระบบจะแยกผู้พูดให้จากเสียง (ติ๊ก “แยกผู้พูด” ด้านบน) ใช้ได้บนมือถือด้วย',
+  device: 'เสียงคุณกับเสียงอีกฝ่ายถูกอัดแยกกัน จึงรู้แน่ว่าประโยคไหนใครพูด — ไม่มีกล่องขอแชร์หน้าจอ',
+  tab: 'ตอนเลือกแท็บ ต้องติ๊ก “แชร์เสียงแท็บ” ด้วย ไม่งั้นจะได้ไฟล์เงียบ',
+};
+
+function renderSources() {
+  const mode = recMode();
+  $$('#rec-modes .mode').forEach((el) => {
+    const input = $('input', el);
+    el.classList.toggle('on', input.checked);
+    el.classList.toggle('off', input.disabled);
+  });
+
+  const named = devices.list.some((d) => d.label);
+  // โหมด room ใช้ค่าเริ่มต้นของระบบได้ ไม่ต้องเลือกอุปกรณ์ให้รก จนกว่าจะรู้ชื่ออุปกรณ์แล้ว
+  $('#dev-wrap').hidden = mode === 'tab' || (mode === 'room' && !named);
+  $('#d-sys-field').hidden = mode !== 'device';
+  $('#rec-hint').textContent = REC_HINTS[mode] || '';
+  // โหมด room ไมค์คือแหล่งเสียงเดียว ปิดไม่ได้ — อีกสองโหมดปิดได้ (เช่น อัดสัมมนาที่เราแค่นั่งฟัง)
+  $('#c-mic-row').hidden = mode === 'room';
+
+  const note = $('#dev-note');
+  note.innerHTML = '';
+  note.hidden = true;
+  // โหมด room/tab ใช้อุปกรณ์เริ่มต้นของระบบได้เลย ไม่ต้องรู้ชื่ออุปกรณ์ก่อน
+  if (mode !== 'device') return;
+  note.hidden = false;
+
+  if (!named) {
+    note.innerHTML = 'ยังไม่รู้ชื่ออุปกรณ์ในเครื่อง (เบราว์เซอร์ปิดไว้จนกว่าจะได้สิทธิ์ไมค์) '
+      + '<button type="button" class="linkbtn" id="btn-devperm">อนุญาตไมค์เพื่อดูรายชื่อ</button>';
+    $('#btn-devperm').onclick = unlockDeviceNames;
+    return;
+  }
+  if (!$('#d-sys').value) {
+    note.innerHTML = 'ไม่พบอุปกรณ์ที่วนเสียงลำโพงกลับเข้ามา — เปิด <strong>Stereo Mix</strong> '
+      + 'ใน Sound settings ▸ Recording (คลิกขวา ▸ Show Disabled Devices) '
+      + 'หรือลงไดรเวอร์เสมือนอย่าง VB-CABLE แล้วกดรีเฟรชหน้า '
+      + 'ถ้าไม่มีจริงๆ ใช้โหมดไมค์เดียวหรือแชร์แท็บแทนได้';
+    return;
+  }
+  note.hidden = true;
 }
 
 function formValues() {
@@ -583,7 +727,7 @@ async function uploadFile(file) {
 
 const rec = {
   recorders: {},      // ชื่อแทร็ก -> {recorder, chunks}
-  streams: [], ctx: null, dest: null,
+  streams: [], ctx: null, dest: null, mode: 'room', stopping: false,
   liveRecorder: null, liveTimer: null, liveBusy: false, liveText: [],
   timer: null, raf: null, started: 0, peak: 0, level: 0, recording: false,
 };
@@ -605,25 +749,49 @@ function newRecorder(stream, mime) {
   return entry;
 }
 
+/** ขอสตรีมจากอุปกรณ์อินพุตหนึ่งตัว — ระบุ deviceId ได้ ถ้าไม่ระบุใช้ตัวเริ่มต้นของระบบ */
+async function openInput(deviceId, { echo }) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error(window.isSecureContext
+      ? 'เบราว์เซอร์นี้เข้าถึงไมค์ไม่ได้'
+      : 'ต้องเปิดผ่าน http://127.0.0.1 หรือ https เท่านั้น '
+        + '(เบราว์เซอร์ปิดการเข้าถึงไมค์บนหน้าที่ไม่ปลอดภัย)');
+  }
+  // echo=false ยังพ่วงปิดตัวลดเสียงรบกวนด้วย เพราะมันถูกออกแบบมาให้คนพูดใกล้ไมค์
+  // ถ้าเปิดไว้ตอนอัดทั้งห้อง เสียงคนที่นั่งไกลจะถูกตัดทิ้งไปเลย (autoGainControl ช่วยดึงขึ้นมาแทน)
+  const audio = { echoCancellation: echo, noiseSuppression: !!echo, autoGainControl: true };
+  // exact เพื่อให้พังทันทีถ้าอุปกรณ์หาย ดีกว่าเงียบๆ ไปอัดตัวอื่นแล้วรู้ทีหลัง
+  if (deviceId) audio.deviceId = { exact: deviceId };
+  return navigator.mediaDevices.getUserMedia({ audio });
+}
+
 async function startRecording() {
-  const wantTab = $('#c-tab').checked;
-  const wantMic = $('#c-mic').checked;
+  const mode = recMode();
   const wantLive = $('#c-live').checked;
-  if (!wantTab && !wantMic) { banner('ต้องเลือกอย่างน้อยหนึ่งแหล่งเสียง'); return; }
+  const micId = $('#d-mic')?.value || '';
+  const sysId = $('#d-sys')?.value || '';
+  if (mode === 'device' && !sysId) {
+    banner('โหมดนี้ต้องเลือกอุปกรณ์เสียงในเครื่องก่อน — หรือสลับไปโหมดไมค์เดียว/แชร์แท็บ');
+    return;
+  }
   banner('');
 
   const mime = pickMime();
   let step = 'เตรียม AudioContext';
   try {
     const ctx = new AudioContext();
+    // context ที่ยังถูก suspend อยู่ = กราฟเสียงไม่เดิน มิเตอร์นิ่งและคลิปถอดสดจะเงียบทั้งอัน
+    // (แทร็กที่บันทึกลงไฟล์ไม่กระทบ เพราะอัดจากสตรีมต้นทางตรงๆ)
+    if (ctx.state === 'suspended') await ctx.resume().catch(() => {});
     const dest = ctx.createMediaStreamDestination();
     rec.ctx = ctx;
     rec.dest = dest;
     rec.streams = [];
     rec.recorders = {};
     rec.liveText = [];
+    rec.mode = mode;
 
-    if (wantTab) {
+    if (mode === 'tab') {
       step = 'ขอแชร์แท็บ (getDisplayMedia)';
       if (!navigator.mediaDevices?.getDisplayMedia) {
         throw new Error(window.isSecureContext
@@ -656,20 +824,40 @@ async function startRecording() {
       ds.getVideoTracks().forEach((t) => { t.onended = () => stopRecording(); });
     }
 
-    if (wantMic) {
-      step = 'ขอสิทธิ์ไมโครโฟน (getUserMedia)';
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('เบราว์เซอร์นี้เข้าถึงไมค์ไม่ได้ในหน้านี้ '
-          + '(ต้องเปิดผ่าน http://127.0.0.1 หรือ https)');
-      }
-      const ms = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true },
-      });
+    if (mode === 'device') {
+      step = 'เปิดอุปกรณ์เสียงในเครื่อง';
+      // อุปกรณ์วนเสียงกลับเป็นสัญญาณดิจิทัลตรงๆ — ตัวลดเสียงรบกวนจะกินเสียงพูดเปล่าๆ
+      const ss = await openInput(sysId, { echo: false });
+      rec.streams.push(ss);
+      ctx.createMediaStreamSource(ss).connect(dest);
+      rec.recorders.system = newRecorder(ss, mime);
+    }
+
+    if (mode === 'room' || $('#c-mic').checked) {
+      step = mode === 'room' ? 'ขอสิทธิ์ไมโครโฟน' : 'ขอสิทธิ์ไมโครโฟน (แทร็กเสียงของคุณ)';
+      // room: ไมค์ตัวเดียวต้องได้ทุกคนในห้อง จึงห้ามตัด echo (มันจะกินเสียงจากลำโพงทิ้ง)
+      // device/tab: เสียงอีกฝ่ายมาทางแทร็กของตัวเองแล้ว ตัด echo กันซ้ำซ้อนได้เลย
+      const ms = await openInput(micId, { echo: mode !== 'room' });
       rec.streams.push(ms);
       ctx.createMediaStreamSource(ms).connect(dest);
       step = 'สร้างตัวอัดของแทร็กไมค์';
-      rec.recorders.mic = newRecorder(ms, mime);
+      // ไมค์เดียวก็คือทั้งห้องรวมอยู่แทร็กเดียว = 'mixed' ไม่ใช่ 'mic'
+      // ('mic' ฝั่งเซิร์ฟเวอร์ตีเป็น "ฉัน" ทุกประโยค ซึ่งผิดถ้าอีกฝ่ายก็เข้าไมค์ตัวนี้ด้วย)
+      rec.recorders[mode === 'room' ? 'mixed' : 'mic'] = newRecorder(ms, mime);
     }
+
+    // ถอนสิทธิ์ไมค์กลางทาง หรือถอดหูฟัง USB ออก = แทร็กตาย ถ้าไม่รู้ตัวจะอัดต่อได้ไฟล์เปล่า
+    rec.streams.forEach((s) => s.getAudioTracks().forEach((t) => {
+      t.onended = () => {
+        if (rec.recording) {
+          banner('อุปกรณ์เสียงหลุดกลางการอัด — หยุดและส่งเท่าที่อัดได้แล้ว');
+          stopRecording();
+        }
+      };
+    }));
+
+    // ได้สิทธิ์แล้ว เบราว์เซอร์จึงเปิดเผยชื่ออุปกรณ์ — เก็บไว้ให้รอบหน้าเลือกได้
+    refreshDevices();
 
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 1024;
@@ -695,7 +883,7 @@ async function startRecording() {
       if (sec > 6 && rec.peak < 0.004) {
         const warn = $('#rec-warn');
         warn.hidden = false;
-        warn.textContent = 'ยังไม่ได้ยินเสียงเลย — ตรวจว่าติ๊ก “แชร์เสียงแท็บ” และเสียงประชุมไม่ได้ปิดอยู่';
+        warn.textContent = SILENT_WARN[rec.mode] || SILENT_WARN.room;
       }
     }, 500);
 
@@ -717,6 +905,12 @@ async function startRecording() {
     if (e.name === 'NotAllowedError') {
       banner('ไม่ได้รับอนุญาตให้เข้าถึงเสียง — กดอนุญาตในเบราว์เซอร์แล้วลองอีกครั้ง '
         + '(ถ้าเคยกดปฏิเสธไว้ ต้องไปแก้ที่ไอคอนรูปกุญแจข้าง URL)');
+    } else if (e.name === 'OverconstrainedError') {
+      // อุปกรณ์ที่จำไว้ถูกถอด/ปิดไปแล้ว — ล้างค่าที่จำไว้ให้กลับไปใช้ตัวเริ่มต้น
+      store.set(MIC_DEV_KEY, '');
+      store.set(SYS_DEV_KEY, '');
+      refreshDevices();
+      banner('ไม่พบอุปกรณ์ที่เลือกไว้ (อาจถูกถอดหรือปิดไป) — เลือกอุปกรณ์ใหม่แล้วลองอีกครั้ง');
     } else if (e.name === 'AbortError' || e.name === 'NotFoundError') {
       banner('ยกเลิกการเลือกแท็บ/ไม่พบอุปกรณ์เสียง — ลองอีกครั้ง');
     } else {
@@ -791,6 +985,9 @@ async function sendLive(blob, ext) {
 }
 
 function stopRecording() {
+  // เข้าได้จากหลายทาง (กดปุ่ม / เลิกแชร์แท็บ / อุปกรณ์หลุด) กันเรียกซ้ำแล้วส่งไฟล์สองรอบ
+  if (rec.stopping) return;
+  rec.stopping = true;
   rec.recording = false;
   clearTimeout(rec.liveTimer);
   if (rec.liveRecorder && rec.liveRecorder.state !== 'inactive') {
@@ -833,6 +1030,7 @@ async function finishRecording(tracks, seconds, silent) {
 
 function cleanupRecording() {
   rec.recording = false;
+  rec.stopping = false;
   clearInterval(rec.timer);
   clearTimeout(rec.liveTimer);
   cancelAnimationFrame(rec.raf);

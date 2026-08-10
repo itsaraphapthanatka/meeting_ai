@@ -140,21 +140,52 @@
       <div class="card">
         <h3>⏺️ อัดสดจากเบราว์เซอร์</h3>
         <p class="muted">
-          ดักเสียงประชุมจากแท็บได้เลย ไม่ต้องลงโปรแกรมเสริมอย่าง VB-CABLE
+          เลือกได้ว่าจะกดอัดเลยแบบไม่ต้องแชร์หน้าจอ หรือดักเสียงจากแท็บให้คมที่สุด
         </p>
+
+        <div class="modes" id="rec-modes">
+          <label class="mode">
+            <input type="radio" name="recmode" value="room" checked>
+            <span class="mode-body">
+              <strong>🎙️ ไมค์เดียว — ไม่ต้องแชร์หน้าจอ</strong>
+              <small>กดอัดได้ทันที เหมาะกับประชุมในห้อง หรือเปิดลำโพงคุยผ่านมือถือ/แอปอื่น</small>
+            </span>
+          </label>
+          <label class="mode">
+            <input type="radio" name="recmode" value="device">
+            <span class="mode-body">
+              <strong>🎧 ไมค์ + เสียงในเครื่อง — ไม่ต้องแชร์หน้าจอ</strong>
+              <small>แยกได้ว่าใครพูด ต้องมีอุปกรณ์วนเสียงกลับ เช่น Stereo Mix หรือ VB-CABLE</small>
+            </span>
+          </label>
+          <label class="mode">
+            <input type="radio" name="recmode" value="tab">
+            <span class="mode-body">
+              <strong>🖥️ แชร์แท็บ</strong>
+              <small>เสียงคมสุดสำหรับประชุมในเบราว์เซอร์ แต่ต้องกดเลือกแท็บทุกครั้ง</small>
+            </span>
+          </label>
+        </div>
+
+        <div id="dev-wrap" class="field-row dev-wrap">
+          <label class="field">
+            <span>ไมโครโฟน</span>
+            <select id="d-mic"><option value="">ค่าเริ่มต้นของระบบ</option></select>
+          </label>
+          <label class="field" id="d-sys-field" hidden>
+            <span>อุปกรณ์เสียงในเครื่อง</span>
+            <select id="d-sys"><option value="">— เลือกอุปกรณ์ —</option></select>
+          </label>
+        </div>
+        <p id="dev-note" class="hint"></p>
+
         <div class="checks">
-          <label><input id="c-tab" type="checkbox" checked> เสียงประชุม (แชร์แท็บ)</label>
-          <label><input id="c-mic" type="checkbox" checked> ไมโครโฟนของฉัน</label>
+          <label id="c-mic-row" hidden><input id="c-mic" type="checkbox" checked> อัดไมโครโฟนของฉันด้วย</label>
           <label><input id="c-live" type="checkbox" checked> แสดงข้อความสดระหว่างประชุม</label>
         </div>
         <div id="rec-idle">
           <button id="btn-rec" class="btn btn-rec" type="button">เริ่มอัด</button>
-          <p class="hint">
-            ตอนเลือกแท็บ <strong>ต้องติ๊ก “แชร์เสียงแท็บ”</strong> ด้วย ไม่งั้นจะได้ไฟล์เงียบ
-          </p>
-          <p class="hint">
-            อัดสองแหล่งพร้อมกัน = แยกเป็น 2 แทร็ก รู้แน่ว่าประโยคไหนคุณพูด ประโยคไหนอีกฝ่ายพูด
-          </p>
+          <p id="rec-hint" class="hint"></p>
         </div>
         <div id="rec-live" hidden>
           <div class="rec-status">

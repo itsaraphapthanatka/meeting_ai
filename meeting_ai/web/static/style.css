@@ -197,6 +197,30 @@ h3 { font-size: 15.5px; margin: 0 0 6px; }
 .checks { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; font-size: 14px; }
 .checks label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
 
+/* ตัวเลือกแหล่งเสียงตอนอัด — การ์ดเรียงลงมา กดที่ไหนก็เลือกได้ */
+.modes { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+
+.mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.mode:hover { background: var(--surface-2); }
+/* .on ตั้งจาก JS ด้วย เผื่อเบราว์เซอร์เก่าที่ยังไม่รู้จัก :has() */
+.mode.on, .mode:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.mode.off, .mode:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+.mode input { margin-top: 3px; flex: none; }
+.mode-body { display: flex; flex-direction: column; gap: 2px; }
+.mode-body strong { font-size: 14px; font-weight: 600; }
+.mode-body small { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+
+.dev-wrap { margin-bottom: 0; }
+
 .hint { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; }
 .warn { font-size: 13px; color: var(--warn); margin: 10px 0 0; }
 
