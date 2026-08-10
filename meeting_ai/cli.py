@@ -87,7 +87,8 @@ def _cmd_worker(args: argparse.Namespace) -> int:
     if not token:
         print("❌ ต้องมี token — ใส่ --token หรือตั้ง WORKER_TOKEN ใน .env", file=sys.stderr)
         return 2
-    return worker.run(api=args.api, token=token, once=args.once, poll=args.poll)
+    return worker.run(api=args.api, token=token, once=args.once, poll=args.poll,
+                      name=args.name)
 
 
 def _add_template_arg(sp: argparse.ArgumentParser) -> None:
@@ -160,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--token", help="WORKER_TOKEN (ไม่ใส่ = อ่านจาก .env)")
     sp.add_argument("--once", action="store_true", help="ทำงานเดียวแล้วออก (ใช้ทดสอบ)")
     sp.add_argument("--poll", type=float, default=3.0, help="วินาทีที่รอเมื่อคิวว่าง")
+    sp.add_argument("--name", help="ชื่อเครื่องที่จะโชว์ในหน้าเว็บ (ไม่ใส่ = ชื่อ hostname)")
     sp.set_defaults(func=_cmd_worker)
 
     return p

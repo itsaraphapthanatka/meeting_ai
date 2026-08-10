@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import json
 import signal
+import socket
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import urllib.error
@@ -27,11 +30,16 @@ from .web.blobstore import open_url
 POLL_IDLE = 3.0        # วินาที รอเมื่อคิวว่าง
 POLL_ERROR_MAX = 60.0  # เพดาน backoff เมื่อต่อเซิร์ฟเวอร์ไม่ได้
 PROGRESS_MIN_GAP = 1.5  # ไม่ยิง progress ถี่กว่านี้ (นอกจากเปลี่ยนขั้น)
+HEARTBEAT_SEC = 20.0    # เต้นบอกเซิร์ฟเวอร์ว่ายังอยู่ (ฝั่งนั้นถือว่าหลุดที่ 75 วิ)
 CHUNK = 1024 * 256
 
 
 class WorkerError(RuntimeError):
     pass
+
+
+class AuthError(WorkerError):
+    """token ไม่ถูกต้อง — ลองใหม่ไปก็เท่านั้น ต้องให้คนแก้ก่อน."""
 
 
 class Client:
@@ -57,6 +65,11 @@ class Client:
                 return resp.status, body
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:400]
+            if e.code in (401, 403):
+                raise AuthError(
+                    f"เซิร์ฟเวอร์ปฏิเสธ (HTTP {e.code}): {detail}\n"
+                    "   ตรวจว่า WORKER_TOKEN ในเครื่องนี้ตรงกับที่ตั้งไว้ฝั่งเซิร์ฟเวอร์"
+                ) from e
             raise WorkerError(f"HTTP {e.code} จาก {path}: {detail}") from e
         except urllib.error.URLError as e:
             raise WorkerError(f"ต่อเซิร์ฟเวอร์ไม่ได้ ({path}): {e.reason}") from e
@@ -68,10 +81,21 @@ class Client:
         return self._request("POST", path, data=json.dumps(payload).encode("utf-8"),
                              ctype="application/json", timeout=timeout)[1]
 
-    def claim(self) -> dict | None:
+    def claim(self, worker: str) -> dict | None:
+        payload = json.dumps({"worker": worker}).encode("utf-8")
         status, body = self._request("POST", "/api/worker/claim",
-                                     data=b"{}", ctype="application/json")
+                                     data=payload, ctype="application/json")
         return body if status == 200 else None
+
+    def heartbeat(self, worker: str, status: str, job: str | None = None,
+                  gpu: str | None = None) -> None:
+        """บอกเซิร์ฟเวอร์ว่ายังอยู่ — ทำแม้ตอนว่าง หน้าเว็บจะได้เห็นว่ามีเครื่องพร้อม."""
+        try:
+            self.post_json("/api/worker/heartbeat",
+                           {"worker": worker, "status": status, "job": job, "gpu": gpu},
+                           timeout=20)
+        except WorkerError:
+            pass  # heartbeat หลุดไม่ใช่เรื่องคอขาดบาดตาย งานยังเดินได้
 
     def download(self, path: str, dest: Path) -> Path:
         # URL เต็ม = presigned ของที่เก็บภายนอก ห้ามแนบ Authorization ของเราไปด้วย
@@ -111,6 +135,18 @@ class Client:
 def _ext_of(url: str, fallback: str = "webm") -> str:
     name = urllib.parse.urlparse(url).path.rsplit("/", 1)[-1]
     return name.rsplit(".", 1)[-1].lower() if "." in name else fallback
+
+
+def describe_gpu() -> str | None:
+    """ชื่อ GPU ไว้โชว์ในหน้าเว็บ — None ถ้าไม่มี/เรียกไม่ได้."""
+    try:
+        p = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=15)
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip().splitlines()[0].strip()
+    except Exception:
+        pass
+    return None
 
 
 def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
@@ -162,10 +198,13 @@ def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
     return result
 
 
-def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE) -> int:
+def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
+        name: str | None = None) -> int:
     client = Client(api, token)
     stopping = {"flag": False}
-    current: dict = {"id": None}
+    current: dict = {"id": None, "status": "idle"}
+    worker_name = (name or socket.gethostname())[:80]
+    gpu = describe_gpu()
 
     def on_signal(signum, frame):
         stopping["flag"] = True
@@ -178,15 +217,32 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE) -> in
         pass  # ไม่ใช่เธรดหลัก
 
     print(f"🛠️  worker พร้อม — เซิร์ฟเวอร์: {client.api}")
+    print(f"   ชื่อเครื่อง: {worker_name}" + (f"   GPU: {gpu}" if gpu else "   (ไม่มี GPU)"))
     if not config.llm_api_key:
         print("⚠️  worker ตัวนี้ยังไม่มี LLM_API_KEY — ถอดเสียงได้แต่จะสรุปไม่ได้")
     print("   กด Ctrl+C เพื่อหยุด\n", flush=True)
 
+    # เต้นทุก HEARTBEAT_SEC วินาที ให้หน้าเว็บรู้ว่าเครื่องนี้ยังอยู่ แม้ตอนว่าง
+    def beat() -> None:
+        while not stopping["flag"]:
+            client.heartbeat(worker_name, current["status"], current["id"], gpu)
+            for _ in range(int(HEARTBEAT_SEC * 2)):
+                if stopping["flag"]:
+                    return
+                time.sleep(0.5)
+
+    heart = threading.Thread(target=beat, name="worker-heartbeat", daemon=True)
+    heart.start()
+
     backoff = poll
     while not stopping["flag"]:
         try:
-            spec = client.claim()
+            spec = client.claim(worker_name)
             backoff = poll
+        except AuthError as e:
+            # token ผิดคือปัญหาที่ต้องให้คนแก้ วนซ้ำไปก็ไม่หาย
+            print(f"\n❌ {e}", file=sys.stderr)
+            return 2
         except WorkerError as e:
             print(f"⚠️  {e} — ลองใหม่ใน {int(backoff)}s", file=sys.stderr)
             time.sleep(backoff)
@@ -202,11 +258,13 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE) -> in
 
         job_id = spec["id"]
         current["id"] = job_id
+        current["status"] = "busy"
         print(f"▶️  รับงาน {spec['kind']}: {spec.get('title') or job_id}")
         started = time.monotonic()
         try:
             with tempfile.TemporaryDirectory(prefix="mai-worker-") as tmpdir:
                 result = _run_one(client, spec, Path(tmpdir))
+                result["worker"] = worker_name
                 client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/result",
                                  result, timeout=120)
             print(f"✅ เสร็จใน {time.monotonic() - started:.1f}s\n")
@@ -220,8 +278,11 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE) -> in
             print(f"❌ งานล้มเหลว: {e}\n", file=sys.stderr)
         finally:
             current["id"] = None
+            current["status"] = "idle"
+            client.heartbeat(worker_name, "idle", None, gpu)
 
         if once:
+            stopping["flag"] = True
             return 0
 
     # ถูกสั่งหยุดตอนไม่มีงานค้าง

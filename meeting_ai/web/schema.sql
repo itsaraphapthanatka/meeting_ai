@@ -112,3 +112,22 @@ create table if not exists meeting_ai.jobs (
 );
 
 create index if not exists jobs_queue_idx on meeting_ai.jobs (status, created_at);
+
+-- เครื่องไหน claim งานนี้ไป (เพิ่มแยกเพื่อให้ upgrade ฐานเก่าได้)
+alter table meeting_ai.jobs add column if not exists worker text;
+
+-- ---------- เครื่องประมวลผล ----------
+
+-- worker ส่ง heartbeat มาเรื่อยๆ แม้ตอนว่าง จะได้รู้ว่ามีเครื่องไหนพร้อมอยู่
+-- และรู้ว่าเครื่องไหนเงียบหายไป (เทียบ last_seen กับเวลาปัจจุบัน)
+create table if not exists meeting_ai.workers (
+    name        text primary key,
+    status      text not null default 'idle',   -- idle | busy
+    job_id      text,
+    jobs_done   integer not null default 0,
+    gpu         text,
+    last_seen   timestamptz not null default now(),
+    started_at  timestamptz not null default now()
+);
+
+create index if not exists workers_seen_idx on meeting_ai.workers (last_seen desc);

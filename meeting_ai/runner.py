@@ -15,7 +15,7 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
-from . import diarize, summarizer, transcriber
+from . import diarize, stt, summarizer, transcriber
 from .config import config
 
 # น้ำหนักของแต่ละขั้นในแถบ progress รวม — ถอดเสียงกินเวลาเป็นส่วนใหญ่
@@ -66,19 +66,21 @@ def mix_tracks(paths: list[Path], dest: Path) -> Path:
 
 def _transcribe_track(
     path: Path, language: str | None, base: float, span: float, label: str, progress: ProgressFn,
+    provider: str | None = None,
 ) -> tuple[list[dict], str]:
     def on_progress(frac: float) -> None:
         progress(f"ถอดเสียง{label} {int(frac * 100)}%",
                  base + span * max(0.0, min(1.0, frac)))
 
     progress(f"ถอดเสียง{label}", base)
-    result = transcriber.transcribe(path, language=language, on_progress=on_progress)
+    result, used = stt.transcribe(path, language=language, on_progress=on_progress,
+                                  provider=provider)
     segments = [
         {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
         for s in result.segments
         if s.text.strip()
     ]
-    return segments, result.language
+    return segments, (result.language or ""), used
 
 
 def _diarize_into(source: Path, segments: list[dict], num_speakers: int, namer) -> None:
@@ -113,12 +115,13 @@ def transcribe_job(spec: dict, fetch: FetchFn, progress: ProgressFn, mix_dir: Pa
     span_each = (TRANSCRIBE_END - TRANSCRIBE_START) / len(names)
     warning = None
 
+    used_provider = None
     for i, name in enumerate(names):
         label = {"mic": " (ไมค์คุณ)", "system": " (ผู้ร่วมประชุม)"}.get(name, "")
-        segs, lang = _transcribe_track(
+        segs, lang, used_provider = _transcribe_track(
             paths[name], language,
             base=TRANSCRIBE_START + span_each * i, span=span_each,
-            label=label, progress=progress,
+            label=label, progress=progress, provider=spec.get("stt"),
         )
         detected = lang or detected
 
@@ -196,6 +199,7 @@ def transcribe_job(spec: dict, fetch: FetchFn, progress: ProgressFn, mix_dir: Pa
         "summary_error": summary_error,
         "warning": warning,
         "playback": str(playback) if playback else None,
+        "stt": used_provider,
     }
 
 

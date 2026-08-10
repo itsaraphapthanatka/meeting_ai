@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import socket
 import tempfile
 import threading
 import time
@@ -88,6 +89,7 @@ def create_draft(
     num_speakers: int,
     source: str,
     owner_id: str | None = None,
+    stt_provider: str | None = None,
 ) -> str:
     mid = store.new_id()
     spec = {
@@ -95,6 +97,7 @@ def create_draft(
         "title": title,
         "language": language,
         "template": template,
+        "stt": stt_provider,
         "diarize": want_diarize,
         "num_speakers": num_speakers,
         "source": source,
@@ -213,6 +216,7 @@ def build_spec(job_id: str) -> dict | None:
             "template": d.get("template"),
             "diarize": d.get("diarize"),
             "num_speakers": d.get("num_speakers"),
+            "stt": d.get("stt"),
             "tracks": sorted(d["tracks"]),
         }
 
@@ -314,19 +318,21 @@ def report_progress(job_id: str, step: str, progress: float) -> None:
 
 # ---------- ฝั่ง worker แยกเครื่อง ----------
 
-def claim() -> dict | None:
+def claim(worker: str | None = None) -> dict | None:
     """หยิบงานถัดไปให้ worker ที่อยู่ไกล — คืน spec หรือ None ถ้าคิวว่าง."""
     if cloud:
         # คืนงานที่ worker เก่าหลุดไปกลางทางกลับเข้าคิวก่อน
         store.jobs_reap(30)
         while True:
-            job = store.job_claim()
+            job = store.job_claim(worker)
             if job is None:
                 return None
             spec = build_spec(job["id"])
             if spec is None:
                 fail(job["id"], "ข้อมูลของงานนี้หายไปก่อนจะได้ประมวลผล")
                 continue
+            if worker:
+                store.worker_seen(worker, "busy", job["id"])
             return spec
 
     with _cv:
@@ -422,10 +428,18 @@ def _execute(spec: dict) -> None:
     apply_result(job_id, result)
 
 
+LOCAL_WORKER_NAME = f"{socket.gethostname()} (ในโพรเซสเว็บ)"
+
+
 def _next_spec() -> dict | None:
     """หยิบงานถัดไปให้เธรดในเครื่อง — โหมด cloud อ่านคิวจาก DB, โหมดไฟล์รอที่ condition."""
     if cloud:
-        return claim()
+        # ลงทะเบียนตัวเองด้วย ไม่งั้นหน้าเว็บจะไม่เห็นว่ามีใครทำงานอยู่
+        try:
+            store.worker_seen(LOCAL_WORKER_NAME, "idle")
+        except Exception:
+            pass
+        return claim(LOCAL_WORKER_NAME)
     with _cv:
         while not _pending:
             _cv.wait()
@@ -454,6 +468,12 @@ def _loop() -> None:
         except Exception as e:
             traceback.print_exc()
             fail(spec["id"], str(e))
+        finally:
+            if cloud:
+                try:
+                    store.worker_finished(LOCAL_WORKER_NAME)
+                except Exception:
+                    pass
 
 
 def _ensure_worker() -> None:

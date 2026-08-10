@@ -565,21 +565,6 @@ def job_get(job_id: str) -> dict | None:
     }
 
 
-def job_active() -> list[dict]:
-    with db.connect() as conn:
-        rows = conn.execute(
-            """select id, meeting_id, kind, status, step, progress, title, error, warning, created_at
-               from meeting_ai.jobs where status in ('queued','running')
-               order by created_at"""
-        ).fetchall()
-    return [
-        {"id": r[0], "meeting_id": r[1], "kind": r[2], "status": r[3], "step": r[4],
-         "progress": r[5], "title": r[6], "error": r[7], "warning": r[8],
-         "created": r[9].isoformat(timespec="seconds")}
-        for r in rows
-    ]
-
-
 def job_set_spec(job_id: str, spec: dict) -> bool:
     with db.connect() as conn:
         row = conn.execute(
@@ -599,20 +584,22 @@ def job_start(job_id: str) -> dict | None:
     return job_get(job_id) if row else None
 
 
-def job_claim() -> dict | None:
+def job_claim(worker: str | None = None) -> dict | None:
     """หยิบงานเก่าสุดที่ยังรออยู่ แบบ atomic — กัน worker หลายตัวแย่งงานเดียวกัน."""
     with db.connect() as conn:
         row = conn.execute(
             """update meeting_ai.jobs set
                  status = 'running', step = 'worker รับงานแล้ว', progress = 0.01,
-                 claimed_at = now(), attempts = attempts + 1, updated_at = now()
+                 claimed_at = now(), attempts = attempts + 1, updated_at = now(),
+                 worker = %s
                where id = (
                  select id from meeting_ai.jobs
                  where status = 'queued'
                  order by created_at
                  for update skip locked
                  limit 1)
-               returning id"""
+               returning id""",
+            (worker,),
         ).fetchone()
     return job_get(row[0]) if row else None
 
@@ -657,6 +644,90 @@ def job_requeue(job_id: str) -> bool:
             (job_id,),
         ).fetchone()
     return row is not None
+
+
+def job_active() -> list[dict]:
+    with db.connect() as conn:
+        rows = conn.execute(
+            """select id, meeting_id, kind, status, step, progress, title, error, warning,
+                      created_at, worker
+               from meeting_ai.jobs where status in ('queued','running')
+               order by created_at"""
+        ).fetchall()
+    return [
+        {"id": r[0], "meeting_id": r[1], "kind": r[2], "status": r[3], "step": r[4],
+         "progress": r[5], "title": r[6], "error": r[7], "warning": r[8],
+         "created": r[9].isoformat(timespec="seconds"), "worker": r[10]}
+        for r in rows
+    ]
+
+
+# ---------- เครื่องประมวลผล ----------
+
+# ไม่ได้ยิน heartbeat เกินนี้ = ถือว่าหลุดไป (worker เต้นทุก ~20 วิ)
+WORKER_STALE_SECONDS = 75
+
+
+def worker_seen(name: str, status: str = "idle", job_id: str | None = None,
+                gpu: str | None = None) -> None:
+    """อัปเดต heartbeat ของ worker — เรียกทั้งตอนว่างและตอนกำลังทำงาน."""
+    with db.connect() as conn:
+        conn.execute(
+            """insert into meeting_ai.workers (name, status, job_id, gpu, last_seen)
+               values (%s, %s, %s, %s, now())
+               on conflict (name) do update set
+                 status = excluded.status, job_id = excluded.job_id,
+                 gpu = coalesce(excluded.gpu, workers.gpu), last_seen = now()""",
+            (name[:80], status, job_id, gpu),
+        )
+
+
+def worker_finished(name: str) -> None:
+    with db.connect() as conn:
+        conn.execute(
+            """update meeting_ai.workers
+               set jobs_done = jobs_done + 1, status = 'idle', job_id = null, last_seen = now()
+               where name = %s""",
+            (name[:80],),
+        )
+
+
+def workers_list() -> list[dict]:
+    """รายชื่อ worker พร้อมบอกว่ายังมีชีวิตอยู่ไหม."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            """select w.name, w.status, w.job_id, w.jobs_done, w.gpu,
+                      extract(epoch from (now() - w.last_seen))::int as quiet_for,
+                      w.started_at, j.title
+               from meeting_ai.workers w
+               left join meeting_ai.jobs j on j.id = w.job_id
+               order by w.last_seen desc"""
+        ).fetchall()
+    out = []
+    for r in rows:
+        alive = r[5] is not None and r[5] <= WORKER_STALE_SECONDS
+        out.append({
+            "name": r[0],
+            "status": r[1] if alive else "gone",
+            "job_id": r[2] if alive else None,
+            "job_title": r[7] if alive else None,
+            "jobs_done": r[3],
+            "gpu": r[4],
+            "quiet_for": r[5],
+            "alive": alive,
+            "started": r[6].isoformat(timespec="seconds") if r[6] else None,
+        })
+    return out
+
+
+def workers_forget(max_age_days: int = 7) -> int:
+    """ลบ worker ที่หายไปนานแล้วออกจากรายการ."""
+    with db.connect() as conn:
+        cur = conn.execute(
+            "delete from meeting_ai.workers where last_seen < now() - make_interval(days => %s)",
+            (max_age_days,),
+        )
+        return cur.rowcount
 
 
 def jobs_reap(stale_minutes: int = 30) -> int:

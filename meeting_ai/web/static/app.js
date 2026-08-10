@@ -20,6 +20,7 @@ const state = {
   query: '',
   polling: null,
   config: {},
+  workers: [],       // เครื่องประมวลผลที่รายงานตัวเข้ามา
   user: null,        // ผู้ใช้ที่ล็อกอิน (โหมด cloud)
   share: null,       // {meeting_id, can_edit} ถ้าเปิดมาจากลิงก์แชร์
   firstRun: false,   // ยังไม่มีผู้ใช้ในระบบ -> สมัครคนแรกได้เลย เป็นแอดมิน
@@ -177,6 +178,42 @@ function renderJobs() {
   }).join('');
 }
 
+function fmtAgo(sec) {
+  if (sec === null || sec === undefined) return '';
+  if (sec < 60) return `${sec} วิที่แล้ว`;
+  if (sec < 3600) return `${Math.floor(sec / 60)} นาทีที่แล้ว`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)} ชม.ที่แล้ว`;
+  return `${Math.floor(sec / 86400)} วันที่แล้ว`;
+}
+
+function renderWorkers() {
+  const el = $('#workers');
+  const ws = state.workers || [];
+  if (!state.config.auth_required || !ws.length) { el.hidden = true; return; }
+  el.hidden = false;
+
+  const rows = ws.map((w) => {
+    const cls = w.status === 'busy' ? 'busy' : (w.alive ? 'idle' : 'gone');
+    const label = { busy: 'กำลังทำงาน', idle: 'ว่าง', gone: 'หลุดไป' }[cls];
+    const detail = w.status === 'busy' && w.job_title
+      ? esc(w.job_title)
+      : (w.alive ? `เห็นล่าสุด ${fmtAgo(w.quiet_for)}` : `เงียบไป ${fmtAgo(w.quiet_for)}`);
+    return `<div class="wk ${cls}">
+      <span class="wk-dot"></span>
+      <div class="wk-body">
+        <span class="wk-name">${esc(w.name)}</span>
+        <span class="wk-sub">${label} · ${detail}</span>
+        <span class="wk-sub">${w.gpu ? esc(w.gpu) + ' · ' : ''}ทำเสร็จ ${w.jobs_done} งาน</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  const anyAlive = ws.some((w) => w.alive);
+  const warn = anyAlive ? '' :
+    '<p class="wk-warn">ไม่มีเครื่องประมวลผลออนไลน์ — งานจะค้างในคิวจนกว่าจะเปิด worker</p>';
+  el.innerHTML = `<div class="wk-head">เครื่องประมวลผล</div>${rows}${warn}`;
+}
+
 function renderList() {
   const el = $('#list');
   if (!state.meetings.length) {
@@ -201,7 +238,17 @@ async function refresh() {
   state.jobs = data.jobs || [];
   renderList();
   renderJobs();
+  refreshWorkers();
   ensurePolling();
+}
+
+async function refreshWorkers() {
+  if (!state.config.auth_required || !state.user) return;
+  try {
+    const out = await api('/api/workers');
+    state.workers = out.workers || [];
+    renderWorkers();
+  } catch (e) { /* ไม่สำคัญพอจะรบกวน */ }
 }
 
 async function refreshConfig() {
@@ -348,6 +395,7 @@ async function pollJobs() {
   const before = state.jobs.filter((j) => j.status === 'running' || j.status === 'queued');
   state.jobs = data.jobs || [];
   renderJobs();
+  if (data.workers) { state.workers = data.workers; renderWorkers(); }
 
   const stillActive = new Set(state.jobs.map((j) => j.id));
   const finished = before.filter((j) => !stillActive.has(j.id));
@@ -402,6 +450,24 @@ function showNew() {
   $('#f-template').innerHTML = (state.config.templates || [])
     .map((t) => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
 
+  // ตัวถอดเสียง — โชว์ทุกตัว แต่ตัวที่ใช้ไม่ได้จะเลือกไม่ได้พร้อมบอกเหตุผล
+  const provs = state.config.stt_providers || [];
+  const sttSel = $('#f-stt');
+  sttSel.innerHTML = provs.map((p) => {
+    const label = p.available ? p.label : `${p.label} — ใช้ไม่ได้`;
+    return `<option value="${esc(p.key)}" ${p.available ? '' : 'disabled'}>${esc(label)}</option>`;
+  }).join('');
+  const preferred = provs.find((p) => p.key === state.config.stt_default && p.available)
+    || provs.find((p) => p.available);
+  if (preferred) sttSel.value = preferred.key;
+
+  const showSttNote = () => {
+    const p = provs.find((x) => x.key === sttSel.value);
+    $('#stt-note').textContent = p ? (p.available ? p.note : p.why) : '';
+  };
+  sttSel.onchange = showSttNote;
+  showSttNote();
+
   // เซิร์ฟเวอร์บน cloud ไม่มี whisper/ffmpeg จึงถอดเสียงสดให้ไม่ได้
   if (state.config.live_available === false) {
     const live = $('#c-live');
@@ -448,6 +514,7 @@ function formValues() {
     template: $('#f-template')?.value || 'general',
     diarize: !!$('#f-diarize')?.checked,
     num_speakers: parseInt($('#f-speakers')?.value || '0', 10),
+    stt: $('#f-stt')?.value || null,
   };
 }
 
@@ -460,6 +527,7 @@ async function submitMeeting(tracks, { source, fallbackTitle }) {
     template: v.template,
     diarize: v.diarize,
     num_speakers: v.num_speakers,
+    stt: v.stt,
     source,
   }));
 

@@ -1,0 +1,1 @@
+powershell -ExecutionPolicy Bypass -File ".\setup-worker.ps1" -WorkerToken "k3zJQmjaJEmSy2dnK9c2YJLJqqX7d1N4JBPj-W4Hmsk" -LlmApiKey "sk-U7Eh8QKi4DcbFiAsxTVrFg" -Start

@@ -33,6 +33,7 @@
       <input id="search" type="search" placeholder="ค้นหาในชื่อ สรุป และบทถอดเสียง…" autocomplete="off">
     </div>
     <div id="jobs" class="jobs"></div>
+    <div id="workers" class="workers" hidden></div>
     <ul id="list" class="list"></ul>
   </aside>
   <section id="panel" class="panel"></section>
@@ -97,7 +98,12 @@
         <span>รูปแบบสรุป</span>
         <select id="f-template"></select>
       </label>
+      <label class="field field-sm">
+        <span>ตัวถอดเสียง</span>
+        <select id="f-stt"></select>
+      </label>
     </div>
+    <p id="stt-note" class="hint"></p>
 
     <div class="field-row diarize-row">
       <label class="check-inline">

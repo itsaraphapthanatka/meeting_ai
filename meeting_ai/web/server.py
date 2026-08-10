@@ -17,7 +17,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .. import diarize, summarizer
+from .. import diarize, stt, summarizer
 from ..config import config
 from . import backend, exports, jobs
 from .backend import store
@@ -260,6 +260,10 @@ class Handler(BaseHTTPRequestHandler):
                 # ถอดเสียงสดทำที่ฝั่งเซิร์ฟเวอร์ ต้องมี whisper + โมเดล + ffmpeg ครบ
                 # บน cloud อย่าง Vercel ไม่มีทั้งสามอย่าง ต้องบอกหน้าเว็บให้ปิดตัวเลือกนี้
                 "live_available": _live_available(),
+                "stt_providers": [
+                    {"key": k, **v} for k, v in stt.providers().items()
+                ],
+                "stt_default": config.stt_provider,
                 "templates": [
                     {"key": k, "label": v["label"]} for k, v in summarizer.TEMPLATES.items()
                 ],
@@ -289,7 +293,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._create_draft()
 
         if parts == ["jobs"] and get:
-            return self._json({"jobs": jobs.active()})
+            out = {"jobs": jobs.active()}
+            if backend.cloud:
+                out["workers"] = store.workers_list()
+            return self._json(out)
+
+        if parts == ["workers"] and get:
+            if not backend.cloud:
+                return self._json({"workers": []})
+            return self._json({"workers": store.workers_list()})
 
         if len(parts) == 2 and parts[0] == "jobs":
             job = jobs.get(urllib.parse.unquote(parts[1]))
@@ -320,6 +332,11 @@ class Handler(BaseHTTPRequestHandler):
         if backend.auth_required() and not self.user:
             return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อนสร้างการประชุม")
 
+        provider = str(body.get("stt") or "").strip().lower() or None
+        if provider and provider not in (stt.LOCAL, stt.API):
+            return self._error(HTTPStatus.BAD_REQUEST,
+                               f"ตัวถอดเสียงต้องเป็น {stt.LOCAL} หรือ {stt.API}")
+
         mid = jobs.create_draft(
             title=title,
             language=lang,
@@ -328,6 +345,7 @@ class Handler(BaseHTTPRequestHandler):
             num_speakers=num_speakers,
             source=source,
             owner_id=self.user_id,
+            stt_provider=provider,
         )
         self._json({"id": mid, "title": title}, HTTPStatus.CREATED)
 
@@ -507,8 +525,19 @@ class Handler(BaseHTTPRequestHandler):
                       if not config.worker_token else "token ไม่ถูกต้อง")
             return self._error(HTTPStatus.FORBIDDEN, f"worker API ปฏิเสธ: {detail}")
 
+        if rest == ["heartbeat"] and self.command == "POST":
+            body = self._body_json()
+            name = str(body.get("worker") or "").strip()[:80]
+            if not name:
+                return self._error(HTTPStatus.BAD_REQUEST, "ต้องส่งชื่อ worker")
+            if backend.cloud:
+                store.worker_seen(name, str(body.get("status") or "idle")[:16],
+                                  body.get("job") or None, str(body.get("gpu") or "")[:120] or None)
+            return self._json({"ok": True, "stale_after": 75})
+
         if rest == ["claim"] and self.command == "POST":
-            spec = jobs.claim()
+            worker = str((self._body_json().get("worker") or "")).strip()[:80] or None
+            spec = jobs.claim(worker)
             if spec is None:
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self.send_header("Content-Length", "0")
@@ -569,11 +598,14 @@ class Handler(BaseHTTPRequestHandler):
 
             if action == "result":
                 body = self._body_json()
+                worker = str(body.pop("worker", "") or "").strip()[:80]
                 try:
                     jobs.apply_result(job_id, body)
                 except Exception as e:
                     jobs.fail(job_id, str(e))
                     return self._error(HTTPStatus.BAD_REQUEST, str(e))
+                if worker and backend.cloud:
+                    store.worker_finished(worker)
                 return self._json({"ok": True})
 
             if action == "error":
