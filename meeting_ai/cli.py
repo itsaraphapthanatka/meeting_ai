@@ -53,6 +53,27 @@ def _cmd_process(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_bot(args: argparse.Namespace) -> int:
+    import time
+
+    from . import bot
+    out_dir = Path(args.out_dir)
+    name = args.output or f"meet_{time.strftime('%Y%m%d_%H%M')}.wav"
+    wav = bot.join_and_record(
+        args.url, out_dir / name, name=args.name, max_minutes=args.max_minutes,
+    )
+    if not args.no_process:
+        from . import pipeline
+        pipeline.process_file(wav, title=args.title, language=args.lang, out_dir=args.out_dir)
+    return 0
+
+
+def _cmd_bot_login(args: argparse.Namespace) -> int:
+    from . import bot
+    bot.login()
+    return 0
+
+
 def _cmd_web(args: argparse.Namespace) -> int:
     import os
 
@@ -138,6 +159,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out-dir", default="recordings", help="โฟลเดอร์ผลลัพธ์")
     _add_template_arg(sp)
     sp.set_defaults(func=_cmd_process)
+
+    sp = sub.add_parser("bot", help="ส่งบอทเข้าห้องประชุมออนไลน์ (Google Meet) เพื่ออัด+สรุป")
+    sp.add_argument("url", help="ลิงก์ห้องประชุม เช่น https://meet.google.com/xxx-xxxx-xxx")
+    sp.add_argument("--name", default="AI Notetaker", help="ชื่อบอทที่แสดงในห้อง")
+    sp.add_argument("-o", "--output", help="ชื่อไฟล์เสียง (ไม่ใส่ = ตั้งอัตโนมัติตามเวลา)")
+    sp.add_argument("--out-dir", default="recordings", help="โฟลเดอร์ผลลัพธ์")
+    sp.add_argument("--title", help="ชื่อการประชุม (ใส่ในสรุป)")
+    sp.add_argument("--lang", help="ภาษา (th/en/auto)")
+    sp.add_argument("--max-minutes", type=int, default=180, help="เวลาสูงสุดที่บอทอยู่ในห้อง")
+    sp.add_argument("--no-process", action="store_true", help="อัดอย่างเดียว ไม่ต้องถอด/สรุป")
+    sp.set_defaults(func=_cmd_bot)
+
+    sp = sub.add_parser("bot-login", help="ล็อกอิน Google ให้บอทครั้งเดียว (ผ่าน VNC) — จำเป็นสำหรับห้อง Workspace")
+    sp.set_defaults(func=_cmd_bot_login)
 
     sp = sub.add_parser("web", help="เปิดหน้าเว็บ: อัปโหลด/อัดสด/ค้นหาคลังการประชุม")
     sp.add_argument("--host", default="127.0.0.1",

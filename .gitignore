@@ -29,3 +29,6 @@ powershell*.txt
 # ของที่เกิดตอนรัน ไม่ใช่ซอร์ส
 logs/
 run-worker-hidden.ps1
+
+# bot Google login session (private)
+bot/profile/
