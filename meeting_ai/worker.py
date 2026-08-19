@@ -81,8 +81,8 @@ class Client:
         return self._request("POST", path, data=json.dumps(payload).encode("utf-8"),
                              ctype="application/json", timeout=timeout)[1]
 
-    def claim(self, worker: str) -> dict | None:
-        payload = json.dumps({"worker": worker}).encode("utf-8")
+    def claim(self, worker: str, kinds: list[str] | None = None) -> dict | None:
+        payload = json.dumps({"worker": worker, "kinds": kinds}).encode("utf-8")
         status, body = self._request("POST", "/api/worker/claim",
                                      data=payload, ctype="application/json")
         return body if status == 200 else None
@@ -156,6 +156,9 @@ def describe_gpu() -> str | None:
 def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
     job_id = spec["id"]
     last = {"at": 0.0, "step": ""}
+    # เซิร์ฟเวอร์ตอบธง stop กลับมาพร้อม progress — ไม่ต้องเปิด polling อีกเส้น
+    # (ผู้ใช้กด "ให้บอทออกจากห้อง" ในหน้าเว็บ)
+    stop_flag = {"on": False}
 
     def progress(step: str, value: float) -> None:
         now = time.monotonic()
@@ -164,10 +167,17 @@ def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
         last.update(at=now, step=step)
         print(f"   {int(value * 100):3d}%  {step}")
         try:
-            client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/progress",
-                             {"step": step, "progress": value}, timeout=20)
+            reply = client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/progress",
+                                     {"step": step, "progress": value}, timeout=20)
+            if isinstance(reply, dict) and reply.get("stop"):
+                stop_flag["on"] = True
         except WorkerError as e:
             print(f"   (รายงาน progress ไม่ได้: {e})", file=sys.stderr)
+
+    if spec["kind"] == "bot":
+        result = runner.bot_job(spec, progress, tmp,
+                                stop_check=lambda: stop_flag["on"], work_dir=tmp)
+        return _upload_playback(client, job_id, result, spec)
 
     if spec["kind"] != "process":
         return runner.HANDLERS[spec["kind"]](spec, progress)
@@ -183,22 +193,26 @@ def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
         return client.download(url, dest)
 
     result = runner.transcribe_job(spec, fetch, progress, tmp)
+    return _upload_playback(client, job_id, result, spec)
 
-    # ไฟล์เสียงผสมเกิดขึ้นบนเครื่องนี้ ต้องส่งขึ้นไปให้เซิร์ฟเวอร์เก็บแล้วใช้ path ของฝั่งนั้น
+
+def _upload_playback(client: Client, job_id: str, result: dict, spec: dict | None = None) -> dict:
+    """ไฟล์เสียงผสมเกิดบนเครื่องนี้ ต้องส่งขึ้นไปให้เซิร์ฟเวอร์เก็บแล้วใช้ path ของฝั่งนั้น."""
     playback = result.get("playback")
-    if playback:
-        src = Path(playback)
-        print("   อัปโหลดไฟล์เสียงผสม …")
-        target = spec.get("playback_upload_url")
-        if target:
-            client.upload(target, src)
-            result["playback"] = spec.get("playback_key") or src.name
-        else:
-            out = client.upload(
-                f"/api/worker/jobs/{urllib.parse.quote(job_id)}/audio?ext={src.suffix.lstrip('.')}",
-                src,
-            )
-            result["playback"] = out.get("playback") or None
+    if not playback:
+        return result
+    src = Path(playback)
+    print("   อัปโหลดไฟล์เสียงผสม …")
+    target = (spec or {}).get("playback_upload_url")
+    if target:
+        client.upload(target, src)
+        result["playback"] = (spec or {}).get("playback_key") or src.name
+    else:
+        out = client.upload(
+            f"/api/worker/jobs/{urllib.parse.quote(job_id)}/audio?ext={src.suffix.lstrip('.')}",
+            src,
+        )
+        result["playback"] = out.get("playback") or None
     return result
 
 
@@ -230,6 +244,10 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
         print("   แยกผู้พูดได้ (sherpa-onnx)")
     else:
         print("   แยกผู้พูดไม่ได้ ขาด: " + "; ".join(caps.get("diarize_missing") or []))
+    if caps.get("bot"):
+        print("   ส่งบอทเข้าห้องประชุมได้ (Docker)")
+    else:
+        print("   ส่งบอทเข้าห้องไม่ได้ ขาด: " + "; ".join(caps.get("bot_missing") or []))
     if not config.llm_api_key:
         print("⚠️  worker ตัวนี้ยังไม่มี LLM_API_KEY — ถอดเสียงได้แต่จะสรุปไม่ได้")
     print("   กด Ctrl+C เพื่อหยุด\n", flush=True)
@@ -249,7 +267,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     backoff = poll
     while not stopping["flag"]:
         try:
-            spec = client.claim(worker_name)
+            spec = client.claim(worker_name, runner.job_kinds(caps))
             backoff = poll
         except AuthError as e:
             # token ผิดคือปัญหาที่ต้องให้คนแก้ วนซ้ำไปก็ไม่หาย

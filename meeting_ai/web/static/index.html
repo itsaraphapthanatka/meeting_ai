@@ -197,6 +197,36 @@
           <button id="btn-stop" class="btn btn-stop" type="button">หยุดอัดแล้วสรุป</button>
         </div>
       </div>
+
+      <div class="card">
+        <h3>🤖 เชิญบอทเข้าห้องประชุม</h3>
+        <p class="muted">
+          ไม่ต้องเปิดเครื่องไว้เอง บอทเข้าไปนั่งฟังแล้วสรุปให้ — สั่งจากมือถือก็ได้
+        </p>
+        <label class="field">
+          <span>ลิงก์ห้อง Google Meet</span>
+          <input id="b-url" type="url" placeholder="https://meet.google.com/xxx-yyyy-zzz"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>ชื่อบอทที่แสดงในห้อง</span>
+            <input id="b-name" type="text" value="AI Notetaker" maxlength="60">
+          </label>
+          <label class="field field-sm">
+            <span>อยู่ในห้องไม่เกิน</span>
+            <select id="b-max">
+              <option value="30">30 นาที</option>
+              <option value="60">1 ชั่วโมง</option>
+              <option value="120" selected>2 ชั่วโมง</option>
+              <option value="240">4 ชั่วโมง</option>
+              <option value="480">8 ชั่วโมง</option>
+            </select>
+          </label>
+        </div>
+        <button id="btn-bot" class="btn btn-primary btn-wide" type="button">ส่งบอทเข้าห้อง</button>
+        <p id="bot-note" class="hint"></p>
+      </div>
     </div>
 
     <div id="live-wrap" class="live-wrap" hidden>

@@ -15,8 +15,13 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
-from . import diarize, stt, summarizer, transcriber
+from . import bot, diarize, stt, summarizer, transcriber
 from .config import config
+
+# งานบอท: ช่วงที่บอทนั่งอยู่ในห้องกินเวลาจริงมากที่สุด (เท่ากับความยาวประชุม)
+# แต่กันพื้นที่แถบไว้แค่นี้ เพราะยังต้องถอดเสียง+สรุปต่อหลังบอทออกมา
+BOT_START = 0.02
+BOT_END = 0.35
 
 # น้ำหนักของแต่ละขั้นในแถบ progress รวม — ถอดเสียงกินเวลาเป็นส่วนใหญ่
 TRANSCRIBE_START = 0.05
@@ -41,11 +46,22 @@ def machine_caps() -> dict:
     ฝั่ง cloud (Vercel) ไม่มี whisper/sherpa-onnx/โมเดล ของตัวเองเลย
     ถ้าไปดูความสามารถของตัวเองจะปิดตัวเลือกให้ผู้ใช้ทั้งที่ worker ทำได้ จึงต้องถามจาก worker
     """
+    bot_missing = bot.missing_pieces()
     return {
         **stt.capabilities(),
         "diarize": diarize.available(),
         "diarize_missing": diarize.missing_pieces(),
+        "bot": not bot_missing,
+        "bot_missing": bot_missing,
     }
+
+
+def job_kinds(caps: dict) -> list[str]:
+    """ชนิดงานที่เครื่องซึ่งมี caps ชุดนี้รับได้ — ใช้กรองตอนคว้างานจากคิว."""
+    kinds = ["process", "summarize", "translate"]
+    if caps.get("bot"):
+        kinds.append("bot")
+    return kinds
 
 
 def audio_duration(path: Path) -> float:
@@ -214,6 +230,46 @@ def transcribe_job(spec: dict, fetch: FetchFn, progress: ProgressFn, mix_dir: Pa
         "playback": str(playback) if playback else None,
         "stt": used_provider,
     }
+
+
+def _mmss(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
+            stop_check=None, work_dir: Path | None = None) -> dict:
+    """ส่งบอทเข้าห้องประชุม อัดเสียง แล้วถอด/แยกผู้พูด/สรุป ด้วยท่อเดิมทั้งเส้น.
+
+    ไฟล์ที่บอทอัดได้ถือเป็นแทร็ก 'mixed' (ทุกคนอยู่ในไฟล์เดียว)
+    จึงพึ่ง diarization แยกผู้พูด เหมือนโหมดอัดด้วยไมค์เดียว
+    stop_check() -> True = ผู้ใช้กด "ให้บอทออกจากห้อง" ให้ออกแล้วไปสรุปเลย
+    """
+    url = (spec.get("url") or "").strip()
+    if not url:
+        raise RuntimeError("spec ของงานบอทไม่มีลิงก์ห้องประชุม")
+    work = Path(work_dir or mix_dir)
+    work.mkdir(parents=True, exist_ok=True)
+    wav = work / f"{spec['id']}_bot.wav"
+    max_minutes = int(spec.get("max_minutes") or 180)
+    limit = max_minutes * 60
+
+    def tick(elapsed: float) -> bool:
+        frac = min(1.0, elapsed / limit) if limit else 0.0
+        progress(f"บอทอยู่ในห้อง {_mmss(elapsed)}", BOT_START + (BOT_END - BOT_START) * frac)
+        return bool(stop_check and stop_check())
+
+    progress("ส่งบอทเข้าห้องประชุม (อย่าลืมกดรับเข้าห้อง)", BOT_START)
+    bot.join_and_record(url, wav, name=spec.get("bot_name") or "AI Notetaker",
+                        max_minutes=max_minutes, on_tick=tick)
+
+    # ต่อท่อเดิม: บีบช่วง progress ของ transcribe_job ให้อยู่หลังช่วงของบอท
+    def scaled(step: str, value: float) -> None:
+        progress(step, BOT_END + (1.0 - BOT_END) * max(0.0, min(1.0, value)))
+
+    sub = {**spec, "kind": "process", "tracks": ["mixed"]}
+    return transcribe_job(sub, lambda name: wav, scaled, mix_dir)
 
 
 def transcript_for_llm(segments: list[dict]) -> str:

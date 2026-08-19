@@ -43,6 +43,28 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD = 8
 
 
+# บอทอยู่ในห้องได้นานสุดเท่านี้ (นาที) — กันงานค้างกิน worker ไปทั้งวันถ้าลืมกดหยุด
+MAX_BOT_MINUTES = 8 * 60
+
+# โฮสต์ที่ยอมให้ส่งบอทเข้าไป — จำกัดไว้เพราะค่านี้ถูกส่งต่อเป็น URL ให้ Chromium ในคอนเทนเนอร์เปิด
+# ถ้าไม่จำกัด จะกลายเป็นช่องให้สั่งเปิดหน้าเว็บอะไรก็ได้จากในเครือข่ายของเครื่อง worker
+BOT_HOSTS = ("meet.google.com",)
+
+
+def _check_meet_url(url: str) -> tuple[bool, str]:
+    if not url:
+        return False, "ต้องใส่ลิงก์ห้องประชุม"
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return False, "ลิงก์ไม่ถูกต้อง"
+    if parsed.scheme != "https":
+        return False, "ลิงก์ต้องเริ่มด้วย https://"
+    if parsed.hostname not in BOT_HOSTS:
+        return False, f"รองรับแค่ {', '.join(BOT_HOSTS)} (ตอนนี้บอทเข้าได้เฉพาะ Google Meet)"
+    return True, ""
+
+
 class BadBody(ValueError):
     """body ของคำขออ่านไม่ได้ — ตอบ 400 ไม่ใช่ 500."""
 
@@ -70,6 +92,27 @@ def _diarize_state(caps: dict | None) -> tuple[bool, list[str]]:
         # worker รุ่นก่อนหน้ายังไม่ได้ส่ง caps ตัวนี้มา จะเดาว่าไม่ได้ก็ผิด เดาว่าได้ก็ผิด
         # บอกตามจริงว่าไม่รู้ แล้วให้อัปเดต worker
         return False, ["worker ยังไม่ได้รายงานว่าแยกผู้พูดได้ไหม — อัปเดตโค้ดบนเครื่อง worker "
+                       "แล้วรีสตาร์ตมันหนึ่งครั้ง"]
+    return False, [f"เครื่องประมวลผลขาด: {m}" for m in missing]
+
+
+def _bot_state(caps: dict | None) -> tuple[bool, list[str]]:
+    """ส่งบอทเข้าห้องได้ไหม + ขาดอะไร.
+
+    งานบอทต้องมี Docker + image + profile ที่ล็อกอิน Google แล้ว ซึ่งอยู่ที่ฝั่งประมวลผล
+    ไม่ใช่ที่เซิร์ฟเวอร์นี้ (Vercel รัน Docker ไม่ได้อยู่แล้ว)
+    """
+    from .. import bot
+    if caps is None:
+        missing = bot.missing_pieces()
+        return not missing, missing
+    if not caps.get("workers"):
+        return False, ["ยังไม่มีเครื่องประมวลผลออนไลน์ — เปิด worker ก่อน"]
+    if caps.get("bot"):
+        return True, []
+    missing = caps.get("bot_missing")
+    if not missing:
+        return False, ["worker ยังไม่ได้รายงานว่าส่งบอทได้ไหม — อัปเดตโค้ดบนเครื่อง worker "
                        "แล้วรีสตาร์ตมันหนึ่งครั้ง"]
     return False, [f"เครื่องประมวลผลขาด: {m}" for m in missing]
 
@@ -185,6 +228,22 @@ class Handler(BaseHTTPRequestHandler):
     def _is_owner(self, mid: str) -> bool:
         return self._level(mid) == "owner"
 
+    def _may_write_job(self, job: dict) -> bool:
+        """สั่งหยุดงานได้ไหม — งานที่ยังไม่เสร็จยังไม่มีการประชุมให้เช็คสิทธิ์ตามปกติ.
+
+        จึงดูจาก owner_id ที่ฝังไว้ใน spec ตอนสร้าง
+        """
+        if not backend.auth_required():
+            return True
+        if not self.user:
+            return False
+        if self.user.get("is_admin"):
+            return True
+        spec = jobs.draft(job["id"]) or {}
+        owner = spec.get("owner_id")
+        # งานเก่าที่ไม่ได้เก็บเจ้าของไว้ ให้ตกไปที่สิทธิ์ของการประชุมนั้น
+        return owner == self.user_id if owner else self._may_write(job["id"])
+
     def _body_json(self) -> dict:
         """อ่าน body เป็น JSON — body ว่างถือว่า {} แต่ถ้าเสียให้ฟ้องตรงๆ
 
@@ -282,12 +341,15 @@ class Handler(BaseHTTPRequestHandler):
             # จึงต้องรายงานความสามารถของ worker ไม่ใช่ของตัวเอง
             caps = _worker_caps()
             diarize_ok, diarize_missing = _diarize_state(caps)
+            bot_ok, bot_missing = _bot_state(caps)
             return self._json({
                 "llm_ready": bool(config.llm_api_key and "your-key" not in config.llm_api_key),
                 "llm_model": config.llm_model,
                 "lang": config.whisper_lang,
                 "diarize_available": diarize_ok,
                 "diarize_missing": diarize_missing,
+                "bot_available": bot_ok,
+                "bot_missing": bot_missing,
                 # ถอดเสียงสดทำที่ฝั่งเซิร์ฟเวอร์ ต้องมี whisper + โมเดล + ffmpeg ครบ
                 # บน cloud อย่าง Vercel ไม่มีทั้งสามอย่าง ต้องบอกหน้าเว็บให้ปิดตัวเลือกนี้
                 "live_available": _live_available(),
@@ -323,6 +385,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "POST":
                 return self._create_draft()
 
+        if parts == ["meetings", "bot"] and self.command == "POST":
+            return self._create_bot_job()
+
         if parts == ["jobs"] and get:
             out = {"jobs": jobs.active()}
             if backend.cloud:
@@ -333,6 +398,17 @@ class Handler(BaseHTTPRequestHandler):
             if not backend.cloud:
                 return self._json({"workers": []})
             return self._json({"workers": store.workers_list()})
+
+        if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "stop"                 and self.command == "POST":
+            job_id = urllib.parse.unquote(parts[1])
+            job = jobs.get(job_id)
+            if job is None:
+                return self._error(HTTPStatus.NOT_FOUND, "ไม่พบงานนี้")
+            if not self._may_write_job(job):
+                return self._error(HTTPStatus.FORBIDDEN, "ไม่มีสิทธิ์สั่งหยุดงานนี้")
+            if not jobs.request_stop(job_id):
+                return self._error(HTTPStatus.CONFLICT, "งานนี้จบไปแล้ว หยุดไม่ได้")
+            return self._json({"ok": True})
 
         if len(parts) == 2 and parts[0] == "jobs":
             job = jobs.get(urllib.parse.unquote(parts[1]))
@@ -379,6 +455,56 @@ class Handler(BaseHTTPRequestHandler):
             stt_provider=provider,
         )
         self._json({"id": mid, "title": title}, HTTPStatus.CREATED)
+
+    def _create_bot_job(self) -> None:
+        """สร้างงาน "ส่งบอทเข้าห้องประชุม" — ไม่มีขั้นอัปโหลด เข้าคิวได้เลย."""
+        body = self._body_json()
+        if backend.auth_required() and not self.user:
+            return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อนส่งบอท")
+
+        url = str(body.get("url") or "").strip()
+        ok, why = _check_meet_url(url)
+        if not ok:
+            return self._error(HTTPStatus.BAD_REQUEST, why)
+
+        caps = _worker_caps()
+        bot_ok, bot_missing = _bot_state(caps)
+        if not bot_ok:
+            return self._error(HTTPStatus.CONFLICT,
+                               "ยังส่งบอทไม่ได้ — " + "; ".join(bot_missing))
+
+        title = _SAFE_TITLE_RE.sub(" ", str(body.get("title") or "")).strip()             or "ประชุมที่บอทเข้าร่วม"
+        template = str(body.get("template") or summarizer.DEFAULT_TEMPLATE)
+        if template not in summarizer.TEMPLATES:
+            template = summarizer.DEFAULT_TEMPLATE
+        try:
+            num_speakers = max(0, min(20, int(body.get("num_speakers") or 0)))
+        except (TypeError, ValueError):
+            num_speakers = 0
+        try:
+            max_minutes = max(1, min(MAX_BOT_MINUTES, int(body.get("max_minutes") or 180)))
+        except (TypeError, ValueError):
+            max_minutes = 180
+        bot_name = _SAFE_TITLE_RE.sub(" ", str(body.get("bot_name") or "")).strip()[:60]             or "AI Notetaker"
+
+        provider = str(body.get("stt") or "").strip().lower() or None
+        if provider and provider not in (stt.LOCAL, stt.API):
+            return self._error(HTTPStatus.BAD_REQUEST,
+                               f"ตัวถอดเสียงต้องเป็น {stt.LOCAL} หรือ {stt.API}")
+
+        job = jobs.create_bot(
+            url=url,
+            title=title,
+            language=(str(body.get("lang") or "")).strip() or None,
+            template=template,
+            want_diarize=bool(body.get("diarize")),
+            num_speakers=num_speakers,
+            bot_name=bot_name,
+            max_minutes=max_minutes,
+            owner_id=self.user_id,
+            stt_provider=provider,
+        )
+        self._json(job, HTTPStatus.CREATED)
 
     def _put_track(self, mid: str, name: str) -> None:
         if name not in TRACK_NAMES:
@@ -569,8 +695,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "stale_after": 75})
 
         if rest == ["claim"] and self.command == "POST":
-            worker = str((self._body_json().get("worker") or "")).strip()[:80] or None
-            spec = jobs.claim(worker)
+            body = self._body_json()
+            worker = str((body.get("worker") or "")).strip()[:80] or None
+            raw = body.get("kinds")
+            kinds = ([str(k)[:20] for k in raw][:10] if isinstance(raw, list) and raw else None)
+            spec = jobs.claim(worker, kinds)
             if spec is None:
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self.send_header("Content-Length", "0")
@@ -616,7 +745,8 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     value = 0.0
                 jobs.report_progress(job_id, str(body.get("step") or "")[:120], value)
-                return self._json({"ok": True})
+                # ตอบธงหยุดกลับไปในคำตอบเดียวกัน — worker ไม่ต้องเปิด polling อีกเส้น
+                return self._json({"ok": True, "stop": jobs.stop_requested(job_id)})
 
             if action == "audio":
                 ext = (self._query().get("ext") or "ogg").lower().lstrip(".")

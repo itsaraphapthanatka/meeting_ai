@@ -584,8 +584,13 @@ def job_start(job_id: str) -> dict | None:
     return job_get(job_id) if row else None
 
 
-def job_claim(worker: str | None = None) -> dict | None:
-    """หยิบงานเก่าสุดที่ยังรออยู่ แบบ atomic — กัน worker หลายตัวแย่งงานเดียวกัน."""
+def job_claim(worker: str | None = None, kinds: list[str] | None = None) -> dict | None:
+    """หยิบงานเก่าสุดที่ยังรออยู่ แบบ atomic — กัน worker หลายตัวแย่งงานเดียวกัน.
+
+    kinds = ชนิดงานที่เครื่องนี้ทำได้ (None = ทุกชนิด)
+    จำเป็นเพราะงาน 'bot' ต้องมี Docker + image + profile ที่ล็อกอินแล้ว
+    ถ้าปล่อยให้เครื่องที่ไม่มีของพวกนี้คว้าไป งานจะพังทันทีทั้งที่อีกเครื่องทำได้
+    """
     with db.connect() as conn:
         row = conn.execute(
             """update meeting_ai.jobs set
@@ -595,13 +600,39 @@ def job_claim(worker: str | None = None) -> dict | None:
                where id = (
                  select id from meeting_ai.jobs
                  where status = 'queued'
+                   and (%s::text[] is null or kind = any(%s::text[]))
                  order by created_at
                  for update skip locked
                  limit 1)
                returning id""",
-            (worker,),
+            (worker, kinds, kinds),
         ).fetchone()
     return job_get(row[0]) if row else None
+
+
+def job_request_stop(job_id: str) -> bool:
+    """ตั้งธงขอให้หยุดงาน — worker อ่านธงนี้ตอนรายงาน progress แล้วสั่งบอทออกจากห้อง.
+
+    เก็บใน spec (JSONB) ไม่เพิ่มคอลัมน์ใหม่ เพื่อไม่ต้องให้ผู้ใช้ migrate ฐานข้อมูลที่ deploy แล้ว
+    """
+    with db.connect() as conn:
+        cur = conn.execute(
+            """update meeting_ai.jobs
+               set spec = coalesce(spec, '{}'::jsonb) || '{"stop": true}'::jsonb,
+                   updated_at = now()
+               where id = %s and status in ('queued', 'running')""",
+            (job_id,),
+        )
+        return cur.rowcount > 0
+
+
+def job_stop_requested(job_id: str) -> bool:
+    with db.connect() as conn:
+        row = conn.execute(
+            "select coalesce(spec->>'stop', 'false') from meeting_ai.jobs where id = %s",
+            (job_id,),
+        ).fetchone()
+    return bool(row) and row[0] == "true"
 
 
 def job_progress(job_id: str, step: str, progress: float) -> None:
@@ -698,10 +729,11 @@ def worker_capabilities() -> dict:
             (WORKER_STALE_SECONDS,),
         ).fetchall()
     out: dict = {"workers": len(rows), "local": False, "api": False, "diarize": False,
-                 "stt_model": None, "stt_host": None, "by": {}, "diarize_missing": []}
+                 "bot": False, "stt_model": None, "stt_host": None, "by": {},
+                 "diarize_missing": [], "bot_missing": []}
     for caps, name in rows:
         caps = caps or {}
-        for key in ("local", "api", "diarize"):
+        for key in ("local", "api", "diarize", "bot"):
             if caps.get(key):
                 out[key] = True
                 out["by"].setdefault(key, []).append(name)
@@ -709,11 +741,13 @@ def worker_capabilities() -> dict:
         out["stt_host"] = caps.get("stt_host") or out["stt_host"]
         # งานหนึ่งงานไปลงที่ worker ตัวใดตัวหนึ่ง มีตัวไหนทำได้ก็ถือว่าทำได้
         # แต่ถ้าไม่มีใครทำได้เลย ต้องบอกว่าขาดอะไร -> เก็บรายการจากตัวที่ขาดไว้ก่อน
-        for piece in caps.get("diarize_missing") or []:
-            if piece not in out["diarize_missing"]:
-                out["diarize_missing"].append(piece)
-    if out["diarize"]:
-        out["diarize_missing"] = []
+        for field in ("diarize_missing", "bot_missing"):
+            for piece in caps.get(field) or []:
+                if piece not in out[field]:
+                    out[field].append(piece)
+    for key in ("diarize", "bot"):
+        if out[key]:
+            out[f"{key}_missing"] = []
     return out
 
 
@@ -753,7 +787,7 @@ def workers_list() -> list[dict]:
             "alive": alive,
             "started": r[6].isoformat(timespec="seconds") if r[6] else None,
             # ให้หน้าเว็บบอกได้ว่าเครื่องไหนขาดอะไร ไม่ต้องไปไล่ดูทีละเครื่อง
-            "can": [k for k in ("local", "api", "diarize") if caps.get(k)],
+            "can": [k for k in ("local", "api", "diarize", "bot") if caps.get(k)],
         })
     return out
 
@@ -769,12 +803,18 @@ def workers_forget(max_age_days: int = 7) -> int:
 
 
 def jobs_reap(stale_minutes: int = 30) -> int:
-    """งานที่ worker รับไปแล้วเงียบหายเกินเวลา — คืนกลับคิว."""
+    """งานที่ worker รับไปแล้วเงียบหายเกินเวลา — คืนกลับคิว.
+
+    วัดจาก updated_at (ครั้งสุดท้ายที่ worker รายงาน progress) ไม่ใช่ claimed_at
+    ของเดิมวัดจากตอนรับงาน จึงดึงงานที่ยังทำอยู่จริงกลับคิวเมื่อครบ 30 นาที
+    — พังทั้งบอทที่นั่งอยู่ในห้องยาวๆ และไฟล์เสียงยาวที่ถอดนานเกินครึ่งชั่วโมง
+    """
     with db.connect() as conn:
         cur = conn.execute(
             """update meeting_ai.jobs
                set status = 'queued', step = 'รอคิว (worker หลุด)', progress = 0
-               where status = 'running' and claimed_at < now() - make_interval(mins => %s)""",
+               where status = 'running'
+                 and coalesce(updated_at, claimed_at) < now() - make_interval(mins => %s)""",
             (stale_minutes,),
         )
         return cur.rowcount

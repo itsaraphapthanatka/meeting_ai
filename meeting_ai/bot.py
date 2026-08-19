@@ -18,6 +18,10 @@ from .config import config
 NOVNC_URL = "http://localhost:6080/vnc.html?autoconnect=1&resize=scale"
 VNC_URL = "vnc://localhost:5900"
 
+# ถามฝั่งเรียกทุกกี่วินาทีว่า "หยุดไหม" และรายงานว่าอยู่ในห้องมานานเท่าไร
+# ถี่กว่านี้เปลืองคำขอ HTTP ห่างกว่านี้กดปุ่มแล้วบอทออกช้า
+TICK_SEC = 10
+
 IMAGE = "meeting-ai-bot"
 BOT_DIR = config.root / "bot"
 PROFILE_DIR = BOT_DIR / "profile"   # เก็บ session ที่ล็อกอิน Google ไว้ (ไม่ commit)
@@ -44,6 +48,27 @@ def build_image(force: bool = False) -> None:
         return
     print("🐳 กำลัง build image ของบอท (ครั้งแรกใช้เวลาหลายนาที ครั้งต่อไปไม่ต้องแล้ว)...")
     subprocess.run([docker, "build", "-t", IMAGE, str(BOT_DIR)], check=True)
+
+
+def missing_pieces() -> list[str]:
+    """สิ่งที่ยังขาดเพื่อให้ส่งบอทเข้าห้องได้ — ว่างเปล่า = พร้อม."""
+    missing = []
+    exe = shutil.which("docker")
+    if not exe:
+        missing.append("Docker (ติดตั้ง Docker Desktop)")
+        return missing        # ไม่มี docker ก็ตรวจข้ออื่นต่อไม่ได้
+    if subprocess.run([exe, "info"], capture_output=True).returncode != 0:
+        missing.append("Docker daemon ยังไม่เปิด")
+        return missing
+    if not _image_exists(exe):
+        missing.append(f"image {IMAGE} (สร้างด้วย mai bot-login)")
+    if not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir()):
+        missing.append("การล็อกอิน Google ของบอท (รัน mai bot-login)")
+    return missing
+
+
+def available() -> bool:
+    return not missing_pieces()
 
 
 def _mount(path: Path) -> str:
@@ -113,8 +138,14 @@ def join_and_record(
     out_wav: str | Path,
     name: str = "AI Notetaker",
     max_minutes: int = 180,
+    on_tick=None,
 ) -> Path:
-    """ส่งบอทเข้าห้อง แล้วคืน path ไฟล์เสียงที่อัดได้. กด Ctrl+C เพื่อให้บอทออกและหยุดอัด."""
+    """ส่งบอทเข้าห้อง แล้วคืน path ไฟล์เสียงที่อัดได้.
+
+    on_tick(วินาทีที่อยู่ในห้อง) -> bool ถูกเรียกทุก TICK_SEC วินาที
+    คืน True = สั่งบอทออกจากห้องเดี๋ยวนี้ (ฝั่งเว็บใช้ทำปุ่ม "ให้บอทออกแล้วสรุป")
+    ไม่ส่งมา = โหมด CLI รอจนบอทจบเอง กด Ctrl+C เพื่อให้ออก
+    """
     docker = _docker()
     build_image()
 
@@ -142,11 +173,33 @@ def join_and_record(
     print(f"🤖 ส่งบอท \"{name}\" เข้าห้องประชุม...")
     print("   ⚠️ อย่าลืมกด 'รับเข้าห้อง' (Admit) ให้บอทในโปรแกรมประชุม")
     print("   กด Ctrl+C เมื่อจบ เพื่อให้บอทออกจากห้องและหยุดอัด\n")
+    # docker stop -> SIGTERM -> join_meet.py ปิด ffmpeg ให้ wav สมบูรณ์ก่อนตาย
+    # (ห้าม kill ตรงๆ ไม่งั้น header ของ wav ไม่ถูกเขียนปิด ไฟล์จะเสีย)
+    def leave() -> None:
+        subprocess.run([docker, "stop", "-t", "30", container], check=False)
+
+    proc = subprocess.Popen(cmd)
+    started = time.monotonic()
     try:
-        subprocess.run(cmd, check=False)
+        if on_tick is None:
+            proc.wait()                     # โหมด CLI: รอจนบอทจบเอง
+        else:
+            while proc.poll() is None:
+                time.sleep(TICK_SEC)
+                if proc.poll() is not None:
+                    break
+                if on_tick(time.monotonic() - started):
+                    print("⏹  ได้รับคำสั่งให้บอทออกจากห้อง")
+                    leave()
+                    break
+            proc.wait(timeout=120)
     except KeyboardInterrupt:
         print("\n⏹  กำลังสั่งบอทออกจากห้องอย่างสุภาพ...")
-        subprocess.run([docker, "stop", "-t", "30", container], check=False)
+        leave()
+        try:
+            proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
     if not out_wav.exists() or out_wav.stat().st_size == 0:
         raise RuntimeError(

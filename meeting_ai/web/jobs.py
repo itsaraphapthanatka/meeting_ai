@@ -112,6 +112,49 @@ def create_draft(
     return mid
 
 
+def create_bot(
+    url: str,
+    title: str,
+    language: str | None,
+    template: str,
+    want_diarize: bool,
+    num_speakers: int,
+    bot_name: str,
+    max_minutes: int,
+    owner_id: str | None = None,
+    stt_provider: str | None = None,
+) -> dict:
+    """สร้างงาน "ส่งบอทเข้าห้อง" — เข้าคิวได้เลยเพราะไฟล์เสียงเกิดที่ฝั่งประมวลผล.
+
+    ต่างจาก upload/อัดสด ที่ต้องอัปโหลดแทร็กให้ครบก่อนแล้วค่อยกด process
+    """
+    mid = store.new_id()
+    spec = {
+        "id": mid,
+        "title": title,
+        "language": language,
+        "template": template,
+        "stt": stt_provider,
+        "diarize": want_diarize,
+        "num_speakers": num_speakers,
+        "source": "bot",
+        "owner_id": owner_id,
+        "tracks": {},
+        "url": url,
+        "bot_name": bot_name,
+        "max_minutes": max_minutes,
+    }
+    if cloud:
+        store.job_upsert(mid, "bot", title, spec, status="queued")
+        if not config.remote_worker:
+            _ensure_worker()
+        job = store.job_get(mid)
+        return public(job)
+    with _cv:
+        _drafts[mid] = spec
+    return _enqueue(mid, title, "bot")
+
+
 def register_track(mid: str, name: str, path: Path) -> bool:
     if cloud:
         job = store.job_get(mid)
@@ -204,9 +247,12 @@ def build_spec(job_id: str) -> dict | None:
         return None
     kind = job["kind"]
 
-    if kind == "process":
+    if kind in ("process", "bot"):
         d = draft(job_id)
-        if d is None or not d.get("tracks"):
+        if d is None:
+            return None
+        # งาน process ต้องมีไฟล์ครบก่อน ส่วนงาน bot ยังไม่มีไฟล์ — บอทเป็นคนอัดเอง
+        if kind == "process" and not d.get("tracks"):
             return None
         return {
             "id": job_id,
@@ -217,7 +263,11 @@ def build_spec(job_id: str) -> dict | None:
             "diarize": d.get("diarize"),
             "num_speakers": d.get("num_speakers"),
             "stt": d.get("stt"),
-            "tracks": sorted(d["tracks"]),
+            "tracks": sorted(d.get("tracks") or {}),
+            # เฉพาะงานบอท — ฝั่งประมวลผลต้องรู้ว่าจะเข้าห้องไหน ในชื่ออะไร นานเท่าไร
+            "url": d.get("url"),
+            "bot_name": d.get("bot_name"),
+            "max_minutes": d.get("max_minutes"),
         }
 
     mid = _meeting_of(job)
@@ -255,19 +305,19 @@ def apply_result(job_id: str, result: dict) -> None:
         raise RuntimeError("ไม่พบงานนี้")
     kind = job["kind"]
 
-    if kind == "process":
+    if kind in ("process", "bot"):
         d = draft(job_id)
         if d is None:
             raise RuntimeError("ไม่พบข้อมูลการประชุมที่รออัปโหลด")
         playback = result.get("playback")
-        audio_name = Path(playback).name if playback else Path(
-            sorted(d["tracks"].values())[0]
-        ).name
+        tracks = d.get("tracks") or {}
+        audio_name = (Path(playback).name if playback
+                      else Path(sorted(tracks.values())[0]).name if tracks else "")
         store.create(
             mid=job_id,
             title=d["title"],
             audio_name=audio_name,
-            source=d.get("source") or "upload",
+            source=d.get("source") or ("bot" if kind == "bot" else "upload"),
             language=result.get("language") or config.whisper_lang,
             duration=result.get("duration") or 0.0,
             segments=result.get("segments") or [],
@@ -280,6 +330,7 @@ def apply_result(job_id: str, result: dict) -> None:
         if not cloud:
             with _cv:
                 _drafts.pop(job_id, None)
+                _stop_requests.discard(job_id)
         meeting_id = job_id
 
     elif kind == "summarize":
@@ -318,13 +369,16 @@ def report_progress(job_id: str, step: str, progress: float) -> None:
 
 # ---------- ฝั่ง worker แยกเครื่อง ----------
 
-def claim(worker: str | None = None) -> dict | None:
-    """หยิบงานถัดไปให้ worker ที่อยู่ไกล — คืน spec หรือ None ถ้าคิวว่าง."""
+def claim(worker: str | None = None, kinds: list[str] | None = None) -> dict | None:
+    """หยิบงานถัดไปให้ worker ที่อยู่ไกล — คืน spec หรือ None ถ้าคิวว่าง.
+
+    kinds = ชนิดงานที่เครื่องนั้นทำได้ (งาน bot ต้องมี Docker + image + profile)
+    """
     if cloud:
         # คืนงานที่ worker เก่าหลุดไปกลางทางกลับเข้าคิวก่อน
         store.jobs_reap(30)
         while True:
-            job = store.job_claim(worker)
+            job = store.job_claim(worker, kinds)
             if job is None:
                 return None
             spec = build_spec(job["id"])
@@ -335,17 +389,46 @@ def claim(worker: str | None = None) -> dict | None:
                 store.worker_seen(worker, "busy", job["id"])
             return spec
 
+    skipped: list[str] = []
     with _cv:
         while _pending:
             job_id = _pending.popleft()
             spec = build_spec(job_id)
+            if spec is not None and kinds is not None and spec["kind"] not in kinds:
+                # เครื่องนี้ทำงานชนิดนี้ไม่ได้ — พักไว้แล้วมองงานถัดไป
+                # ถ้า return ทันทีตรงนี้ งานที่ทำไม่ได้หนึ่งงานจะขวางคิวทั้งคิวไปตลอด
+                skipped.append(job_id)
+                continue
             if spec is None:
                 # draft/การประชุมหายไปแล้ว (ถูกลบ?) ข้ามไป
                 fail(job_id, "ข้อมูลของงานนี้หายไปก่อนจะได้ประมวลผล")
                 continue
             report_progress(job_id, "worker รับงานแล้ว", 0.01)
+            _pending.extendleft(reversed(skipped))
             return spec
+        _pending.extendleft(reversed(skipped))
     return None
+
+
+_stop_requests: set[str] = set()   # โหมดไฟล์: เก็บในหน่วยความจำพอ เพราะ worker อยู่โพรเซสเดียวกัน
+
+
+def request_stop(job_id: str) -> bool:
+    """ขอให้งานนี้หยุด — สำหรับงานบอทหมายถึง "ออกจากห้องแล้วไปสรุปเลย"."""
+    if cloud:
+        return store.job_request_stop(job_id)
+    with _cv:
+        if job_id not in _jobs or _jobs[job_id]["status"] not in ("queued", "running"):
+            return False
+        _stop_requests.add(job_id)
+    return True
+
+
+def stop_requested(job_id: str) -> bool:
+    if cloud:
+        return store.job_stop_requested(job_id)
+    with _cv:
+        return job_id in _stop_requests
 
 
 def requeue(job_id: str) -> bool:
@@ -386,7 +469,7 @@ def _execute(spec: dict) -> None:
     def progress(step: str, value: float) -> None:
         report_progress(job_id, step, value)
 
-    if spec["kind"] != "process":
+    if spec["kind"] not in ("process", "bot"):
         return apply_result(job_id, runner.HANDLERS[spec["kind"]](spec, progress))
 
     storage = backend.storage()
@@ -415,7 +498,12 @@ def _execute(spec: dict) -> None:
             store.WEB_DIR.mkdir(parents=True, exist_ok=True)
             mix_dir = store.WEB_DIR
 
-        result = runner.transcribe_job(spec, fetch, progress, mix_dir)
+        if spec["kind"] == "bot":
+            # บอทอัดไฟล์เองในโฟลเดอร์ชั่วคราว ไม่มีแทร็กให้ fetch
+            result = runner.bot_job(spec, progress, mix_dir,
+                                    stop_check=lambda: stop_requested(job_id), work_dir=tmp)
+        else:
+            result = runner.transcribe_job(spec, fetch, progress, mix_dir)
 
         # ไฟล์เสียงผสมเกิดในโฟลเดอร์ชั่วคราว ต้องส่งขึ้นที่เก็บก่อนโฟลเดอร์ถูกลบ
         playback = result.get("playback")
@@ -439,7 +527,7 @@ def _next_spec() -> dict | None:
             store.worker_seen(LOCAL_WORKER_NAME, "idle")
         except Exception:
             pass
-        return claim(LOCAL_WORKER_NAME)
+        return claim(LOCAL_WORKER_NAME, runner.job_kinds(runner.machine_caps()))
     with _cv:
         while not _pending:
             _cv.wait()

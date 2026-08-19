@@ -170,12 +170,19 @@ function renderJobs() {
   $('#jobs').innerHTML = state.jobs.map((j) => {
     const pct = Math.round((j.progress || 0) * 100);
     const failed = j.status === 'error';
+    // งานบอทที่ยังอยู่ในห้อง ต้องมีทางสั่งให้ออกมาสรุป ไม่ใช่รอครบเวลาเท่านั้น
+    const canStop = j.kind === 'bot' && !failed && j.status !== 'done';
     return `<div class="job ${failed ? 'err' : ''}">
-      <div class="jt">${esc(j.title)}</div>
+      <div class="jt">${j.kind === 'bot' ? '🤖 ' : ''}${esc(j.title)}</div>
       <div class="js">${esc(failed ? j.error : j.step)}</div>
       ${failed ? '' : `<div class="bar"><div style="width:${pct}%"></div></div>`}
+      ${canStop ? `<button class="btn btn-sm job-stop" data-job="${esc(j.id)}"
+        type="button">ให้บอทออกจากห้องแล้วสรุป</button>` : ''}
     </div>`;
   }).join('');
+  $$('#jobs .job-stop').forEach((b) => {
+    b.onclick = () => { b.disabled = true; stopJob(b.dataset.job); };
+  });
 }
 
 function fmtAgo(sec) {
@@ -186,7 +193,8 @@ function fmtAgo(sec) {
   return `${Math.floor(sec / 86400)} วันที่แล้ว`;
 }
 
-const CAP_LABELS = { local: 'whisper ในเครื่อง', api: 'API', diarize: 'แยกผู้พูด' };
+const CAP_LABELS = { local: 'whisper ในเครื่อง', api: 'API', diarize: 'แยกผู้พูด',
+                     bot: 'ส่งบอท' };
 
 /** เครื่องนี้ทำอะไรได้ — worker รุ่นเก่ายังไม่ส่ง caps มา จะไม่แสดงบรรทัดนี้ */
 function workerCan(w) {
@@ -519,6 +527,64 @@ function showNew() {
   $('#btn-rec').onclick = startRecording;
   $('#btn-stop').onclick = stopRecording;
   setupSources();
+  setupBot();
+}
+
+/* ---------------- บอทเข้าห้องประชุม ---------------- */
+
+function setupBot() {
+  const note = $('#bot-note');
+  const btn = $('#btn-bot');
+  if (state.config.bot_available === false) {
+    btn.disabled = true;
+    $('#b-url').disabled = true;
+    note.textContent = 'ยังใช้ไม่ได้ — ' + (state.config.bot_missing || []).join('; ');
+  } else {
+    note.textContent = 'บอทเข้าห้องแล้ว host ต้องกด "รับเข้าห้อง" (Admit) ให้ก่อน '
+      + 'เสร็จประชุมกด "ให้บอทออก" ที่แถบงาน หรือปล่อยให้ครบเวลาที่ตั้งไว้';
+  }
+  btn.onclick = sendBot;
+  $('#b-url').onkeydown = (e) => { if (e.key === 'Enter') sendBot(); };
+}
+
+async function sendBot() {
+  const url = ($('#b-url').value || '').trim();
+  if (!url) { banner('ใส่ลิงก์ห้องประชุมก่อน'); return; }
+  const v = formValues();
+  const btn = $('#btn-bot');
+  btn.disabled = true;
+  banner('');
+  try {
+    const job = await api('/api/meetings/bot', jsonPost({
+      url,
+      bot_name: ($('#b-name').value || '').trim(),
+      max_minutes: parseInt($('#b-max').value || '120', 10),
+      title: v.title,
+      lang: v.lang,
+      template: v.template,
+      diarize: v.diarize,
+      num_speakers: v.num_speakers,
+      stt: v.stt,
+    }));
+    state.jobs = [job, ...state.jobs.filter((j) => j.id !== job.id)];
+    renderJobs();
+    ensurePolling();
+    $('#b-url').value = '';
+    banner('ส่งบอทแล้ว — ไปกด "รับเข้าห้อง" (Admit) ในห้องประชุมด้วย');
+  } catch (e) {
+    banner(`ส่งบอทไม่สำเร็จ: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function stopJob(id) {
+  try {
+    await api(`/api/jobs/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+    banner('สั่งให้บอทออกจากห้องแล้ว — รออีกไม่เกินสิบวินาทีแล้วจะเริ่มถอดเสียง');
+  } catch (e) {
+    banner(`สั่งหยุดไม่สำเร็จ: ${e.message}`);
+  }
 }
 
 /* ---------------- แหล่งเสียง (โหมดอัด + อุปกรณ์) ---------------- */
