@@ -162,18 +162,40 @@ function Show-Status {
     }
     Info "โหมด    : $mode"
     Info "สถานะ   : $($t.State)"
-    Info "รันล่าสุด: $($i.LastRunTime)   ผลล่าสุด: $($i.LastTaskResult)"
+    # 267009 = 0x41301 = SCHED_S_TASK_RUNNING — ไม่ใช่ error แต่คนอ่านมักตกใจ
+    $lastResult = switch ($i.LastTaskResult) {
+        267009     { "0x41301 (กำลังรันอยู่)" }
+        0          { "0 (จบปกติ)" }
+        3221225786 { "0xC000013A (ถูกสั่งหยุด — ปกติถ้าเพิ่ง stop/restart)" }
+        2          { "2 (token ไม่ถูกต้อง — worker ปิดตัวเอง ดู log)" }
+        default    { $i.LastTaskResult }
+    }
+    Info "รันล่าสุด: $($i.LastRunTime)   ผลล่าสุด: $lastResult"
     Info "ครั้งถัดไป: $($i.NextRunTime)"
-    $proc = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-        Where-Object { $_.CommandLine -like "*meeting_ai worker*" }
-    if ($proc) {
+
+    $pythons = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'")
+    $proc = @($pythons | Where-Object { $_.CommandLine -like "*meeting_ai worker*" })
+    if ($proc.Count) {
         Info "โพรเซส  : กำลังรัน (PID $(($proc | ForEach-Object { $_.ProcessId }) -join ', '))"
+    } elseif ($t.State -eq "Running") {
+        # โหมด S4U รัน worker คนละ session — PowerShell ที่ไม่ได้เปิดแบบแอดมินอ่าน
+        # CommandLine ข้าม session ไม่ได้ (ได้ $null) จึงแมตช์ไม่เจอทั้งที่โพรเซสมีจริง
+        # อย่าเตือนว่าตาย เพราะ task บอกว่ากำลังรัน ให้บอกว่าตรวจลึกกว่านี้ไม่ได้
+        $blind = @($pythons | Where-Object { -not $_.CommandLine }).Count
+        if ($blind) {
+            Info "โพรเซส  : task = Running (ยืนยัน PID ไม่ได้ ต้องเปิด PowerShell แบบแอดมิน)"
+        } else {
+            Warn "โพรเซส  : task = Running แต่ไม่เจอ python — น่าจะพังตอนเริ่ม ดู log ด้านล่าง"
+        }
     } else {
         Warn "โพรเซส  : ไม่พบ python ที่รัน worker อยู่"
     }
+
     if (Test-Path $logFile) {
-        Info "log     : $logFile ($([math]::Round((Get-Item $logFile).Length/1KB)) KB)"
+        $age = [int]((Get-Date) - (Get-Item $logFile).LastWriteTime).TotalMinutes
+        Info "log     : $logFile ($([math]::Round((Get-Item $logFile).Length/1KB)) KB, เขียนล่าสุด $age นาทีที่แล้ว)"
     }
+    Info "ยืนยันว่าเซิร์ฟเวอร์เห็นเครื่องนี้จริง: ดูแผง ""เครื่องประมวลผล"" ในหน้าเว็บ"
 }
 
 switch ($Action) {
