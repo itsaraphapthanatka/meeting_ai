@@ -810,11 +810,23 @@ def jobs_reap(stale_minutes: int = 30) -> int:
     — พังทั้งบอทที่นั่งอยู่ในห้องยาวๆ และไฟล์เสียงยาวที่ถอดนานเกินครึ่งชั่วโมง
     """
     with db.connect() as conn:
+        # งานบอทคืนคิวไม่ได้ — ประชุมจบไปแล้ว ส่งบอทเข้าไปอีกทีจะได้แต่ห้องร้าง
+        # อัดความเงียบทิ้งไว้เป็นชั่วโมงแล้วเปลืองเวลา GPU ถอดเสียงเปล่าๆ
+        failed = conn.execute(
+            """update meeting_ai.jobs
+               set status = 'error',
+                   error = 'เครื่องประมวลผลหลุดกลางทาง — งานบอทเริ่มใหม่ไม่ได้'
+                           ' เพราะการประชุมผ่านไปแล้ว ต้องส่งบอทใหม่เอง',
+                   step = 'ผิดพลาด'
+               where status = 'running' and kind = 'bot'
+                 and coalesce(updated_at, claimed_at) < now() - make_interval(mins => %s)""",
+            (stale_minutes,),
+        ).rowcount
         cur = conn.execute(
             """update meeting_ai.jobs
                set status = 'queued', step = 'รอคิว (worker หลุด)', progress = 0
-               where status = 'running'
+               where status = 'running' and kind <> 'bot'
                  and coalesce(updated_at, claimed_at) < now() - make_interval(mins => %s)""",
             (stale_minutes,),
         )
-        return cur.rowcount
+        return cur.rowcount + failed

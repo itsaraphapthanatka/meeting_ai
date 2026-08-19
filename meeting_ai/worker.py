@@ -31,6 +31,10 @@ POLL_IDLE = 3.0        # วินาที รอเมื่อคิวว่
 POLL_ERROR_MAX = 60.0  # เพดาน backoff เมื่อต่อเซิร์ฟเวอร์ไม่ได้
 PROGRESS_MIN_GAP = 1.5  # ไม่ยิง progress ถี่กว่านี้ (นอกจากเปลี่ยนขั้น)
 HEARTBEAT_SEC = 20.0    # เต้นบอกเซิร์ฟเวอร์ว่ายังอยู่ (ฝั่งนั้นถือว่าหลุดที่ 75 วิ)
+# ตรวจความสามารถของเครื่องใหม่ทุกกี่วินาที — Docker Desktop เปิด/ปิดได้ตลอดเวลา
+# ถ้าเช็กครั้งเดียวตอนเปิด worker จะโฆษณาความสามารถผิดไปทั้ง session
+# (เคยเจอจริง: เครื่องที่ Docker ดับไปแล้วยังคว้างานบอทมาทำ)
+CAPS_REFRESH_SEC = 60.0
 CHUNK = 1024 * 256
 
 
@@ -234,7 +238,9 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     current: dict = {"id": None, "status": "idle"}
     worker_name = (name or socket.gethostname())[:80]
     gpu = describe_gpu()
-    caps = runner.machine_caps()
+    # เก็บใน dict เพื่อให้เธรด heartbeat อัปเดตแล้ว loop หลักเห็นค่าใหม่ด้วย
+    state = {"caps": runner.machine_caps(), "caps_at": time.monotonic()}
+    caps = state["caps"]
 
     def on_signal(signum, frame):
         stopping["flag"] = True
@@ -264,9 +270,30 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     print("   กด Ctrl+C เพื่อหยุด\n", flush=True)
 
     # เต้นทุก HEARTBEAT_SEC วินาที ให้หน้าเว็บรู้ว่าเครื่องนี้ยังอยู่ แม้ตอนว่าง
+    def refresh_caps() -> dict:
+        """คำนวณความสามารถใหม่ถ้าเก่าเกิน CAPS_REFRESH_SEC."""
+        if time.monotonic() - state["caps_at"] >= CAPS_REFRESH_SEC:
+            try:
+                fresh = runner.machine_caps()
+            except Exception:
+                return state["caps"]      # ตรวจไม่ได้ ใช้ค่าเดิมดีกว่าหยุดทำงาน
+            state["caps_at"] = time.monotonic()
+            if fresh != state["caps"]:
+                gained = [k for k in ("local", "api", "diarize", "bot")
+                          if fresh.get(k) and not state["caps"].get(k)]
+                lost = [k for k in ("local", "api", "diarize", "bot")
+                        if state["caps"].get(k) and not fresh.get(k)]
+                if gained or lost:
+                    print("ℹ️  ความสามารถเปลี่ยน"
+                          + (f" ได้เพิ่ม: {', '.join(gained)}" if gained else "")
+                          + (f" หายไป: {', '.join(lost)}" if lost else ""), flush=True)
+                state["caps"] = fresh
+        return state["caps"]
+
     def beat() -> None:
         while not stopping["flag"]:
-            client.heartbeat(worker_name, current["status"], current["id"], gpu, caps)
+            client.heartbeat(worker_name, current["status"], current["id"], gpu,
+                             refresh_caps())
             for _ in range(int(HEARTBEAT_SEC * 2)):
                 if stopping["flag"]:
                     return
@@ -278,7 +305,8 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     backoff = poll
     while not stopping["flag"]:
         try:
-            spec = client.claim(worker_name, runner.job_kinds(caps))
+            # ใช้ caps สดตอนคว้างาน ไม่ใช่ค่าที่เช็กไว้ตอนเปิดโปรแกรม
+            spec = client.claim(worker_name, runner.job_kinds(refresh_caps()))
             backoff = poll
         except AuthError as e:
             # token ผิดคือปัญหาที่ต้องให้คนแก้ วนซ้ำไปก็ไม่หาย
@@ -320,7 +348,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
         finally:
             current["id"] = None
             current["status"] = "idle"
-            client.heartbeat(worker_name, "idle", None, gpu, caps)
+            client.heartbeat(worker_name, "idle", None, gpu, state["caps"])
 
         if once:
             stopping["flag"] = True
