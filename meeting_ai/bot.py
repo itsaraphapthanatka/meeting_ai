@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ VNC_URL = "vnc://localhost:5900"
 TICK_SEC = 10
 
 IMAGE = "meeting-ai-bot"
+PREFIX = "maibot_"   # ชื่อ container ทุกตัวขึ้นต้นด้วยนี้ ใช้ตามเก็บของค้าง
 BOT_DIR = config.root / "bot"
 PROFILE_DIR = BOT_DIR / "profile"   # เก็บ session ที่ล็อกอิน Google ไว้ (ไม่ commit)
 
@@ -65,6 +67,26 @@ def missing_pieces() -> list[str]:
     if not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir()):
         missing.append("การล็อกอิน Google ของบอท (รัน mai bot-login)")
     return missing
+
+
+def cleanup_stale() -> list[str]:
+    """หยุด container ของบอทที่ยังรันค้างอยู่ แล้วคืนรายชื่อที่หยุดไป.
+
+    เรียกตอน worker เริ่มทำงาน: worker ใหม่หมายความว่าตัวเก่าตายไปแล้ว
+    container ที่มันเปิดไว้จึงเป็นของกำพร้า — daemon เป็นคนคุม container ไม่ใช่
+    โพรเซสที่สั่ง `docker run` ดังนั้นบอทจะนั่งอยู่ในห้องประชุมต่อไปเรื่อยๆ
+    โดยไม่มีใครสั่งให้ออกได้ (ปุ่ม "ให้บอทออก" ในเว็บก็ไปไม่ถึง)
+    """
+    exe = shutil.which("docker")
+    if not exe:
+        return []
+    r = subprocess.run([exe, "ps", "--filter", f"name={PREFIX}", "--format", "{{.Names}}"],
+                       capture_output=True, text=True)
+    names = [x.strip() for x in r.stdout.splitlines() if x.strip()]
+    for name in names:
+        # stop ไม่ kill — ให้บอทออกจากห้องและปิดไฟล์เสียงให้เรียบร้อยก่อน
+        subprocess.run([exe, "stop", "-t", "20", name], capture_output=True)
+    return names
 
 
 def available() -> bool:
@@ -139,6 +161,7 @@ def join_and_record(
     name: str = "AI Notetaker",
     max_minutes: int = 180,
     on_tick=None,
+    job_id: str | None = None,
 ) -> Path:
     """ส่งบอทเข้าห้อง แล้วคืน path ไฟล์เสียงที่อัดได้.
 
@@ -157,7 +180,11 @@ def join_and_record(
 
     out_wav = Path(out_wav).resolve()
     out_wav.parent.mkdir(parents=True, exist_ok=True)
-    container = f"maibot_{int(time.time())}"
+    # ตั้งชื่อตาม job id เพื่อให้ไล่หา/สั่งหยุดจากภายนอกได้ (ชื่อ container ต้องเป็น [A-Za-z0-9_.-])
+    tag = re.sub(r"[^A-Za-z0-9_.-]", "", job_id or "")[:40] or str(int(time.time()))
+    container = f"{PREFIX}{tag}"
+    # ชื่อซ้ำจากรอบก่อนที่ค้างอยู่ ต้องเก็บให้เรียบร้อยก่อน ไม่งั้น docker run จะฟ้องชื่อชนกัน
+    subprocess.run([docker, "rm", "-f", container], capture_output=True)
 
     cmd = [
         docker, "run", "--rm", "--name", container,

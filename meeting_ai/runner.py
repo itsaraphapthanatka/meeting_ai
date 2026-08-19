@@ -262,7 +262,7 @@ def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
 
     progress("ส่งบอทเข้าห้องประชุม (อย่าลืมกดรับเข้าห้อง)", BOT_START)
     bot.join_and_record(url, wav, name=spec.get("bot_name") or "AI Notetaker",
-                        max_minutes=max_minutes, on_tick=tick)
+                        max_minutes=max_minutes, on_tick=tick, job_id=spec["id"])
 
     # ต่อท่อเดิม: บีบช่วง progress ของ transcribe_job ให้อยู่หลังช่วงของบอท
     def scaled(step: str, value: float) -> None:

@@ -252,6 +252,16 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     except ValueError:
         pass  # ไม่ใช่เธรดหลัก
 
+    # ตัวเองเพิ่งเริ่ม = worker ตัวก่อนตายไปแล้ว บอทที่มันเปิดไว้จึงไม่มีใครคุม
+    # ต้องไล่ปิดก่อน ไม่งั้นบอทกำพร้าจะนั่งอยู่ในห้องประชุมต่อไปเรื่อยๆ
+    if state["caps"].get("bot"):
+        try:
+            from . import bot as _bot
+            for name in _bot.cleanup_stale():
+                print(f"🧹 ปิดบอทที่ค้างจากรอบก่อน: {name}")
+        except Exception as e:
+            print(f"⚠️  เก็บกวาดบอทที่ค้างไม่สำเร็จ: {e}", file=sys.stderr)
+
     print(f"🛠️  worker พร้อม — เซิร์ฟเวอร์: {client.api}")
     print(f"   ชื่อเครื่อง: {worker_name}" + (f"   GPU: {gpu}" if gpu else "   (ไม่มี GPU)"))
     ways = [k for k in ("local", "api") if caps.get(k)]
