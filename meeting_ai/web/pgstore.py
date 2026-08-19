@@ -616,10 +616,12 @@ def job_request_stop(job_id: str) -> bool:
     เก็บใน spec (JSONB) ไม่เพิ่มคอลัมน์ใหม่ เพื่อไม่ต้องให้ผู้ใช้ migrate ฐานข้อมูลที่ deploy แล้ว
     """
     with db.connect() as conn:
+        # ห้ามแตะ updated_at — reaper ใช้ฟิลด์นี้วัดว่า worker เงียบไปนานแค่ไหน
+        # ถ้าปุ่มหยุดไปรีเซ็ตมัน งานที่ worker ตายทิ้งไว้จะยืดเวลาค้างออกไปอีก 30 นาที
+        # (ยิ่งกดยิ่งค้างนาน ซึ่งตรงข้ามกับที่ผู้ใช้ต้องการ)
         cur = conn.execute(
             """update meeting_ai.jobs
-               set spec = coalesce(spec, '{}'::jsonb) || '{"stop": true}'::jsonb,
-                   updated_at = now()
+               set spec = coalesce(spec, '{}'::jsonb) || '{"stop": true}'::jsonb
                where id = %s and status in ('queued', 'running')""",
             (job_id,),
         )
