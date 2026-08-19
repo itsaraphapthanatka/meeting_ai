@@ -534,16 +534,19 @@ function showNew() {
 
 function setupBot() {
   const note = $('#bot-note');
-  const btn = $('#btn-bot');
+  // ไม่ปิดช่องกรอกและไม่ปิดปุ่ม แม้ค่า config บอกว่ายังไม่พร้อม:
+  //   1) config ถูกอ่านตอนโหลดหน้า ถ้าเพิ่งเปิด worker เสร็จ ค่าจะเก่าแล้วผู้ใช้ติดล็อกทั้งที่พร้อม
+  //   2) ผู้ใช้ควรพิมพ์/วางลิงก์เตรียมไว้ได้ตลอด
+  // ฝั่งเซิร์ฟเวอร์เป็นคนตัดสินจริง (ตอบ 409 พร้อมเหตุผลที่ตรงกับสถานะตอนนั้น)
   if (state.config.bot_available === false) {
-    btn.disabled = true;
-    $('#b-url').disabled = true;
-    note.textContent = 'ยังใช้ไม่ได้ — ' + (state.config.bot_missing || []).join('; ');
+    note.className = 'warn';
+    note.textContent = 'ยังส่งไม่ได้ — ' + (state.config.bot_missing || []).join('; ');
   } else {
+    note.className = 'hint';
     note.textContent = 'บอทเข้าห้องแล้ว host ต้องกด "รับเข้าห้อง" (Admit) ให้ก่อน '
       + 'เสร็จประชุมกด "ให้บอทออก" ที่แถบงาน หรือปล่อยให้ครบเวลาที่ตั้งไว้';
   }
-  btn.onclick = sendBot;
+  $('#btn-bot').onclick = sendBot;
   $('#b-url').onkeydown = (e) => { if (e.key === 'Enter') sendBot(); };
 }
 
