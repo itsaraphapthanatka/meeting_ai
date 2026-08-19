@@ -24,7 +24,10 @@ VNC_URL = "vnc://localhost:5900"
 TICK_SEC = 10
 
 IMAGE = "meeting-ai-bot"
-PREFIX = "maibot_"   # ชื่อ container ทุกตัวขึ้นต้นด้วยนี้ ใช้ตามเก็บของค้าง
+# ชื่อ container ของ "บอทเข้าห้อง" ต้องแยกจากตัวล็อกอินให้ชัด
+# ไม่งั้น cleanup_stale() ตอน worker เริ่ม จะไปฆ่าหน้าล็อกอินที่ผู้ใช้กำลังกรอกรหัสอยู่
+PREFIX = "maibot_job_"
+LOGIN_CONTAINER = "maibot_login"
 BOT_DIR = config.root / "bot"
 PROFILE_DIR = BOT_DIR / "profile"   # เก็บ session ที่ล็อกอิน Google ไว้ (ไม่ commit)
 
@@ -70,7 +73,7 @@ def missing_pieces() -> list[str]:
 
 
 def cleanup_stale() -> list[str]:
-    """หยุด container ของบอทที่ยังรันค้างอยู่ แล้วคืนรายชื่อที่หยุดไป.
+    """หยุด container ของบอทที่ยังรันค้างอยู่ แล้วคืนรายชื่อที่หยุดไป (ไม่แตะตัวล็อกอิน).
 
     เรียกตอน worker เริ่มทำงาน: worker ใหม่หมายความว่าตัวเก่าตายไปแล้ว
     container ที่มันเปิดไว้จึงเป็นของกำพร้า — daemon เป็นคนคุม container ไม่ใช่
@@ -126,7 +129,7 @@ def login() -> None:
     build_image()
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
-    container = "maibot_login"
+    container = LOGIN_CONTAINER
     subprocess.run([docker, "rm", "-f", container], capture_output=True)
     subprocess.run(
         [
