@@ -1,0 +1,12 @@
+# core.autocrlf=true บน Windows แปลง LF -> CRLF ตอน checkout
+# ไฟล์ที่ต้องรันในคอนเทนเนอร์ Linux ทนไม่ได้ — shebang จะกลายเป็น 'bash\r'
+# แล้วขึ้น /usr/bin/env: 'bash\r': No such file or directory
+# บังคับ LF ให้ไฟล์กลุ่มนี้ ไม่ว่า git config ของเครื่องไหนจะตั้งไว้แบบใด
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+mai         text eol=lf
+bot/*.py    text eol=lf
+
+# ของฝั่ง Windows ต้องเป็น CRLF (PowerShell 5.1 กับ cmd อ่านง่ายกว่า)
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf

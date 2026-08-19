@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 from .config import config
+
+# ดูจอบอทได้สองทาง: เบราว์เซอร์ (noVNC) หรือ VNC client จริง
+NOVNC_URL = "http://localhost:6080/vnc.html?autoconnect=1&resize=scale"
+VNC_URL = "vnc://localhost:5900"
 
 IMAGE = "meeting-ai-bot"
 BOT_DIR = config.root / "bot"
@@ -41,6 +46,33 @@ def build_image(force: bool = False) -> None:
     subprocess.run([docker, "build", "-t", IMAGE, str(BOT_DIR)], check=True)
 
 
+def _mount(path: Path) -> str:
+    """path สำหรับ -v ของ docker — ใช้ / แม้บน Windows.
+
+    docker แยก -v ด้วย ':' ซึ่งชนกับ 'C:\\...' รูป C:/Users/... ปลอดภัยกว่าและ Docker Desktop รับ
+    """
+    return path.resolve().as_posix()
+
+
+def _open_bot_screen() -> str:
+    """เปิดจอบอทให้ผู้ใช้เห็น แล้วคืนข้อความบอกว่าเปิดทางไหน.
+
+    ใช้ noVNC ผ่านเบราว์เซอร์เป็นทางหลัก — ไม่ต้องลงโปรแกรมอะไรบน host
+    (เดิมเรียก `open vnc://...` ซึ่งมีแต่บน macOS บน Windows โยน FileNotFoundError
+     ทำให้ bot-login พังทั้งคำสั่งทั้งที่ container เปิดรออยู่แล้ว
+     ส่วน VNC client ก็พึ่งไม่ได้ ตัวติดตั้งของ RealVNC เคย 404 มาแล้ว)
+    """
+    opened = False
+    try:
+        import webbrowser   # stdlib ใช้ได้ทุก OS ไม่ต้องเรียกคำสั่งของระบบ
+        opened = webbrowser.open(NOVNC_URL)
+    except Exception:
+        pass
+    head = ("เบราว์เซอร์เปิดจอบอทให้แล้ว" if opened
+            else f"เปิดเบราว์เซอร์ไปที่ {NOVNC_URL}")
+    return f"{head}\n     (ถ้าอยากใช้ VNC client จริงก็ต่อ localhost:5900 ได้ ไม่ต้องใส่รหัส)"
+
+
 def login() -> None:
     """เปิดโหมดล็อกอินครั้งเดียว — ผู้ใช้ VNC เข้ามาล็อกอิน Google ให้บอท (profile เก็บถาวร)."""
     docker = _docker()
@@ -52,22 +84,20 @@ def login() -> None:
     subprocess.run(
         [
             docker, "run", "-d", "--name", container,
-            "-p", "127.0.0.1:5900:5900",
+            # ผูกกับ 127.0.0.1 เท่านั้น — จอบอทตอนล็อกอินมีหน้า Google อยู่ ห้ามเปิดให้เครือข่ายเห็น
+            "-p", "127.0.0.1:6080:6080",   # noVNC (เบราว์เซอร์)
+            "-p", "127.0.0.1:5900:5900",   # VNC client
             "-e", "MODE=login",
-            "-v", f"{PROFILE_DIR}:/prof",
+            "-v", f"{_mount(PROFILE_DIR)}:/prof",
             IMAGE,
         ],
         check=True,
     )
-    print("🔐 กำลังเปิดหน้าจอบอทผ่าน VNC...")
-    time.sleep(5)  # รอ x11vnc + Chromium พร้อม
-    # macOS: เปิด Screen Sharing ให้อัตโนมัติ
-    subprocess.run(["open", "vnc://localhost:5900"], capture_output=True)
-    print(
-        "\n  1) หน้าต่าง Screen Sharing จะเปิดขึ้น (ถ้าไม่ขึ้น เปิดเอง: vnc://localhost:5900)\n"
-        "  2) ล็อกอิน Google account ของบอทให้เรียบร้อย (แนะนำบัญชีเฉพาะบอท)\n"
-        "  3) เสร็จแล้วกลับมาที่นี่ กด Enter เพื่อบันทึก\n"
-    )
+    print("🔐 กำลังเปิดหน้าจอบอท...")
+    time.sleep(6)  # รอ x11vnc + websockify + Chromium พร้อม
+    print(f"\n  1) {_open_bot_screen()}\n"
+          "  2) ล็อกอิน Google account ของบอทให้เรียบร้อย (แนะนำบัญชีเฉพาะบอท)\n"
+          "  3) เสร็จแล้วกลับมาที่นี่ กด Enter เพื่อบันทึก\n")
     try:
         input("   >>> ล็อกอินเสร็จแล้วกด Enter... ")
     except (EOFError, KeyboardInterrupt):
@@ -100,8 +130,8 @@ def join_and_record(
 
     cmd = [
         docker, "run", "--rm", "--name", container,
-        "-v", f"{out_wav.parent}:/out",
-        "-v", f"{PROFILE_DIR}:/prof",
+        "-v", f"{_mount(out_wav.parent)}:/out",
+        "-v", f"{_mount(PROFILE_DIR)}:/prof",
         "-e", f"MEET_URL={url}",
         "-e", f"BOT_NAME={name}",
         "-e", f"OUT_WAV=/out/{out_wav.name}",

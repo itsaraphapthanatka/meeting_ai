@@ -48,7 +48,8 @@ async def run() -> int:
             log(f"เปิดหน้าล็อกอินไม่สำเร็จ: {e}")
 
         log("=" * 56)
-        log("เปิด VNC ที่  vnc://localhost:5900  แล้วล็อกอิน Google")
+        log("เปิดเบราว์เซอร์ที่  http://localhost:6080/vnc.html  แล้วล็อกอิน Google")
+        log("(หรือใช้ VNC client ต่อ localhost:5900 ก็ได้ ไม่ต้องใส่รหัส)")
         log("(แนะนำใช้บัญชีเฉพาะสำหรับบอท เช่น notetaker@โดเมนคุณ)")
         log("ล็อกอินเสร็จแล้ว กลับมากด Enter ที่ terminal เพื่อบันทึก")
         log("=" * 56)

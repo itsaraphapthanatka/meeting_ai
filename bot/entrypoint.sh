@@ -19,6 +19,10 @@ if [ "$MODE" = "login" ]; then
     # โหมดล็อกอิน: มี window manager + VNC ให้ผู้ใช้เข้ามาคลิกล็อกอินได้จริง
     fluxbox >/dev/null 2>&1 &
     x11vnc -display :99 -forever -shared -nopw -rfbport 5900 -bg -quiet >/dev/null 2>&1
+    # เปิดทางที่สองผ่านเบราว์เซอร์ (noVNC) — ไม่ต้องลงโปรแกรม VNC บนเครื่อง host
+    # ยังเปิด 5900 ไว้ให้คนที่อยากใช้ client จริงด้วย
+    websockify -D --web=/usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 || \
+        echo "[entrypoint] เปิด noVNC ไม่สำเร็จ — ยังใช้ VNC client ต่อ localhost:5900 ได้"
     exec python3 /app/login.py
 fi
 
