@@ -705,16 +705,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            if spec["kind"] == "process":
+            # ทั้งงาน process และ bot จบด้วยไฟล์เสียงผสมที่ worker ต้องส่งขึ้นที่เก็บ
+            # ต่างกันแค่ต้นทาง: process ดึงแทร็กที่ผู้ใช้อัปมา ส่วน bot อัดเองในห้องประชุม
+            if spec["kind"] in ("process", "bot"):
                 storage = backend.storage()
                 external = storage.kind != "local"
-                urls = {}
-                for name in spec["tracks"]:
-                    key = jobs.track_path(spec["id"], name)
-                    signed = storage.download_url(Path(key).name, 6 * 3600) if (external and key) else None
-                    # ที่เก็บภายนอก: ให้ worker ดึงตรง ไม่ต้องไหลผ่าน serverless function
-                    urls[name] = signed or f"/api/worker/jobs/{spec['id']}/tracks/{name}"
-                spec["track_urls"] = urls
+                if spec["kind"] == "process":
+                    urls = {}
+                    for name in spec["tracks"]:
+                        key = jobs.track_path(spec["id"], name)
+                        signed = (storage.download_url(Path(key).name, 6 * 3600)
+                                  if (external and key) else None)
+                        # ที่เก็บภายนอก: ให้ worker ดึงตรง ไม่ต้องไหลผ่าน serverless function
+                        urls[name] = signed or f"/api/worker/jobs/{spec['id']}/tracks/{name}"
+                    spec["track_urls"] = urls
                 if external:
                     playback_key = f"{spec['id']}.ogg"
                     spec["playback_key"] = playback_key

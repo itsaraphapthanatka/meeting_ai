@@ -197,22 +197,33 @@ def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
 
 
 def _upload_playback(client: Client, job_id: str, result: dict, spec: dict | None = None) -> dict:
-    """ไฟล์เสียงผสมเกิดบนเครื่องนี้ ต้องส่งขึ้นไปให้เซิร์ฟเวอร์เก็บแล้วใช้ path ของฝั่งนั้น."""
+    """ไฟล์เสียงผสมเกิดบนเครื่องนี้ ต้องส่งขึ้นไปให้เซิร์ฟเวอร์เก็บแล้วใช้ path ของฝั่งนั้น.
+
+    อัปไม่ขึ้นไม่ถือว่างานล่ม — บทถอดเสียงกับสรุปเป็นของแพงที่สุด (เวลา GPU + ค่า LLM
+    และสำหรับงานบอทคือเวลาประชุมที่ย้อนกลับไปอัดใหม่ไม่ได้) เก็บของพวกนั้นไว้
+    แล้วบอกผู้ใช้ว่าฟังเสียงย้อนไม่ได้ ดีกว่าทิ้งทั้งงาน
+    """
     playback = result.get("playback")
     if not playback:
         return result
     src = Path(playback)
     print("   อัปโหลดไฟล์เสียงผสม …")
     target = (spec or {}).get("playback_upload_url")
-    if target:
-        client.upload(target, src)
-        result["playback"] = (spec or {}).get("playback_key") or src.name
-    else:
-        out = client.upload(
-            f"/api/worker/jobs/{urllib.parse.quote(job_id)}/audio?ext={src.suffix.lstrip('.')}",
-            src,
-        )
-        result["playback"] = out.get("playback") or None
+    try:
+        if target:
+            client.upload(target, src)
+            result["playback"] = (spec or {}).get("playback_key") or src.name
+        else:
+            out = client.upload(
+                f"/api/worker/jobs/{urllib.parse.quote(job_id)}/audio?ext={src.suffix.lstrip('.')}",
+                src,
+            )
+            result["playback"] = out.get("playback") or None
+    except WorkerError as e:
+        print(f"⚠️  เก็บไฟล์เสียงไม่สำเร็จ: {e}", file=sys.stderr)
+        result["playback"] = None
+        note = f"เก็บไฟล์เสียงไม่สำเร็จ ({e}) — บทถอดเสียงและสรุปยังอยู่ครบ แต่ฟังย้อนหลังไม่ได้"
+        result["warning"] = f"{result['warning']} · {note}" if result.get("warning") else note
     return result
 
 
