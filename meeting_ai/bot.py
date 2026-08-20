@@ -35,6 +35,11 @@ LOGIN_CONTAINER = "maibot_login"
 # ที่เก็บหลักฐานตอนบอทเข้าห้องไม่สำเร็จ — ต้องอยู่นอกโฟลเดอร์ชั่วคราวของ worker
 # ซึ่งถูกลบทันทีที่งานจบ (เคยชี้ผู้ใช้ไปหาไฟล์ที่ถูกลบไปแล้ว)
 DEBUG_DIR = config.root / "logs"
+# ที่พักไฟล์เสียงของบอท — ต้องอยู่ใต้โฟลเดอร์โปรเจกต์
+# Docker Desktop บน Windows bind-mount โฟลเดอร์ชั่วคราวของระบบไม่ได้บางเครื่อง
+# (ตอบ 'Access is denied' จาก daemon) แต่ path ใต้โปรเจกต์ใช้ได้ เพราะ
+# bot/profile ก็ถูก mount จากที่นั้นและทำงานได้
+STAGE_DIR = config.root / "recordings" / "bot"
 LOG_TAIL_LINES = 40
 
 # ไฟล์ที่ประกอบเป็น image — เปลี่ยนไฟล์พวกนี้แล้วต้อง build ใหม่
@@ -93,6 +98,29 @@ def build_image(force: bool = False) -> None:
                     "--label", f"{SRC_LABEL}={want}", str(BOT_DIR)], check=True)
 
 
+def _probe_run(docker: str) -> str:
+    """ลองรัน container สั้นๆ พร้อม bind mount จริง — คืนเหตุผลถ้าทำไม่ได้.
+
+    `docker info` ผ่านไม่ได้แปลว่า `docker run` จะผ่าน: Docker Desktop ผูกกับ session
+    ของผู้ใช้ที่ล็อกอิน worker ที่รันจาก Task Scheduler แบบ S4U (ไม่ต้องล็อกอิน)
+    เรียก API ได้แต่ mount ไม่ได้ ตอบ "Access is denied"
+    ถ้าไม่ตรวจจุดนี้ worker จะโฆษณาว่าส่งบอทได้ แล้วไปพังตอนมีงานจริง
+    """
+    r = subprocess.run(
+        [docker, "run", "--rm", "--entrypoint", "true",
+         "-v", f"{_mount(PROFILE_DIR)}:/prof", IMAGE],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode == 0:
+        return ""
+    detail = (r.stderr or r.stdout or "").strip().splitlines()
+    first = detail[-1] if detail else f"exit {r.returncode}"
+    if "Access is denied" in first:
+        return ("Docker รัน container ไม่ได้จาก session นี้ (Access is denied) — "
+                "worker ที่ตั้งเป็นโหมด S4U ใช้ Docker Desktop ไม่ได้ "
+                "ติดตั้ง task ใหม่แบบ Interactive: worker-service.ps1 install")
+    return f"Docker รัน container ไม่ได้: {first[:160]}"
+
+
 def missing_pieces() -> list[str]:
     """สิ่งที่ยังขาดเพื่อให้ส่งบอทเข้าห้องได้ — ว่างเปล่า = พร้อม."""
     missing = []
@@ -107,6 +135,10 @@ def missing_pieces() -> list[str]:
         missing.append(f"image {IMAGE} (สร้างด้วย mai bot-login)")
     if not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir()):
         missing.append("การล็อกอิน Google ของบอท (รัน mai bot-login)")
+    if not missing:
+        why = _probe_run(exe)
+        if why:
+            missing.append(why)
     return missing
 
 
@@ -215,13 +247,13 @@ def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
     lines = list(tail)
     joined = chr(10).join(lines)
     hints = []
-    if "ไม่พบช่องกรอกชื่อ" in joined:
-        hints.append("ห้องนี้ไม่รับ guest — บัญชี Google ของบอทต้องถูกเชิญ "
-                     "หรืออยู่โดเมนเดียวกับห้อง")
     if "หาปุ่มเข้าห้องไม่เจอ" in joined:
         hints.append("หาปุ่มเข้าห้องไม่เจอ — UI ของ Meet เปลี่ยน หรือหน้ายังโหลดไม่เสร็จ")
     if "รอ host กดรับ" in joined:
         hints.append("บอทกดขอเข้าห้องแล้ว แต่ไม่มีใครกด Admit ให้")
+    if "Access is denied" in joined or "Error response from daemon" in joined:
+        hints.append("Docker ปฏิเสธคำสั่ง run — มักเป็นเรื่อง bind mount "
+                     "ตรวจ Settings > Resources > File sharing ว่าแชร์ไดรฟ์ที่โปรเจกต์อยู่แล้ว")
     if "ผิดพลาด" in joined or "Timeout" in joined:
         hints.append("เปิดหน้าห้องไม่สำเร็จ (เน็ตช้า / ลิงก์ผิด / ห้องยังไม่เปิด)")
 
@@ -261,6 +293,13 @@ def join_and_record(
 
     out_wav = Path(out_wav).resolve()
     out_wav.parent.mkdir(parents=True, exist_ok=True)
+    # ให้ container เขียนลงที่พักใต้โปรเจกต์ก่อน แล้วค่อยย้ายไปปลายทางจริง
+    staged = config.root not in out_wav.parents
+    if staged:
+        STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        cout = STAGE_DIR / out_wav.name
+    else:
+        cout = out_wav
     # ตั้งชื่อตาม job id เพื่อให้ไล่หา/สั่งหยุดจากภายนอกได้ (ชื่อ container ต้องเป็น [A-Za-z0-9_.-])
     tag = re.sub(r"[^A-Za-z0-9_.-]", "", job_id or "")[:40] or str(int(time.time()))
     container = f"{PREFIX}{tag}"
@@ -269,11 +308,11 @@ def join_and_record(
 
     cmd = [
         docker, "run", "--rm", "--name", container,
-        "-v", f"{_mount(out_wav.parent)}:/out",
+        "-v", f"{_mount(cout.parent)}:/out",
         "-v", f"{_mount(PROFILE_DIR)}:/prof",
         "-e", f"MEET_URL={url}",
         "-e", f"BOT_NAME={name}",
-        "-e", f"OUT_WAV=/out/{out_wav.name}",
+        "-e", f"OUT_WAV=/out/{cout.name}",
         "-e", f"MAX_MINUTES={max_minutes}",
         IMAGE,
     ]
@@ -321,7 +360,9 @@ def join_and_record(
         except subprocess.TimeoutExpired:
             proc.kill()
 
-    if not out_wav.exists() or out_wav.stat().st_size == 0:
-        raise RuntimeError(_fail_reason(out_wav, tail, job_id))
+    if not cout.exists() or cout.stat().st_size == 0:
+        raise RuntimeError(_fail_reason(cout, tail, job_id))
+    if staged:
+        shutil.move(str(cout), str(out_wav))
     print(f"✅ ได้ไฟล์เสียง: {out_wav}")
     return out_wav

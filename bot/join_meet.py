@@ -103,7 +103,7 @@ async def _prepare_and_join(page) -> None:
         await name_box.fill(BOT_NAME)
         log(f"ตั้งชื่อบอท: {BOT_NAME}")
     except Exception:
-        log("ไม่พบช่องกรอกชื่อ — ห้องนี้อาจบังคับล็อกอิน หรือ UI เปลี่ยน")
+        log("ไม่มีช่องกรอกชื่อ — ปกติถ้าบอทล็อกอิน Google อยู่แล้ว")
 
     # ปิดไมค์/กล้องก่อนเข้า (best-effort ไม่เจอก็ข้าม)
     await _click_first(page, [
