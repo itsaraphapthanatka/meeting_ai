@@ -8,10 +8,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import sys
 
 from playwright.async_api import async_playwright
+
+# หน้าล็อกอินของแต่ละเจ้า — profile เดียวเก็บได้หลาย session
+LOGIN_URL = os.environ.get("LOGIN_URL", "https://accounts.google.com/")
 
 
 def log(msg: str) -> None:
@@ -43,12 +47,13 @@ async def run() -> int:
         )
         page = context.pages[0] if context.pages else await context.new_page()
         try:
-            await page.goto("https://accounts.google.com/", wait_until="load", timeout=60000)
+            await page.goto(LOGIN_URL, wait_until="load", timeout=60000)
         except Exception as e:
             log(f"เปิดหน้าล็อกอินไม่สำเร็จ: {e}")
 
         log("=" * 56)
-        log("เปิดเบราว์เซอร์ที่  http://localhost:6080/vnc.html  แล้วล็อกอิน Google")
+        log("เปิดเบราว์เซอร์ที่  http://localhost:6080/vnc.html  แล้วล็อกอิน")
+        log(f"หน้าที่เปิดไว้: {LOGIN_URL}")
         log("(หรือใช้ VNC client ต่อ localhost:5900 ก็ได้ ไม่ต้องใส่รหัส)")
         log("(แนะนำใช้บัญชีเฉพาะสำหรับบอท เช่น notetaker@โดเมนคุณ)")
         log("ล็อกอินเสร็จแล้ว กลับมากด Enter ที่ terminal เพื่อบันทึก")

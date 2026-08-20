@@ -1,7 +1,7 @@
 """ฝั่ง host: สั่ง Docker รันบอทเข้าห้องประชุมออนไลน์ แล้วคืนไฟล์เสียงที่อัดได้.
 
 บอททั้งหมดรันใน container (Chromium + เสียงเสมือน) จึงไม่แตะลำโพง/หน้าจอเครื่องนี้
-— แชร์หน้าจอในโปรแกรมประชุมได้ตามปกติ. ดูโค้ดบอทที่ bot/join_meet.py
+— แชร์หน้าจอในโปรแกรมประชุมได้ตามปกติ. ดูโค้ดบอทที่ bot/join_meeting.py
 """
 
 from __future__ import annotations
@@ -31,6 +31,13 @@ IMAGE = "meeting-ai-bot"
 # ไม่งั้น cleanup_stale() ตอน worker เริ่ม จะไปฆ่าหน้าล็อกอินที่ผู้ใช้กำลังกรอกรหัสอยู่
 PREFIX = "maibot_job_"
 LOGIN_CONTAINER = "maibot_login"
+# หน้าล็อกอินของแต่ละเจ้า — บาง Workspace/Zoom ห้าม guest ต้องล็อกอินก่อน
+LOGIN_SITES = {
+    "google": "https://accounts.google.com/",
+    "teams": "https://login.microsoftonline.com/",
+    "zoom": "https://zoom.us/signin",
+}
+DEFAULT_SITE_URL = LOGIN_SITES["google"]
 
 # ที่เก็บหลักฐานตอนบอทเข้าห้องไม่สำเร็จ — ต้องอยู่นอกโฟลเดอร์ชั่วคราวของ worker
 # ซึ่งถูกลบทันทีที่งานจบ (เคยชี้ผู้ใช้ไปหาไฟล์ที่ถูกลบไปแล้ว)
@@ -43,7 +50,8 @@ STAGE_DIR = config.root / "recordings" / "bot"
 LOG_TAIL_LINES = 40
 
 # ไฟล์ที่ประกอบเป็น image — เปลี่ยนไฟล์พวกนี้แล้วต้อง build ใหม่
-SOURCES = ("Dockerfile", "entrypoint.sh", "join_meet.py", "login.py")
+SOURCES = ("Dockerfile", "entrypoint.sh", "join_meeting.py",
+           "platforms.py", "login.py")
 SRC_LABEL = "mai.src"
 BOT_DIR = config.root / "bot"
 PROFILE_DIR = BOT_DIR / "profile"   # เก็บ session ที่ล็อกอิน Google ไว้ (ไม่ commit)
@@ -193,8 +201,11 @@ def _open_bot_screen() -> str:
     return f"{head}\n     (ถ้าอยากใช้ VNC client จริงก็ต่อ localhost:5900 ได้ ไม่ต้องใส่รหัส)"
 
 
-def login() -> None:
-    """เปิดโหมดล็อกอินครั้งเดียว — ผู้ใช้ VNC เข้ามาล็อกอิน Google ให้บอท (profile เก็บถาวร)."""
+def login(site: str = "google") -> None:
+    """เปิดโหมดล็อกอินครั้งเดียว — ผู้ใช้เข้ามาล็อกอินให้บอทผ่านเบราว์เซอร์.
+
+    profile เดียวเก็บได้ทุกเจ้า รันซ้ำด้วย --site อื่นเพื่อเพิ่ม session ได้
+    """
     docker = _docker()
     build_image()
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -208,6 +219,7 @@ def login() -> None:
             "-p", "127.0.0.1:6080:6080",   # noVNC (เบราว์เซอร์)
             "-p", "127.0.0.1:5900:5900",   # VNC client
             "-e", "MODE=login",
+            "-e", f"LOGIN_URL={LOGIN_SITES.get(site, DEFAULT_SITE_URL)}",
             "-v", f"{_mount(PROFILE_DIR)}:/prof",
             IMAGE,
         ],
@@ -216,7 +228,7 @@ def login() -> None:
     print("🔐 กำลังเปิดหน้าจอบอท...")
     time.sleep(6)  # รอ x11vnc + websockify + Chromium พร้อม
     print(f"\n  1) {_open_bot_screen()}\n"
-          "  2) ล็อกอิน Google account ของบอทให้เรียบร้อย (แนะนำบัญชีเฉพาะบอท)\n"
+          f"  2) ล็อกอินบัญชีของบอทให้เรียบร้อย ({site}) — แนะนำบัญชีเฉพาะบอท\n"
           "  3) เสร็จแล้วกลับมาที่นี่ กด Enter เพื่อบันทึก\n")
     try:
         input("   >>> ล็อกอินเสร็จแล้วกด Enter... ")
@@ -275,6 +287,7 @@ def join_and_record(
     max_minutes: int = 180,
     on_tick=None,
     job_id: str | None = None,
+    passcode: str = "",
 ) -> Path:
     """ส่งบอทเข้าห้อง แล้วคืน path ไฟล์เสียงที่อัดได้.
 
@@ -314,13 +327,14 @@ def join_and_record(
         "-e", f"BOT_NAME={name}",
         "-e", f"OUT_WAV=/out/{cout.name}",
         "-e", f"MAX_MINUTES={max_minutes}",
+        "-e", f"PASSCODE={passcode}",
         IMAGE,
     ]
 
     print(f"🤖 ส่งบอท \"{name}\" เข้าห้องประชุม...")
     print("   ⚠️ อย่าลืมกด 'รับเข้าห้อง' (Admit) ให้บอทในโปรแกรมประชุม")
     print("   กด Ctrl+C เมื่อจบ เพื่อให้บอทออกจากห้องและหยุดอัด\n")
-    # docker stop -> SIGTERM -> join_meet.py ปิด ffmpeg ให้ wav สมบูรณ์ก่อนตาย
+    # docker stop -> SIGTERM -> join_meeting.py ปิด ffmpeg ให้ wav สมบูรณ์ก่อนตาย
     # (ห้าม kill ตรงๆ ไม่งั้น header ของ wav ไม่ถูกเขียนปิด ไฟล์จะเสีย)
     def leave() -> None:
         subprocess.run([docker, "stop", "-t", "30", container], check=False)

@@ -201,17 +201,22 @@
       <div class="card">
         <h3>🤖 เชิญบอทเข้าห้องประชุม</h3>
         <p class="muted">
-          ไม่ต้องเปิดเครื่องไว้เอง บอทเข้าไปนั่งฟังแล้วสรุปให้ — สั่งจากมือถือก็ได้
+          Google Meet, Microsoft Teams, Zoom — บอทเข้าไปนั่งฟังแล้วสรุปให้
+          ไม่ต้องเปิดเครื่องไว้เอง สั่งจากมือถือก็ได้
         </p>
         <label class="field">
-          <span>ลิงก์ห้อง Google Meet</span>
-          <input id="b-url" type="url" placeholder="https://meet.google.com/xxx-yyyy-zzz"
+          <span>ลิงก์ห้องประชุม</span>
+          <input id="b-url" type="url" placeholder="วางลิงก์ Meet / Teams / Zoom"
                  autocomplete="off" spellcheck="false">
         </label>
         <div class="field-row">
           <label class="field">
             <span>ชื่อบอทที่แสดงในห้อง</span>
             <input id="b-name" type="text" value="AI Notetaker" maxlength="60">
+          </label>
+          <label class="field field-sm" id="b-pass-field" hidden>
+            <span>รหัสเข้าห้อง (Zoom)</span>
+            <input id="b-pass" type="text" maxlength="40" placeholder="ถ้าลิงก์ไม่มี pwd">
           </label>
           <label class="field field-sm">
             <span>อยู่ในห้องไม่เกิน</span>

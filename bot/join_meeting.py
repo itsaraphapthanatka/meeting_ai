@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""บอทเข้าห้อง Google Meet เป็นผู้ร่วมประชุม แล้วอัดเสียงในห้อง (รันภายใน Docker).
+"""บอทเข้าห้องประชุมออนไลน์เป็นผู้ร่วมประชุม แล้วอัดเสียงในห้อง (รันภายใน Docker).
+
+รองรับ Google Meet, Microsoft Teams, Zoom — ดูขั้นตอนกดเข้าห้องของแต่ละเจ้าที่ platforms.py
 
 ทำงานเป็นขั้น:
-  1. เปิด Chromium ไปที่ลิงก์ห้องประชุม
-  2. เริ่มอัดเสียงจากลำโพงเสมือน (pulse: meet.monitor) ด้วย ffmpeg ทันที
-  3. ใส่ชื่อบอท (โหมด guest) + ปิดไมค์/กล้อง + กดเข้าห้อง
-     (ขั้นนี้แข่งกับสัญญาณหยุด — ถ้าถูกสั่งหยุดระหว่างทางจะยกเลิกแล้วปิดอัดทันที)
+  1. เริ่มอัดเสียงจากลำโพงเสมือน (pulse: meet.monitor) ทันที ก่อนเปิดหน้าเว็บ
+     (ถ้าเปิดหน้าพังแล้วยังไม่ได้เริ่มอัด จะไม่ได้ไฟล์เลย แม้แต่ความเงียบ ซึ่งไล่สาเหตุไม่ได้)
+  2. เปิด Chromium ไปที่ลิงก์ห้องประชุม
+  3. ใส่ชื่อบอท + ปิดไมค์/กล้อง + กดเข้าห้อง ตามแพลตฟอร์มที่ตรวจได้จาก URL
+     (ขั้นนี้แข่งกับสัญญาณหยุด — ถูกสั่งหยุดกลางทางจะยกเลิกแล้วปิดอัดทันที)
   4. อยู่ในห้องจนกว่าจะ: จบประชุม / ถูกสั่งหยุด (docker stop) / ครบเวลาสูงสุด
   5. หยุดอัด (finalize wav) เขียนไฟล์ /out/<ชื่อ>.wav (16kHz mono พร้อมป้อน whisper)
 
-ปรับพฤติกรรมผ่าน env: MEET_URL, BOT_NAME, OUT_WAV, MAX_MINUTES
+ปรับพฤติกรรมผ่าน env: MEET_URL, BOT_NAME, OUT_WAV, MAX_MINUTES, PASSCODE
 """
 
 from __future__ import annotations
@@ -21,30 +24,19 @@ import subprocess
 import sys
 import time
 
+import platforms
 from playwright.async_api import async_playwright
 
 MEET_URL = os.environ.get("MEET_URL", "")
 BOT_NAME = os.environ.get("BOT_NAME", "AI Notetaker")
 OUT_WAV = os.environ.get("OUT_WAV", "/out/recording.wav")
 MAX_MINUTES = int(os.environ.get("MAX_MINUTES", "180"))
+PASSCODE = os.environ.get("PASSCODE", "")
 DEBUG_PNG = "/out/bot_debug.png"
 
 
 def log(msg: str) -> None:
     print(f"[bot] {msg}", flush=True)
-
-
-async def _click_first(page, selectors, timeout=4000) -> bool:
-    """คลิก element แรกที่เจอจากรายการ selector (ทนต่อ UI ที่เปลี่ยนบ่อย)."""
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            await el.wait_for(state="visible", timeout=timeout)
-            await el.click()
-            return True
-        except Exception:
-            continue
-    return False
 
 
 async def _visible(page, selector, timeout=800) -> bool:
@@ -86,48 +78,10 @@ def _stop_recording(ff: subprocess.Popen) -> None:
             continue
 
 
-async def _prepare_and_join(page) -> None:
-    """เตรียมหน้า pre-join แล้วกดเข้าห้อง. timeout สั้นเพื่อไม่บล็อกนานถ้า UI ไม่ตรง."""
-    await asyncio.sleep(3)  # ให้หน้า pre-join โหลดนิ่ง
-
-    await _click_first(page, [
-        'button:has-text("Got it")',
-        'button:has-text("Dismiss")',
-        'button:has-text("No thanks")',
-    ], timeout=2000)
-
-    # ใส่ชื่อบอท (โหมด guest — ห้องที่อนุญาต guest จะมีช่องนี้)
-    try:
-        name_box = page.locator('input[type="text"]').first
-        await name_box.wait_for(state="visible", timeout=6000)
-        await name_box.fill(BOT_NAME)
-        log(f"ตั้งชื่อบอท: {BOT_NAME}")
-    except Exception:
-        log("ไม่มีช่องกรอกชื่อ — ปกติถ้าบอทล็อกอิน Google อยู่แล้ว")
-
-    # ปิดไมค์/กล้องก่อนเข้า (best-effort ไม่เจอก็ข้าม)
-    await _click_first(page, [
-        '[aria-label*="Turn off microphone"]', '[aria-label*="ปิดไมโครโฟน"]',
-    ], timeout=2000)
-    await _click_first(page, [
-        '[aria-label*="Turn off camera"]', '[aria-label*="ปิดกล้อง"]',
-    ], timeout=2000)
-
-    joined = await _click_first(page, [
-        'button:has-text("Join now")',
-        'button:has-text("Ask to join")',
-        'button:has-text("เข้าร่วมเลย")',
-        'button:has-text("ขอเข้าร่วม")',
-    ], timeout=4000)
-    log("กดปุ่มเข้าห้องแล้ว — รอ host กดรับถ้าเป็นห้องที่ต้องอนุมัติ"
-        if joined else "หาปุ่มเข้าห้องไม่เจอ (UI อาจเปลี่ยน) — ดู bot_debug.png")
-
-
-async def _monitor(page, stop: asyncio.Event) -> None:
+async def _monitor(page, stop: asyncio.Event, end_markers: str) -> None:
     """อยู่ในห้องจนจบประชุม / ถูกสั่งหยุด / ครบเวลา. ตอบสัญญาณหยุดภายใน ~1 วิ."""
     start = time.time()
     last_end_check = 0.0
-    end_markers = 'text=/You.?ve been removed|left the meeting|Return to home|call ended|การประชุมสิ้นสุด/i'
     while not stop.is_set():
         now = time.time()
         if now - start > MAX_MINUTES * 60:
@@ -166,6 +120,14 @@ async def run() -> int:
         log("ไม่ได้ตั้ง MEET_URL")
         return 2
 
+    platform = platforms.detect(MEET_URL)
+    if platform is None:
+        log(f"ไม่รู้จักแพลตฟอร์มของลิงก์นี้: {MEET_URL}")
+        return 2
+    join, end_markers = platforms.ADAPTERS[platform]
+    url = platforms.prepare_url(MEET_URL, platform)
+    log(f"แพลตฟอร์ม: {platforms.LABELS[platform]}")
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -176,13 +138,13 @@ async def run() -> int:
 
     async with async_playwright() as pw:
         context = await pw.chromium.launch_persistent_context(
-            user_data_dir="/prof",   # profile ถาวร (mount จาก host) ที่ล็อกอิน Google ไว้แล้ว
+            user_data_dir="/prof",   # profile ถาวร (mount จาก host) ที่ล็อกอินไว้แล้ว
             headless=False,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--use-fake-ui-for-media-stream",      # ตอบ allow ให้ prompt ไมค์/กล้องอัตโนมัติ
-                "--use-fake-device-for-media-stream",  # ป้อนไมค์/กล้องปลอม Meet จะได้ไม่ค้างรอ
+                "--use-fake-device-for-media-stream",  # ป้อนไมค์/กล้องปลอม จะได้ไม่ค้างรอ
                 "--autoplay-policy=no-user-gesture-required",
                 "--disable-blink-features=AutomationControlled",  # ลดร่องรอย automation
                 "--disable-gpu",
@@ -194,36 +156,37 @@ async def run() -> int:
         page = context.pages[0] if context.pages else await context.new_page()
         ff = None
         try:
-            # อัดก่อนเปิดหน้าเลย — ถ้าเปิดหน้าพังแล้วยังไม่ได้เริ่มอัด
-            # จะไม่ได้ไฟล์เสียงเลยแม้แต่ความเงียบ ซึ่งทำให้ไล่สาเหตุไม่ได้
-            # และถ้าห้องรับบอทช้า เสียงช่วงต้นก็ไม่หาย
+            # อัดก่อนเปิดหน้าเลย — เปิดหน้าพังแล้วยังไม่ได้เริ่มอัด จะไม่ได้ไฟล์เสียงเลย
+            # แม้แต่ความเงียบ ทำให้ไล่สาเหตุไม่ได้ และถ้าห้องรับบอทช้า เสียงช่วงต้นก็ไม่หาย
             log("เริ่มอัดเสียง")
             ff = _start_recording()
 
-            log(f"เปิดลิงก์: {MEET_URL}")
+            log(f"เปิดลิงก์: {url}")
             try:
-                # domcontentloaded พอสำหรับกดปุ่ม — รอ event load ของ Meet
+                # domcontentloaded พอสำหรับกดปุ่ม — รอ event load ของหน้าประชุม
                 # ช้าเกินจนหมดเวลาได้บ่อยทั้งที่หน้าใช้งานได้แล้ว
-                await page.goto(MEET_URL, wait_until="domcontentloaded", timeout=90000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=90000)
             except Exception as e:
-                # เปิดหน้าไม่จบก็ยังลองต่อ — บางทีหน้าโหลดพอใช้งานแล้วแต่ event ไม่มา
                 log(f"เปิดหน้าห้องไม่เรียบร้อย ({e}) — ลองกดเข้าห้องต่อ")
+
+            await asyncio.sleep(3)  # ให้หน้า pre-join นิ่งก่อน
 
             # เตรียม+เข้าห้อง (ยกเลิกได้ทันทีถ้าถูกสั่งหยุด)
             if not stop.is_set():
-                await _race_stop(_prepare_and_join(page), stop)
+                await _race_stop(join(page, BOT_NAME, log, PASSCODE or None), stop)
 
             # อยู่ในห้องจนจบ
             if not stop.is_set():
-                await _monitor(page, stop)
+                await _monitor(page, stop, end_markers)
 
             log("กำลังปิดการอัดเสียง")
             _stop_recording(ff)
             ff = None
 
             # ออกจากห้องอย่างสุภาพ (best-effort)
-            await _click_first(page, [
+            await platforms.click_first(page, [
                 '[aria-label*="Leave call"]', '[aria-label*="ออกจากสาย"]',
+                '[data-tid="hangup-button"]', 'button:has-text("Leave")',
             ], timeout=3000)
             log(f"เสร็จ — บันทึกไฟล์: {OUT_WAV}")
             return 0

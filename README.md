@@ -94,9 +94,9 @@ Copy-Item .env.example .env
 **เบราว์เซอร์:** โหมดแชร์แท็บต้องใช้ Chrome หรือ Edge — Firefox/Safari ยังแชร์เสียงแท็บไม่ได้
 (อัปโหลดไฟล์และโหมดไมค์เดียวใช้ได้ทุกเบราว์เซอร์ รวมมือถือ)
 
-### 🤖 เชิญบอทเข้าห้องประชุม
+### 🤖 เชิญบอทเข้าห้องประชุม (Meet / Teams / Zoom)
 
-การ์ด "เชิญบอทเข้าห้องประชุม" ในหน้าประชุมใหม่ — ใส่ลิงก์ Google Meet กด "ส่งบอทเข้าห้อง"
+การ์ด "เชิญบอทเข้าห้องประชุม" ในหน้าประชุมใหม่ — วางลิงก์ห้อง กด "ส่งบอทเข้าห้อง"
 ไม่ต้องเปิดเครื่องตัวเองไว้ ไม่ต้องแชร์อะไร สั่งจากมือถือก็ได้
 
 ```
@@ -106,22 +106,46 @@ Copy-Item .env.example .env
 ```
 
 - ไฟล์ที่บอทอัดได้นับเป็นแทร็ก `mixed` (ทุกคนอยู่ในไฟล์เดียว) จึงพึ่ง diarization แยกผู้พูด
-- host ต้องกด **Admit** ให้บอทก่อน ไม่มีทางข้าม (Google บังคับ)
+- host ต้องกด **Admit** ให้บอทก่อน ไม่มีทางข้าม (ทั้งสามเจ้าบังคับ)
 - เสร็จประชุมกดปุ่ม **"ให้บอทออกจากห้องแล้วสรุป"** ที่แถบงาน หรือปล่อยให้ครบเวลาที่ตั้งไว้
   (ธง stop ถูกส่งกลับไปกับคำตอบของ progress — worker เห็นภายใน ~10 วินาที)
 - งาน `bot` ถูกส่งให้เฉพาะ worker ที่มี Docker + image + profile ที่ล็อกอินแล้ว
   เครื่องอื่นจะข้ามงานนี้ไป ไม่คว้ามาทำแล้วพัง
-- รองรับเฉพาะ `meet.google.com` (ค่านี้ถูกส่งไปให้ Chromium ในคอนเทนเนอร์เปิด จึงจำกัดโฮสต์ไว้)
+
+| แพลตฟอร์ม | โฮสต์ที่รับ | หมายเหตุ |
+|---|---|---|
+| Google Meet | `meet.google.com` | ทดสอบกับห้องจริงแล้ว |
+| Microsoft Teams | `teams.microsoft.com`, `teams.live.com` | กด "Continue on this browser" ให้เอง |
+| Zoom | `zoom.us` และ subdomain เช่น `us02web.zoom.us` | เขียนลิงก์เป็น `/wc/join/` ข้ามหน้า Launch Meeting |
+
+จำกัดโฮสต์ไว้เท่านี้เพราะค่านี้ถูกส่งไปให้ Chromium ในคอนเทนเนอร์เปิด — เทียบชื่อโฮสต์แบบตรงตัว
+(หรือ subdomain ของ zoom.us) จึงกันลิงก์หน้าตาคล้ายอย่าง `meet.google.com.evil.com` ได้
+
+ขั้นตอนกดเข้าห้องของแต่ละเจ้าอยู่ที่ [bot/platforms.py](bot/platforms.py) แยกจากส่วนอัดเสียง/เฝ้าห้อง
+ที่ใช้ร่วมกันทั้งหมด — UI ของทั้งสามเจ้าเปลี่ยนเองได้ selector จึงเขียนเป็น "ลองหลายตัวเรียงกัน"
+และทุกขั้นเป็น best-effort หาไม่เจอก็ไปต่อ แล้วเก็บ `logs/bot_debug_<job id>.png` ไว้ให้ดู
+
+**Zoom ที่ต้องใส่รหัส:** ถ้าลิงก์ไม่มี `?pwd=` ใส่รหัสในช่อง "รหัสเข้าห้อง (Zoom)" ที่จะโผล่ขึ้นมาเอง
+เมื่อวางลิงก์ zoom.us
 
 เตรียมเครื่องที่จะรันบอท (ทำครั้งเดียว):
 ```bash
-./mai bot-login     # build image + ล็อกอิน Google ผ่านเบราว์เซอร์ (noVNC)
+./mai bot-login                 # build image + ล็อกอิน Google ผ่านเบราว์เซอร์ (noVNC)
+./mai bot-login --site teams    # เพิ่ม session ของ Microsoft
+./mai bot-login --site zoom     # เพิ่ม session ของ Zoom
 ```
-แนะนำใช้บัญชี Google แยกสำหรับบอท — session จะถูกเก็บถาวรที่ `bot/profile/`
+profile เดียวเก็บได้ทุกเจ้า (`bot/profile/`) — ห้องที่รับ guest ไม่ต้องล็อกอินก็เข้าได้
+แต่ห้อง Workspace/องค์กรมักบังคับ แนะนำใช้บัญชีแยกสำหรับบอท
+
+> Docker Desktop ต้องรันใน session ที่ล็อกอินอยู่ — ถ้าตั้ง worker เป็นโหมด S4U
+> (รันแม้ไม่ได้ล็อกอิน) `docker run` จะตอบ `Access is denied` ติดตั้งเป็นโหมด Interactive แทน:
+> `worker-service.ps1 uninstall` แล้ว `worker-service.ps1 install`
 
 ใช้จาก CLI ได้ด้วย:
 ```bash
 ./mai bot "https://meet.google.com/xxx-yyyy-zzz" --title "Sprint Review"
+./mai bot "https://us02web.zoom.us/j/85512345678?pwd=xxx"
+./mai bot "https://teams.live.com/meet/9876543210"
 ```
 
 ### 3 โหมดอัดสด

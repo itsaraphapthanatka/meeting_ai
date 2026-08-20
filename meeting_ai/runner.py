@@ -280,7 +280,8 @@ def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
 
     progress("ส่งบอทเข้าห้องประชุม (อย่าลืมกดรับเข้าห้อง)", BOT_START)
     bot.join_and_record(url, wav, name=spec.get("bot_name") or "AI Notetaker",
-                        max_minutes=max_minutes, on_tick=tick, job_id=spec["id"])
+                        max_minutes=max_minutes, on_tick=tick, job_id=spec["id"],
+                        passcode=spec.get("passcode") or "")
 
     # ไฟล์เงียบทั้งอัน = บอทไม่ได้ยินอะไรเลย ต้นเหตุที่พบบ่อยสุดคือไม่มีใครกด Admit
     # ให้บอก(สาเหตุ)ตรงนี้ ไม่ใช่ปล่อยให้ไปโผล่เป็น "ถอดเสียงไม่ได้ข้อความเลย" ทีหลัง

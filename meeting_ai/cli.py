@@ -70,7 +70,7 @@ def _cmd_bot(args: argparse.Namespace) -> int:
 
 def _cmd_bot_login(args: argparse.Namespace) -> int:
     from . import bot
-    bot.login()
+    bot.login(args.site)
     return 0
 
 
@@ -171,7 +171,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-process", action="store_true", help="อัดอย่างเดียว ไม่ต้องถอด/สรุป")
     sp.set_defaults(func=_cmd_bot)
 
-    sp = sub.add_parser("bot-login", help="ล็อกอิน Google ให้บอทครั้งเดียว (ผ่าน VNC) — จำเป็นสำหรับห้อง Workspace")
+    sp = sub.add_parser("bot-login", help="ล็อกอินให้บอทครั้งเดียว (ผ่านเบราว์เซอร์) — จำเป็นถ้าห้องไม่รับ guest")
+    sp.add_argument("--site", choices=("google", "teams", "zoom"), default="google",
+                    help="จะล็อกอินเจ้าไหน (profile เดียวเก็บได้หลายเจ้า)")
     sp.set_defaults(func=_cmd_bot_login)
 
     sp = sub.add_parser("web", help="เปิดหน้าเว็บ: อัปโหลด/อัดสด/ค้นหาคลังการประชุม")

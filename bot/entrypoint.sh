@@ -27,4 +27,4 @@ if [ "$MODE" = "login" ]; then
 fi
 
 # โหมดปกติ: python เป็น PID 1 (docker stop → SIGTERM ถึง python → ปิดอัดสุภาพ)
-exec python3 /app/join_meet.py
+exec python3 /app/join_meeting.py

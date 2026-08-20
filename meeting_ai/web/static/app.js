@@ -546,6 +546,13 @@ function setupBot() {
     note.textContent = 'บอทเข้าห้องแล้ว host ต้องกด "รับเข้าห้อง" (Admit) ให้ก่อน '
       + 'เสร็จประชุมกด "ให้บอทออก" ที่แถบงาน หรือปล่อยให้ครบเวลาที่ตั้งไว้';
   }
+  // ช่องรหัสโชว์เฉพาะลิงก์ Zoom — อีกสองเจ้าไม่มีรหัสแยกจากลิงก์
+  const url = $('#b-url');
+  const toggle = () => {
+    $('#b-pass-field').hidden = !/zoom\.us/i.test(url.value);
+  };
+  url.oninput = toggle;
+  toggle();
   $('#btn-bot').onclick = sendBot;
   $('#b-url').onkeydown = (e) => { if (e.key === 'Enter') sendBot(); };
 }
@@ -562,6 +569,7 @@ async function sendBot() {
       url,
       bot_name: ($('#b-name').value || '').trim(),
       max_minutes: parseInt($('#b-max').value || '120', 10),
+      passcode: ($('#b-pass').value || '').trim(),
       title: v.title,
       lang: v.lang,
       template: v.template,

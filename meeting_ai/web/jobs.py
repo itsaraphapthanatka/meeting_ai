@@ -121,6 +121,7 @@ def create_bot(
     num_speakers: int,
     bot_name: str,
     max_minutes: int,
+    passcode: str = "",
     owner_id: str | None = None,
     stt_provider: str | None = None,
 ) -> dict:
@@ -143,6 +144,7 @@ def create_bot(
         "url": url,
         "bot_name": bot_name,
         "max_minutes": max_minutes,
+        "passcode": passcode,   # Zoom บางห้องต้องใส่รหัสถ้าลิงก์ไม่มี pwd
     }
     if cloud:
         store.job_upsert(mid, "bot", title, spec, status="queued")
@@ -268,6 +270,7 @@ def build_spec(job_id: str) -> dict | None:
             "url": d.get("url"),
             "bot_name": d.get("bot_name"),
             "max_minutes": d.get("max_minutes"),
+            "passcode": d.get("passcode"),
         }
 
     mid = _meeting_of(job)

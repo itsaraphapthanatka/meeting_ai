@@ -48,10 +48,19 @@ MAX_BOT_MINUTES = 8 * 60
 
 # โฮสต์ที่ยอมให้ส่งบอทเข้าไป — จำกัดไว้เพราะค่านี้ถูกส่งต่อเป็น URL ให้ Chromium ในคอนเทนเนอร์เปิด
 # ถ้าไม่จำกัด จะกลายเป็นช่องให้สั่งเปิดหน้าเว็บอะไรก็ได้จากในเครือข่ายของเครื่อง worker
-BOT_HOSTS = ("meet.google.com",)
+# เทียบแบบตรงตัว (หรือ subdomain ที่ระบุ) กันโฮสต์หน้าตาคล้ายอย่าง
+# meet.google.com.evil.com ที่ endswith เฉยๆ จะปล่อยผ่าน
+BOT_HOSTS = ("meet.google.com", "teams.microsoft.com", "teams.live.com", "zoom.us")
+BOT_HOST_SUFFIX = (".zoom.us",)   # Zoom ใช้ subdomain ตามภูมิภาค เช่น us02web.zoom.us
+PLATFORM_NAMES = "Google Meet, Microsoft Teams, Zoom"
 
 
-def _check_meet_url(url: str) -> tuple[bool, str]:
+def _bot_host_ok(host: str) -> bool:
+    host = (host or "").lower()
+    return host in BOT_HOSTS or host.endswith(BOT_HOST_SUFFIX)
+
+
+def _check_join_url(url: str) -> tuple[bool, str]:
     if not url:
         return False, "ต้องใส่ลิงก์ห้องประชุม"
     try:
@@ -60,8 +69,8 @@ def _check_meet_url(url: str) -> tuple[bool, str]:
         return False, "ลิงก์ไม่ถูกต้อง"
     if parsed.scheme != "https":
         return False, "ลิงก์ต้องเริ่มด้วย https://"
-    if parsed.hostname not in BOT_HOSTS:
-        return False, f"รองรับแค่ {', '.join(BOT_HOSTS)} (ตอนนี้บอทเข้าได้เฉพาะ Google Meet)"
+    if not _bot_host_ok(parsed.hostname):
+        return False, f"รองรับ {PLATFORM_NAMES} เท่านั้น"
     return True, ""
 
 
@@ -439,6 +448,7 @@ class Handler(BaseHTTPRequestHandler):
         if backend.auth_required() and not self.user:
             return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อนสร้างการประชุม")
 
+        passcode = str(body.get("passcode") or "").strip()[:40]
         provider = str(body.get("stt") or "").strip().lower() or None
         if provider and provider not in (stt.LOCAL, stt.API):
             return self._error(HTTPStatus.BAD_REQUEST,
@@ -463,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อนส่งบอท")
 
         url = str(body.get("url") or "").strip()
-        ok, why = _check_meet_url(url)
+        ok, why = _check_join_url(url)
         if not ok:
             return self._error(HTTPStatus.BAD_REQUEST, why)
 
@@ -501,6 +511,7 @@ class Handler(BaseHTTPRequestHandler):
             num_speakers=num_speakers,
             bot_name=bot_name,
             max_minutes=max_minutes,
+            passcode=passcode,
             owner_id=self.user_id,
             stt_provider=provider,
         )

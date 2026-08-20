@@ -19,7 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m pip install --no-cache-dir playwright==1.48.0
 
 WORKDIR /app
-COPY join_meet.py /app/join_meet.py
+COPY join_meeting.py /app/join_meeting.py
+COPY platforms.py /app/platforms.py
 COPY login.py /app/login.py
 COPY entrypoint.sh /app/entrypoint.sh
 
@@ -27,7 +28,7 @@ COPY entrypoint.sh /app/entrypoint.sh
 # ทำให้ shebang มีอักขระ carriage return ติดมา แล้ว container ตายทันทีด้วย
 #   /usr/bin/env: 'bash^M': No such file or directory
 # .gitattributes กันไว้ชั้นหนึ่งแล้ว แต่ทำซ้ำที่นี่ให้ build ได้แม้ config เครื่องอื่นต่างไป
-RUN sed -i 's/\r$//' /app/entrypoint.sh /app/join_meet.py /app/login.py \
+RUN sed -i 's/\r$//' /app/entrypoint.sh /app/join_meeting.py /app/platforms.py /app/login.py \
     && chmod +x /app/entrypoint.sh
 
 # ไฟล์เสียงที่อัดจะถูกเขียนลง /out (mount มาจากโฟลเดอร์ recordings/ ของ host)
