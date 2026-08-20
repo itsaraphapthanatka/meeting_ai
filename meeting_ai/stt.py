@@ -237,8 +237,9 @@ def _transcribe_api(
         if on_progress:
             on_progress(1.0)
 
-    if not segments:
-        raise RuntimeError("API ไม่ได้คืนข้อความใดๆ กลับมา")
+    # ไม่มี segments = API ตอบ 200 แต่ไม่เจอเสียงพูด ซึ่งคือ "ไฟล์เงียบ" ไม่ใช่ API พัง
+    # ปล่อยให้ว่างแล้วให้ runner เป็นคนบอกสาเหตุ (ทางเดียวกับ whisper ในเครื่อง)
+    # ไม่งั้นข้อความ error จะชี้ไปที่ API ทั้งที่ปัญหาอยู่ที่ต้นทางเสียง
     return Transcript(language=detected, segments=segments)
 
 

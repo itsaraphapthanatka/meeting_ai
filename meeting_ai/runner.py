@@ -238,6 +238,24 @@ def _mmss(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
+SILENT_DB = -55.0   # ต่ำกว่านี้ถือว่าเงียบ (ห้องประชุมที่มีคนพูดอยู่ราว -30 ถึง -15 dB)
+
+
+def mean_volume(path: Path) -> float | None:
+    """ระดับเสียงเฉลี่ยเป็น dB — None ถ้าวัดไม่ได้."""
+    proc = subprocess.run(
+        [config.ffmpeg_bin, "-hide_banner", "-i", str(path),
+         "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    for line in (proc.stderr or "").splitlines():
+        if "mean_volume:" in line:
+            try:
+                return float(line.split("mean_volume:")[1].split("dB")[0].strip())
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
 def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
             stop_check=None, work_dir: Path | None = None) -> dict:
     """ส่งบอทเข้าห้องประชุม อัดเสียง แล้วถอด/แยกผู้พูด/สรุป ด้วยท่อเดิมทั้งเส้น.
@@ -263,6 +281,16 @@ def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
     progress("ส่งบอทเข้าห้องประชุม (อย่าลืมกดรับเข้าห้อง)", BOT_START)
     bot.join_and_record(url, wav, name=spec.get("bot_name") or "AI Notetaker",
                         max_minutes=max_minutes, on_tick=tick, job_id=spec["id"])
+
+    # ไฟล์เงียบทั้งอัน = บอทไม่ได้ยินอะไรเลย ต้นเหตุที่พบบ่อยสุดคือไม่มีใครกด Admit
+    # ให้บอก(สาเหตุ)ตรงนี้ ไม่ใช่ปล่อยให้ไปโผล่เป็น "ถอดเสียงไม่ได้ข้อความเลย" ทีหลัง
+    level = mean_volume(wav)
+    if level is not None and level < SILENT_DB:
+        secs = audio_duration(wav)
+        raise RuntimeError(
+            f"บอทอัดมา {_mmss(secs)} แต่เงียบทั้งไฟล์ (เฉลี่ย {level:.0f} dB) — "
+            "ส่วนใหญ่เกิดจากไม่มีใครกด “รับเข้าห้อง” (Admit) ให้บอท "
+            "จึงค้างอยู่หน้าห้องตลอด ลองส่งใหม่แล้วกดรับภายในหนึ่งนาที")
 
     # ต่อท่อเดิม: บีบช่วง progress ของ transcribe_job ให้อยู่หลังช่วงของบอท
     def scaled(step: str, value: float) -> None:
