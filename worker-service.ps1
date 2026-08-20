@@ -33,7 +33,10 @@ param(
 
     # รันแม้ยังไม่ได้ล็อกอิน (เริ่มตอนบูตเครื่องเลย)
     # ลอง S4U ก่อน — ไม่ต้องเก็บรหัส Windows ไว้ที่ไหน ถ้าไม่ได้จะถามรหัสให้ใส่เอง
-    [switch]$RunAlways
+    [switch]$RunAlways,
+
+    # ระบุ python เองได้ เผื่อ PATH ชี้ไป venv ของโปรเจกต์อื่น
+    [string]$Python
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,8 +57,26 @@ if (-not (Test-Path (Join-Path $root "meeting_ai\worker.py"))) {
 function Get-Task { Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
 
 function Install-WorkerTask {
-    $py = (Get-Command python -ErrorAction SilentlyContinue).Source
-    if (-not $py) { Die "ไม่พบ python ใน PATH" }
+    # เลือกล่าม python ให้ชัดเจน — ค่านี้ถูกฝังลงตัวห่อและใช้ตลอดอายุของ task
+    # PATH บนเครื่องที่มีหลายโปรเจกต์มักชี้ไป venv ของโปรเจกต์อื่น ซึ่ง
+    # ลง sherpa-onnx เพิ่มไม่ได้ (บางตัวไม่มี pip) แล้วแยกผู้พูดจะใช้ไม่ได้ตลอด
+    if ($Python) {
+        if (-not (Test-Path $Python)) { Die "ไม่พบไฟล์ python ที่ระบุ: $Python" }
+        $py = (Resolve-Path $Python).Path
+    } else {
+        $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+    }
+    if (-not $py) { Die "ไม่พบ python ใน PATH — ระบุด้วย -Python <path ของ python.exe>" }
+    Info "ล่าม python : $py"
+    if ($py -match "\\.?venv\\" -and $py -notlike "$root*") {
+        Warn "ตัวนี้เป็น venv ของโปรเจกต์อื่น ถ้าลงแพ็กเกจเพิ่มไม่ได้ ให้ติดตั้งใหม่ด้วย"
+        Warn "  -Python <path> ชี้ไปที่ python ตัวหลัก (ดูรายการด้วย: py -0p)"
+    }
+    & $py -c "import sherpa_onnx" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Warn "ล่ามตัวนี้ยังไม่มี sherpa-onnx — worker จะแยกผู้พูดไม่ได้"
+        Warn "  ลงด้วย: & `"$py`" -m pip install sherpa-onnx"
+    }
     if (-not $Name) { $Name = $env:COMPUTERNAME }
 
     New-Item -ItemType Directory -Force $logDir | Out-Null
