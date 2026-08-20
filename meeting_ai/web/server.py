@@ -448,7 +448,6 @@ class Handler(BaseHTTPRequestHandler):
         if backend.auth_required() and not self.user:
             return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อนสร้างการประชุม")
 
-        passcode = str(body.get("passcode") or "").strip()[:40]
         provider = str(body.get("stt") or "").strip().lower() or None
         if provider and provider not in (stt.LOCAL, stt.API):
             return self._error(HTTPStatus.BAD_REQUEST,
@@ -495,7 +494,10 @@ class Handler(BaseHTTPRequestHandler):
             max_minutes = max(1, min(MAX_BOT_MINUTES, int(body.get("max_minutes") or 180)))
         except (TypeError, ValueError):
             max_minutes = 180
-        bot_name = _SAFE_TITLE_RE.sub(" ", str(body.get("bot_name") or "")).strip()[:60]             or "AI Notetaker"
+        bot_name = (_SAFE_TITLE_RE.sub(" ", str(body.get("bot_name") or "")).strip()[:60]
+                    or "AI Notetaker")
+        # Zoom บางห้องต้องใส่รหัสถ้าลิงก์ไม่มี ?pwd= มาด้วย
+        passcode = str(body.get("passcode") or "").strip()[:40]
 
         provider = str(body.get("stt") or "").strip().lower() or None
         if provider and provider not in (stt.LOCAL, stt.API):
