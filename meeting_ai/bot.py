@@ -50,6 +50,12 @@ STAGE_DIR = config.root / "recordings" / "bot"
 LOG_TAIL_LINES = 40
 STATUS_NAME = "bot_status.txt"   # คอนเทนเนอร์เขียนสถานะจริงไว้ให้อ่าน
 
+# ทุกคำสั่ง docker ต้องมีเพดานเวลา — Docker Desktop ค้างได้ (อัปเดตตัวเอง/WSL สะดุด)
+# ถ้าไม่ใส่ ตัวตรวจความสามารถที่ถูกเรียกจากเธรด heartbeat จะแขวนทั้ง worker
+# แล้วเซิร์ฟเวอร์จะเห็นว่าเครื่องนี้หลุดไปเลย ทั้งที่โพรเซสยังอยู่
+DOCKER_TIMEOUT = 25
+PROBE_TIMEOUT = 60
+
 # ไฟล์ที่ประกอบเป็น image — เปลี่ยนไฟล์พวกนี้แล้วต้อง build ใหม่
 SOURCES = ("Dockerfile", "entrypoint.sh", "join_meeting.py",
            "platforms.py", "login.py")
@@ -58,18 +64,39 @@ BOT_DIR = config.root / "bot"
 PROFILE_DIR = BOT_DIR / "profile"   # เก็บ session ที่ล็อกอิน Google ไว้ (ไม่ commit)
 
 
+class _Timeout:
+    """ผลลัพธ์ปลอมเมื่อคำสั่ง docker ไม่ตอบในเวลา — ให้ผู้เรียกอ่านเหมือน CompletedProcess."""
+
+    returncode = 124   # เท่ากับที่ timeout(1) ใช้
+
+    def __init__(self, cmd: list[str]) -> None:
+        self.stdout = ""
+        self.stderr = f"docker ไม่ตอบใน {DOCKER_TIMEOUT}s: {' '.join(cmd[1:3])}"
+
+
+def _run(cmd: list[str], text: bool = False, timeout: int | None = None):
+    """เรียก docker พร้อมเพดานเวลาเสมอ — ไม่โยน TimeoutExpired ออกไปให้ผู้เรียกจัดการ."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=text,
+                              encoding="utf-8" if text else None,
+                              errors="replace" if text else None,
+                              timeout=timeout or DOCKER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return _Timeout(cmd)
+
+
 def _docker() -> str:
     exe = shutil.which("docker")
     if not exe:
         raise RuntimeError("ไม่พบ docker — ติดตั้ง Docker Desktop แล้วเปิดโปรแกรมก่อน")
     # เช็กว่า daemon เปิดอยู่ไหม
-    if subprocess.run([exe, "info"], capture_output=True).returncode != 0:
-        raise RuntimeError("Docker daemon ยังไม่เปิด — เปิดแอป Docker Desktop ก่อนแล้วลองใหม่")
+    if _run([exe, "info"]).returncode != 0:
+        raise RuntimeError("Docker daemon ยังไม่เปิด (หรือไม่ตอบภายใน เวลาที่รอ) — เปิดแอป Docker Desktop ก่อนแล้วลองใหม่")
     return exe
 
 
 def _image_exists(docker: str) -> bool:
-    r = subprocess.run([docker, "images", "-q", IMAGE], capture_output=True, text=True)
+    r = _run([docker, "images", "-q", IMAGE], text=True)
     return bool(r.stdout.strip())
 
 
@@ -84,10 +111,8 @@ def source_hash() -> str:
 
 
 def _image_hash(docker: str) -> str:
-    r = subprocess.run(
-        [docker, "image", "inspect", IMAGE, "--format",
-         "{{index .Config.Labels " + chr(34) + SRC_LABEL + chr(34) + "}}"],
-        capture_output=True, text=True)
+    label = '{{index .Config.Labels "' + SRC_LABEL + '"}}'
+    r = _run([docker, "image", "inspect", IMAGE, "--format", label], text=True)
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
@@ -115,10 +140,9 @@ def _probe_run(docker: str) -> str:
     เรียก API ได้แต่ mount ไม่ได้ ตอบ "Access is denied"
     ถ้าไม่ตรวจจุดนี้ worker จะโฆษณาว่าส่งบอทได้ แล้วไปพังตอนมีงานจริง
     """
-    r = subprocess.run(
-        [docker, "run", "--rm", "--entrypoint", "true",
-         "-v", f"{_mount(PROFILE_DIR)}:/prof", IMAGE],
-        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = _run([docker, "run", "--rm", "--entrypoint", "true",
+              "-v", f"{_mount(PROFILE_DIR)}:/prof", IMAGE],
+             text=True, timeout=PROBE_TIMEOUT)
     if r.returncode == 0:
         return ""
     detail = (r.stderr or r.stdout or "").strip().splitlines()
@@ -137,8 +161,8 @@ def missing_pieces() -> list[str]:
     if not exe:
         missing.append("Docker (ติดตั้ง Docker Desktop)")
         return missing        # ไม่มี docker ก็ตรวจข้ออื่นต่อไม่ได้
-    if subprocess.run([exe, "info"], capture_output=True).returncode != 0:
-        missing.append("Docker daemon ยังไม่เปิด")
+    if _run([exe, "info"]).returncode != 0:
+        missing.append("Docker daemon ไม่ตอบ (ค้างหรือยังไม่เปิด)")
         return missing
     if not _image_exists(exe):
         missing.append(f"image {IMAGE} (สร้างด้วย mai bot-login)")
@@ -162,12 +186,11 @@ def cleanup_stale() -> list[str]:
     exe = shutil.which("docker")
     if not exe:
         return []
-    r = subprocess.run([exe, "ps", "--filter", f"name={PREFIX}", "--format", "{{.Names}}"],
-                       capture_output=True, text=True)
+    r = _run([exe, "ps", "--filter", f"name={PREFIX}", "--format", "{{.Names}}"], text=True)
     names = [x.strip() for x in r.stdout.splitlines() if x.strip()]
     for name in names:
         # stop ไม่ kill — ให้บอทออกจากห้องและปิดไฟล์เสียงให้เรียบร้อยก่อน
-        subprocess.run([exe, "stop", "-t", "20", name], capture_output=True)
+        _run([exe, "stop", "-t", "20", name], timeout=50)
     return names
 
 
