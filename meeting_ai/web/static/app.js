@@ -556,11 +556,35 @@ function setupBot() {
   const url = $('#b-url');
   const toggle = () => {
     $('#b-pass-field').hidden = !/zoom\.us/i.test(url.value);
+    $('#b-detect').textContent = describeRoom(url.value);
   };
   url.oninput = toggle;
   toggle();
   $('#btn-bot').onclick = sendBot;
   $('#b-url').onkeydown = (e) => { if (e.key === 'Enter') sendBot(); };
+}
+
+/** บอกว่าลิงก์ที่วางมาเป็นห้องไหน — ให้ผู้ใช้เทียบเลขห้องกับหน้าต่างประชุมได้ก่อนกดส่ง.
+    เคยพลาดจริง: ส่งบอทไปห้องเก่าที่ปิดแล้ว แล้วไล่สาเหตุกันหลายรอบเพราะไม่มีใครเห็นว่าเลขห้องต่างกัน */
+function describeRoom(raw) {
+  const v = (raw || '').trim();
+  if (!v) return '';
+  let u;
+  try { u = new URL(v); } catch (e) { return 'ลิงก์ยังไม่สมบูรณ์'; }
+  const host = u.hostname.toLowerCase();
+  if (host === 'meet.google.com') {
+    const code = u.pathname.replace(/^\/+/, '').split('/')[0];
+    return code ? `Google Meet · ห้อง ${code}` : 'Google Meet';
+  }
+  if (host === 'teams.microsoft.com' || host === 'teams.live.com') {
+    const m = u.pathname.match(/\/meet\/([0-9]+)/);
+    return m ? `Microsoft Teams · ห้อง ${m[1]}` : 'Microsoft Teams';
+  }
+  if (host === 'zoom.us' || host.endsWith('.zoom.us')) {
+    const m = u.pathname.match(/\/(?:j|wc\/join|wc)\/([0-9]{9,12})/);
+    return m ? `Zoom · ห้อง ${m[1]} — ตรวจว่าตรงกับเลขในหน้าต่างประชุม` : 'Zoom';
+  }
+  return 'โฮสต์นี้ไม่รองรับ — ใช้ได้เฉพาะ Meet / Teams / Zoom';
 }
 
 async function sendBot() {
