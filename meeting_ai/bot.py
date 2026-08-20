@@ -308,6 +308,8 @@ def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
     lines = list(tail)
     joined = chr(10).join(lines)
     hints = []
+    if "Automated bots" in joined or "ตรวจพบว่าเป็นบอท" in joined:
+        hints.append("Zoom ปฏิเสธเพราะตรวจพบว่าเป็นบอท — ลองล็อกอินบัญชี Zoom ให้บอทก่อน (mai bot-login --site zoom) ถ้ายังไม่ผ่าน ให้ใช้วิธีอัดจากเครื่องผู้เข้าร่วม หรืออัปโหลดไฟล์ที่ Zoom อัดไว้เองแทน")
     if "หาปุ่มเข้าห้องไม่เจอ" in joined:
         hints.append("หาปุ่มเข้าห้องไม่เจอ — UI ของ Meet เปลี่ยน หรือหน้ายังโหลดไม่เสร็จ")
     if "รอ host กดรับ" in joined:

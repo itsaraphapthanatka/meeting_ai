@@ -114,9 +114,9 @@ Copy-Item .env.example .env
 
 | แพลตฟอร์ม | โฮสต์ที่รับ | หมายเหตุ |
 |---|---|---|
-| Google Meet | `meet.google.com` | ทดสอบกับห้องจริงแล้ว |
-| Microsoft Teams | `teams.microsoft.com`, `teams.live.com` | กด "Continue on this browser" ให้เอง |
-| Zoom | `zoom.us` และ subdomain เช่น `us02web.zoom.us` | เขียนลิงก์เป็น `/wc/join/` ข้ามหน้า Launch Meeting |
+| Google Meet | `meet.google.com` | ✅ ใช้งานได้ ทดสอบกับห้องจริงแล้ว |
+| Microsoft Teams | `teams.microsoft.com`, `teams.live.com` | ✅ ใช้งานได้ (กด "Continue on this browser" ให้เอง) |
+| Zoom | `zoom.us` และ subdomain | ❌ **Zoom บล็อกบอท** ดูหัวข้อล่าง |
 
 จำกัดโฮสต์ไว้เท่านี้เพราะค่านี้ถูกส่งไปให้ Chromium ในคอนเทนเนอร์เปิด — เทียบชื่อโฮสต์แบบตรงตัว
 (หรือ subdomain ของ zoom.us) จึงกันลิงก์หน้าตาคล้ายอย่าง `meet.google.com.evil.com` ได้
@@ -125,8 +125,28 @@ Copy-Item .env.example .env
 ที่ใช้ร่วมกันทั้งหมด — UI ของทั้งสามเจ้าเปลี่ยนเองได้ selector จึงเขียนเป็น "ลองหลายตัวเรียงกัน"
 และทุกขั้นเป็น best-effort หาไม่เจอก็ไปต่อ แล้วเก็บ `logs/bot_debug_<job id>.png` ไว้ให้ดู
 
-**Zoom ที่ต้องใส่รหัส:** ถ้าลิงก์ไม่มี `?pwd=` ใส่รหัสในช่อง "รหัสเข้าห้อง (Zoom)" ที่จะโผล่ขึ้นมาเอง
-เมื่อวางลิงก์ zoom.us
+#### Zoom ปฏิเสธบอท
+
+ทดสอบกับห้องจริงแล้ว Zoom web client ตรวจจับเบราว์เซอร์ที่ถูกสั่งงานอัตโนมัติ แล้วขึ้นข้อความนี้:
+
+```
+Automated bots aren't allowed to join this meeting.
+If this was a mistake and you are a human, sign in to join the meeting.
+```
+
+ไม่ใช่เรื่องรหัสผิดหรือ selector ไม่ตรง — เป็นนโยบายของ Zoom เอง (หน้านั้นมี reCAPTCHA คุมอยู่)
+โค้ดในโปรเจกต์นี้จะรายงานข้อความนี้ให้เห็นตรงๆ ไม่ปล่อยให้ไปจบด้วย "ไฟล์เงียบ"
+
+ทางที่ยังใช้ได้กับ Zoom:
+
+1. **ล็อกอินบัญชี Zoom ให้บอท** — ทางที่ Zoom เขียนบอกเองในหน้านั้น
+   `./mai bot-login --site zoom` แล้วลองใหม่ (ยังไม่ได้ยืนยันว่าผ่าน)
+2. **ใช้ Zoom อัดเอง** (Local/Cloud Recording) แล้วอัปโหลดไฟล์เข้า meeting_ai — ได้ผลเท่ากันทุกอย่าง
+3. **อัดจากเครื่องผู้เข้าร่วม** ด้วยโหมด "ไมค์ + เสียงในเครื่อง" ในหน้าอัดสด — ไม่ต้องแชร์หน้าจอ
+4. Zoom Meeting SDK (ทางที่ Zoom รองรับสำหรับทำบอทอัดเสียง) — ยังไม่ได้ทำในโปรเจกต์นี้
+
+> โปรเจกต์นี้ไม่ทำการหลบเลี่ยงระบบตรวจจับบอทของ Zoom — เป็นการฝ่ากลไกป้องกันของแพลตฟอร์ม
+> และผิดเงื่อนไขการใช้งานของเขา
 
 เตรียมเครื่องที่จะรันบอท (ทำครั้งเดียว):
 ```bash
