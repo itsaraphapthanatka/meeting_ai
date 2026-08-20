@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
+import threading
+from collections import deque
 import sys
 import time
 from pathlib import Path
@@ -28,6 +31,15 @@ IMAGE = "meeting-ai-bot"
 # ไม่งั้น cleanup_stale() ตอน worker เริ่ม จะไปฆ่าหน้าล็อกอินที่ผู้ใช้กำลังกรอกรหัสอยู่
 PREFIX = "maibot_job_"
 LOGIN_CONTAINER = "maibot_login"
+
+# ที่เก็บหลักฐานตอนบอทเข้าห้องไม่สำเร็จ — ต้องอยู่นอกโฟลเดอร์ชั่วคราวของ worker
+# ซึ่งถูกลบทันทีที่งานจบ (เคยชี้ผู้ใช้ไปหาไฟล์ที่ถูกลบไปแล้ว)
+DEBUG_DIR = config.root / "logs"
+LOG_TAIL_LINES = 40
+
+# ไฟล์ที่ประกอบเป็น image — เปลี่ยนไฟล์พวกนี้แล้วต้อง build ใหม่
+SOURCES = ("Dockerfile", "entrypoint.sh", "join_meet.py", "login.py")
+SRC_LABEL = "mai.src"
 BOT_DIR = config.root / "bot"
 PROFILE_DIR = BOT_DIR / "profile"   # เก็บ session ที่ล็อกอิน Google ไว้ (ไม่ commit)
 
@@ -47,12 +59,38 @@ def _image_exists(docker: str) -> bool:
     return bool(r.stdout.strip())
 
 
+def source_hash() -> str:
+    """ลายนิ้วมือของไฟล์ที่ประกอบเป็น image."""
+    h = hashlib.sha256()
+    for name in SOURCES:
+        p = BOT_DIR / name
+        h.update(name.encode())
+        h.update(p.read_bytes() if p.exists() else b"")
+    return h.hexdigest()[:12]
+
+
+def _image_hash(docker: str) -> str:
+    r = subprocess.run(
+        [docker, "image", "inspect", IMAGE, "--format",
+         "{{index .Config.Labels " + chr(34) + SRC_LABEL + chr(34) + "}}"],
+        capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def build_image(force: bool = False) -> None:
+    """build ถ้ายังไม่มี image หรือโค้ดในโฟลเดอร์ bot/ เปลี่ยนไปจากที่ build ไว้.
+
+    เดิมเช็กแค่ว่า "มี image ไหม" — พอ git pull ได้โค้ดบอทใหม่มา image เก่าก็ยังถูกใช้ต่อ
+    เงียบๆ การแก้บั๊กในบอทจึงไม่มีผลจนกว่าจะมีคนไป build มือเอง
+    """
     docker = _docker()
-    if _image_exists(docker) and not force:
+    want = source_hash()
+    if not force and _image_exists(docker) and _image_hash(docker) == want:
         return
-    print("🐳 กำลัง build image ของบอท (ครั้งแรกใช้เวลาหลายนาที ครั้งต่อไปไม่ต้องแล้ว)...")
-    subprocess.run([docker, "build", "-t", IMAGE, str(BOT_DIR)], check=True)
+    why = "ยังไม่มี image" if not _image_exists(docker) else "โค้ดบอทเปลี่ยน"
+    print(f"🐳 build image ของบอท ({why}) — ครั้งแรกใช้เวลาหลายนาที...")
+    subprocess.run([docker, "build", "-t", IMAGE,
+                    "--label", f"{SRC_LABEL}={want}", str(BOT_DIR)], check=True)
 
 
 def missing_pieces() -> list[str]:
@@ -158,6 +196,46 @@ def login() -> None:
     print(f"✅ ล็อกอินเรียบร้อย — profile เก็บที่ {PROFILE_DIR}\n   ใช้ ./mai bot <ลิงก์> ได้เลย")
 
 
+def _keep_debug_shot(out_dir: Path, job_id: str | None) -> Path | None:
+    """ย้ายภาพหน้าจอตอนพลาดออกจากโฟลเดอร์ชั่วคราว ไปไว้ที่ที่ยังอยู่หลังงานจบ."""
+    src = out_dir / "bot_debug.png"
+    if not src.exists():
+        return None
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        dest = DEBUG_DIR / f"bot_debug_{job_id or int(time.time())}.png"
+        shutil.copy2(src, dest)
+        return dest
+    except OSError:
+        return None
+
+
+def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
+    """ข้อความ error ที่ไล่ต่อได้ — บอกอาการที่เจอใน log ไม่ใช่แค่ลิสต์สาเหตุที่เป็นไปได้."""
+    lines = list(tail)
+    joined = chr(10).join(lines)
+    hints = []
+    if "ไม่พบช่องกรอกชื่อ" in joined:
+        hints.append("ห้องนี้ไม่รับ guest — บัญชี Google ของบอทต้องถูกเชิญ "
+                     "หรืออยู่โดเมนเดียวกับห้อง")
+    if "หาปุ่มเข้าห้องไม่เจอ" in joined:
+        hints.append("หาปุ่มเข้าห้องไม่เจอ — UI ของ Meet เปลี่ยน หรือหน้ายังโหลดไม่เสร็จ")
+    if "รอ host กดรับ" in joined:
+        hints.append("บอทกดขอเข้าห้องแล้ว แต่ไม่มีใครกด Admit ให้")
+    if "ผิดพลาด" in joined or "Timeout" in joined:
+        hints.append("เปิดหน้าห้องไม่สำเร็จ (เน็ตช้า / ลิงก์ผิด / ห้องยังไม่เปิด)")
+
+    shot = _keep_debug_shot(out_wav.parent, job_id)
+    parts = ["ไม่ได้ไฟล์เสียง — บอทเข้าห้องไม่สำเร็จ"]
+    if hints:
+        parts.append("สาเหตุที่เจอใน log: " + " · ".join(hints))
+    if shot:
+        parts.append(f"ภาพหน้าจอตอนพลาด: {shot}")
+    if lines:
+        parts.append("log ท้ายสุดของบอท:" + chr(10) + chr(10).join(lines[-12:]))
+    return chr(10).join(parts)
+
+
 def join_and_record(
     url: str,
     out_wav: str | Path,
@@ -208,7 +286,19 @@ def join_and_record(
     def leave() -> None:
         subprocess.run([docker, "stop", "-t", "30", container], check=False)
 
-    proc = subprocess.Popen(cmd)
+    # เก็บ output ของ container ไว้ด้วย ไม่ใช่ปล่อยผ่านไปหน้าจอเฉยๆ
+    # เวลาบอทเข้าห้องไม่สำเร็จ บรรทัด [bot] ... คือเบาะแสเดียวที่บอกว่าพังขั้นไหน
+    # ต้องแนบไปกับ error ให้เห็นในหน้าเว็บ ไม่ใช่ให้ไปเปิด log ในเครื่อง worker เอง
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace", bufsize=1)
+    tail: deque[str] = deque(maxlen=LOG_TAIL_LINES)
+
+    def pump() -> None:
+        for line in proc.stdout or ():
+            tail.append(line.rstrip())
+            print(line.rstrip(), flush=True)
+
+    threading.Thread(target=pump, name="bot-log", daemon=True).start()
     started = time.monotonic()
     try:
         if on_tick is None:
@@ -232,9 +322,6 @@ def join_and_record(
             proc.kill()
 
     if not out_wav.exists() or out_wav.stat().st_size == 0:
-        raise RuntimeError(
-            "ไม่ได้ไฟล์เสียง — บอทอาจเข้าห้องไม่สำเร็จ "
-            f"(ห้องบังคับล็อกอิน/ไม่ได้กดรับ/UI เปลี่ยน) ดูภาพ {out_wav.parent / 'bot_debug.png'} และ log ด้านบน"
-        )
+        raise RuntimeError(_fail_reason(out_wav, tail, job_id))
     print(f"✅ ได้ไฟล์เสียง: {out_wav}")
     return out_wav

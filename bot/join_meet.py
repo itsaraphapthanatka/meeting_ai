@@ -194,12 +194,20 @@ async def run() -> int:
         page = context.pages[0] if context.pages else await context.new_page()
         ff = None
         try:
-            log(f"เปิดลิงก์: {MEET_URL}")
-            await page.goto(MEET_URL, wait_until="load", timeout=60000)
-
-            # เริ่มอัดทันที (จะได้ไม่พลาดช่วงต้น และมีไฟล์เสมอแม้ join ล้ม)
+            # อัดก่อนเปิดหน้าเลย — ถ้าเปิดหน้าพังแล้วยังไม่ได้เริ่มอัด
+            # จะไม่ได้ไฟล์เสียงเลยแม้แต่ความเงียบ ซึ่งทำให้ไล่สาเหตุไม่ได้
+            # และถ้าห้องรับบอทช้า เสียงช่วงต้นก็ไม่หาย
             log("เริ่มอัดเสียง")
             ff = _start_recording()
+
+            log(f"เปิดลิงก์: {MEET_URL}")
+            try:
+                # domcontentloaded พอสำหรับกดปุ่ม — รอ event load ของ Meet
+                # ช้าเกินจนหมดเวลาได้บ่อยทั้งที่หน้าใช้งานได้แล้ว
+                await page.goto(MEET_URL, wait_until="domcontentloaded", timeout=90000)
+            except Exception as e:
+                # เปิดหน้าไม่จบก็ยังลองต่อ — บางทีหน้าโหลดพอใช้งานแล้วแต่ event ไม่มา
+                log(f"เปิดหน้าห้องไม่เรียบร้อย ({e}) — ลองกดเข้าห้องต่อ")
 
             # เตรียม+เข้าห้อง (ยกเลิกได้ทันทีถ้าถูกสั่งหยุด)
             if not stop.is_set():
