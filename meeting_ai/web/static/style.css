@@ -163,6 +163,23 @@ body {
 .bar { height: 5px; background: var(--border); border-radius: 999px; margin-top: 7px; overflow: hidden; }
 .bar > div { height: 100%; background: var(--accent); border-radius: 999px; transition: width .35s ease; }
 
+/* งานบอทช่วงอยู่ในห้อง: ยังไม่รู้ว่าจะนานเท่าไร แถบเป็นสัดส่วนจึงไม่มีความหมาย
+   ใช้แถบวิ่งบอกว่า "กำลังทำงาน" แล้วให้ข้อความบอกเวลาที่อยู่ในห้องแทน */
+.bar.rec > div {
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: bar-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes bar-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar.rec > div { animation: none; width: 100%; opacity: .5; }
+}
+
 /* ---------- forms & cards ---------- */
 
 h2 { font-size: 20px; margin: 0 0 18px; }

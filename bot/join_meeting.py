@@ -36,10 +36,20 @@ DEBUG_PNG = "/out/bot_debug.png"
 SHOT_AFTER_JOIN = "/out/bot_after_join.png"
 SHOT_IN_ROOM = "/out/bot_inroom.png"
 SHOT_EVERY_SEC = 60      # ถ่ายทับไฟล์เดิมระหว่างอยู่ในห้อง
+STATUS_FILE = "/out/bot_status.txt"   # ฝั่ง host อ่านไฟล์นี้เพื่อรายงานสถานะจริง
 
 
 def log(msg: str) -> None:
     print(f"[bot] {msg}", flush=True)
+
+
+def set_status(value: str) -> None:
+    """บอกฝั่ง host ว่าตอนนี้อยู่สถานะไหนจริงๆ (waiting / inroom / left)."""
+    try:
+        with open(STATUS_FILE, "w", encoding="utf-8") as fh:
+            fh.write(value)
+    except OSError:
+        pass
 
 
 async def shoot(page, path: str) -> None:
@@ -97,7 +107,8 @@ def _stop_recording(ff: subprocess.Popen) -> None:
             continue
 
 
-async def _monitor(page, stop: asyncio.Event, end_markers: str) -> None:
+async def _monitor(page, stop: asyncio.Event, end_markers: str,
+                   in_room_markers: str) -> None:
     """อยู่ในห้องจนจบประชุม / ถูกสั่งหยุด / ครบเวลา. ตอบสัญญาณหยุดภายใน ~1 วิ.
 
     ถ่ายภาพหน้าจอทับไฟล์เดิมเป็นระยะด้วย — เวลาบอทค้าง (เช่น ติดอยู่ห้องรอ)
@@ -106,6 +117,8 @@ async def _monitor(page, stop: asyncio.Event, end_markers: str) -> None:
     start = time.time()
     last_end_check = 0.0
     last_shot = 0.0
+    inside = False
+    set_status("waiting")
     while not stop.is_set():
         now = time.time()
         if now - start > MAX_MINUTES * 60:
@@ -115,7 +128,15 @@ async def _monitor(page, stop: asyncio.Event, end_markers: str) -> None:
             last_end_check = now
             if await _visible(page, end_markers, timeout=800):
                 log("ตรวจพบว่าประชุมจบ/ออกจากห้องแล้ว")
+                set_status("left")
                 return
+            # เข้าห้องได้จริงหรือยัง — วัดจากปุ่มที่มีเฉพาะตอนอยู่ในห้อง
+            now_inside = await _visible(page, in_room_markers, timeout=800)
+            if now_inside != inside:
+                inside = now_inside
+                set_status("inroom" if inside else "waiting")
+                log("เข้าห้องแล้ว เริ่มได้ยินเสียงห้อง" if inside
+                    else "ยังอยู่หน้าห้อง รอ host กดรับ")
         if now - last_shot >= SHOT_EVERY_SEC:
             last_shot = now
             await shoot(page, SHOT_IN_ROOM)
@@ -152,7 +173,7 @@ async def run() -> int:
     if platform is None:
         log(f"ไม่รู้จักแพลตฟอร์มของลิงก์นี้: {MEET_URL}")
         return 2
-    join, end_markers = platforms.ADAPTERS[platform]
+    join, end_markers, in_room_markers = platforms.ADAPTERS[platform]
     url = platforms.prepare_url(MEET_URL, platform)
     log(f"แพลตฟอร์ม: {platforms.LABELS[platform]}")
 
@@ -210,7 +231,7 @@ async def run() -> int:
 
             # อยู่ในห้องจนจบ
             if not stop.is_set():
-                await _monitor(page, stop, end_markers)
+                await _monitor(page, stop, end_markers, in_room_markers)
 
             log("กำลังปิดการอัดเสียง")
             _stop_recording(ff)

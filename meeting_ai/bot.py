@@ -48,6 +48,7 @@ DEBUG_DIR = config.root / "logs"
 # bot/profile ก็ถูก mount จากที่นั้นและทำงานได้
 STAGE_DIR = config.root / "recordings" / "bot"
 LOG_TAIL_LINES = 40
+STATUS_NAME = "bot_status.txt"   # คอนเทนเนอร์เขียนสถานะจริงไว้ให้อ่าน
 
 # ไฟล์ที่ประกอบเป็น image — เปลี่ยนไฟล์พวกนี้แล้วต้อง build ใหม่
 SOURCES = ("Dockerfile", "entrypoint.sh", "join_meeting.py",
@@ -243,6 +244,18 @@ def login(site: str = "google") -> None:
 SHOTS = ("bot_debug.png", "bot_after_join.png", "bot_inroom.png")
 
 
+def _read_status(out_dir: Path) -> str:
+    """สถานะที่คอนเทนเนอร์รายงาน: waiting / inroom / left (ว่าง = ยังไม่บอก).
+
+    จำเป็นเพราะฝั่ง host มองไม่เห็นหน้าจอในคอนเทนเนอร์ ถ้าเดาว่า "กดปุ่มแล้ว
+    = อยู่ในห้อง" จะรายงานเท็จตอนไม่มีใครกดรับ (เจอจริงกับ Zoom)
+    """
+    try:
+        return (out_dir / STATUS_NAME).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def _keep_debug_shot(out_dir: Path, job_id: str | None) -> Path | None:
     """ย้ายภาพหน้าจอของบอทไปไว้ที่ที่ยังอยู่หลังงานจบ คืน path ตัวแรกที่เก็บได้.
 
@@ -374,7 +387,7 @@ def join_and_record(
                 time.sleep(TICK_SEC)
                 if proc.poll() is not None:
                     break
-                if on_tick(time.monotonic() - started):
+                if on_tick(time.monotonic() - started, _read_status(cout.parent)):
                     print("⏹  ได้รับคำสั่งให้บอทออกจากห้อง")
                     leave()
                     break

@@ -217,10 +217,19 @@ ZOOM_END = ("text=/This meeting has been ended|meeting has ended"
             "|host has ended|การประชุมสิ้นสุด/i")
 
 
+# ปุ่มที่มีเฉพาะเมื่ออยู่ในห้องประชุมแล้วจริง (ปุ่มวางสาย/แถบควบคุม)
+# ใช้แยก "เข้าห้องแล้ว" ออกจาก "ยังรออยู่หน้าห้อง" — เดิมนับเวลาหลังกดปุ่ม
+# โดยไม่ตรวจอะไรเลย จึงรายงานว่าอยู่ในห้องทั้งที่ยังไม่มีใครกดรับ
+MEET_IN = ('[aria-label*="Leave call"], [data-tooltip*="Leave call"],'
+           ' [aria-label*="ออกจากสาย"]')
+TEAMS_IN = '[data-tid="hangup-button"], [aria-label*="Leave" i]'
+ZOOM_IN = '#foot-bar, .footer__leave-btn, [aria-label*="Leave" i]'
+
+
 ADAPTERS = {
-    MEET: (join_meet, MEET_END),
-    TEAMS: (join_teams, TEAMS_END),
-    ZOOM: (join_zoom, ZOOM_END),
+    MEET: (join_meet, MEET_END, MEET_IN),
+    TEAMS: (join_teams, TEAMS_END, TEAMS_IN),
+    ZOOM: (join_zoom, ZOOM_END, ZOOM_IN),
 }
 
 LABELS = {MEET: "Google Meet", TEAMS: "Microsoft Teams", ZOOM: "Zoom"}

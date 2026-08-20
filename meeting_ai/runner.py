@@ -273,9 +273,17 @@ def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
     max_minutes = int(spec.get("max_minutes") or 180)
     limit = max_minutes * 60
 
-    def tick(elapsed: float) -> bool:
+    def tick(elapsed: float, status: str = "") -> bool:
         frac = min(1.0, elapsed / limit) if limit else 0.0
-        progress(f"บอทอยู่ในห้อง {_mmss(elapsed)}", BOT_START + (BOT_END - BOT_START) * frac)
+        # อย่าบอกว่า "อยู่ในห้อง" ถ้าคอนเทนเนอร์ยังไม่ยืนยัน — ผู้ใช้จะไปนั่งรอเปล่าๆ
+        # ทั้งที่ต้องไปกดรับเข้าห้องให้บอทก่อน
+        if status == "inroom":
+            what = f"บอทอยู่ในห้อง {_mmss(elapsed)}"
+        elif status == "waiting":
+            what = f"บอทรออยู่หน้าห้อง {_mmss(elapsed)} — กด “รับเข้าห้อง” ให้บอท"
+        else:
+            what = f"บอทกำลังเข้าห้อง {_mmss(elapsed)}"
+        progress(what, BOT_START + (BOT_END - BOT_START) * frac)
         return bool(stop_check and stop_check())
 
     progress("ส่งบอทเข้าห้องประชุม (อย่าลืมกดรับเข้าห้อง)", BOT_START)

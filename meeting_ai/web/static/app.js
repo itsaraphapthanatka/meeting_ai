@@ -172,10 +172,16 @@ function renderJobs() {
     const failed = j.status === 'error';
     // งานบอทที่ยังอยู่ในห้อง ต้องมีทางสั่งให้ออกมาสรุป ไม่ใช่รอครบเวลาเท่านั้น
     const canStop = j.kind === 'bot' && !failed && j.status !== 'done';
+    // ช่วงที่บอทนั่งอยู่ในห้องกินเวลาเกือบทั้งงาน แต่แถบขยับแค่ 2%→35%
+    // ตามสัดส่วนเวลาที่ตั้งเพดานไว้ (1% ต่อ 3 นาที) ซึ่งอ่านว่า 'ค้าง'
+    // ช่วงนี้จึงโชว์เป็นแถบวิ่งแทน แล้วให้ข้อความบอกเวลาที่อยู่ในห้องเป็นตัวชี้
+    const inRoom = j.kind === 'bot' && j.status === 'running' && (j.progress || 0) < 0.35;
     return `<div class="job ${failed ? 'err' : ''}">
       <div class="jt">${j.kind === 'bot' ? '🤖 ' : ''}${esc(j.title)}</div>
       <div class="js">${esc(failed ? j.error : j.step)}</div>
-      ${failed ? '' : `<div class="bar"><div style="width:${pct}%"></div></div>`}
+      ${failed ? '' : inRoom
+        ? '<div class="bar rec"><div></div></div>'
+        : `<div class="bar"><div style="width:${pct}%"></div></div>`}
       ${canStop ? `<button class="btn btn-sm job-stop" data-job="${esc(j.id)}"
         type="button">ให้บอทออกจากห้องแล้วสรุป</button>` : ''}
     </div>`;
