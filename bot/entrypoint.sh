@@ -10,6 +10,14 @@ for i in $(seq 1 10); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
 pactl load-module module-null-sink sink_name=meet sink_properties=device.description=meet >/dev/null
 pactl set-default-sink meet
 
+# ไมค์เสมือน (เงียบ) — ต้องมีอุปกรณ์อินพุตจริงในระบบ ไม่งั้นโปรแกรมประชุมค้างรอไมค์
+# ห้ามใช้ --use-fake-device-for-media-stream ของ Chromium แทน เพราะมันสร้าง
+# ลำโพงปลอมด้วย แล้วโปรแกรมประชุมจะเล่นเสียงลงลำโพงปลอมนั้น ไม่ลง sink meet
+# ที่ ffmpeg อัดอยู่ ผลคือได้ไฟล์เงียบทั้งไฟล์
+pactl load-module module-null-sink sink_name=micsink sink_properties=device.description=micsink >/dev/null
+pactl load-module module-remap-source source_name=virtmic master=micsink.monitor source_properties=device.description=virtmic >/dev/null
+pactl set-default-source virtmic
+
 # 2) จอเสมือน
 Xvfb :99 -screen 0 1280x720x24 >/dev/null 2>&1 &
 export DISPLAY=:99

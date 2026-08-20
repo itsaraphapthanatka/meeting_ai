@@ -33,10 +33,29 @@ OUT_WAV = os.environ.get("OUT_WAV", "/out/recording.wav")
 MAX_MINUTES = int(os.environ.get("MAX_MINUTES", "180"))
 PASSCODE = os.environ.get("PASSCODE", "")
 DEBUG_PNG = "/out/bot_debug.png"
+SHOT_AFTER_JOIN = "/out/bot_after_join.png"
+SHOT_IN_ROOM = "/out/bot_inroom.png"
+SHOT_EVERY_SEC = 60      # ถ่ายทับไฟล์เดิมระหว่างอยู่ในห้อง
 
 
 def log(msg: str) -> None:
     print(f"[bot] {msg}", flush=True)
+
+
+async def shoot(page, path: str) -> None:
+    """ถ่ายหน้าจอบอทแบบไม่ให้ล้มงานถ้าถ่ายไม่ได้."""
+    try:
+        await page.screenshot(path=path)
+    except Exception as e:
+        log("ถ่ายภาพหน้าจอไม่ได้: " + str(e))
+
+
+async def where(page) -> str:
+    """บอกว่าหน้าจอบอทอยู่ที่ไหน — URL กับ title พอชี้ได้ว่าติดหน้าไหน."""
+    try:
+        return f"{page.url} | {await page.title()}"
+    except Exception:
+        return "(อ่านสถานะหน้าไม่ได้)"
 
 
 async def _visible(page, selector, timeout=800) -> bool:
@@ -79,9 +98,14 @@ def _stop_recording(ff: subprocess.Popen) -> None:
 
 
 async def _monitor(page, stop: asyncio.Event, end_markers: str) -> None:
-    """อยู่ในห้องจนจบประชุม / ถูกสั่งหยุด / ครบเวลา. ตอบสัญญาณหยุดภายใน ~1 วิ."""
+    """อยู่ในห้องจนจบประชุม / ถูกสั่งหยุด / ครบเวลา. ตอบสัญญาณหยุดภายใน ~1 วิ.
+
+    ถ่ายภาพหน้าจอทับไฟล์เดิมเป็นระยะด้วย — เวลาบอทค้าง (เช่น ติดอยู่ห้องรอ)
+    ภาพล่าสุดคือหลักฐานเดียวที่บอกได้ว่าหน้าจอฝั่งบอทเป็นอย่างไร
+    """
     start = time.time()
     last_end_check = 0.0
+    last_shot = 0.0
     while not stop.is_set():
         now = time.time()
         if now - start > MAX_MINUTES * 60:
@@ -92,6 +116,10 @@ async def _monitor(page, stop: asyncio.Event, end_markers: str) -> None:
             if await _visible(page, end_markers, timeout=800):
                 log("ตรวจพบว่าประชุมจบ/ออกจากห้องแล้ว")
                 return
+        if now - last_shot >= SHOT_EVERY_SEC:
+            last_shot = now
+            await shoot(page, SHOT_IN_ROOM)
+            log(f"อยู่ในห้องมา {int(now - start)}s — {await where(page)}")
         try:
             await asyncio.wait_for(stop.wait(), timeout=1.0)
             return  # ถูกสั่งหยุด (SIGTERM/SIGINT)
@@ -144,7 +172,9 @@ async def run() -> int:
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--use-fake-ui-for-media-stream",      # ตอบ allow ให้ prompt ไมค์/กล้องอัตโนมัติ
-                "--use-fake-device-for-media-stream",  # ป้อนไมค์/กล้องปลอม จะได้ไม่ค้างรอ
+                # ไม่ใช้ --use-fake-device-for-media-stream: มันสร้างลำโพงปลอมด้วย
+                # แล้วโปรแกรมประชุมจะเล่นเสียงลงตัวนั้น ไม่ลง sink ที่ ffmpeg อัด (ได้ไฟล์เงียบ)
+                # ไมค์เสมือนทำที่ PulseAudio แทน (ดู entrypoint.sh)
                 "--autoplay-policy=no-user-gesture-required",
                 "--disable-blink-features=AutomationControlled",  # ลดร่องรอย automation
                 "--disable-gpu",
@@ -174,6 +204,9 @@ async def run() -> int:
             # เตรียม+เข้าห้อง (ยกเลิกได้ทันทีถ้าถูกสั่งหยุด)
             if not stop.is_set():
                 await _race_stop(join(page, BOT_NAME, log, PASSCODE or None), stop)
+
+            log(f"หลังกดเข้าห้อง: {await where(page)}")
+            await shoot(page, SHOT_AFTER_JOIN)
 
             # อยู่ในห้องจนจบ
             if not stop.is_set():

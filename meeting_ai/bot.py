@@ -240,18 +240,31 @@ def login(site: str = "google") -> None:
     print(f"✅ ล็อกอินเรียบร้อย — profile เก็บที่ {PROFILE_DIR}\n   ใช้ ./mai bot <ลิงก์> ได้เลย")
 
 
+SHOTS = ("bot_debug.png", "bot_after_join.png", "bot_inroom.png")
+
+
 def _keep_debug_shot(out_dir: Path, job_id: str | None) -> Path | None:
-    """ย้ายภาพหน้าจอตอนพลาดออกจากโฟลเดอร์ชั่วคราว ไปไว้ที่ที่ยังอยู่หลังงานจบ."""
-    src = out_dir / "bot_debug.png"
-    if not src.exists():
-        return None
-    try:
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        dest = DEBUG_DIR / f"bot_debug_{job_id or int(time.time())}.png"
-        shutil.copy2(src, dest)
-        return dest
-    except OSError:
-        return None
+    """ย้ายภาพหน้าจอของบอทไปไว้ที่ที่ยังอยู่หลังงานจบ คืน path ตัวแรกที่เก็บได้.
+
+    เก็บทุกครั้ง ไม่ใช่แค่ตอนพลาด — โฟลเดอร์ /out เป็นที่ชั่วคราวของ worker
+    ซึ่งถูกลบทิ้ง ภาพจึงหายไปพร้อมกันทั้งที่เป็นหลักฐานเดียวว่าหน้าจอบอทเป็นอย่างไร
+    และลบต้นฉบับด้วย ไม่ให้ภาพของรอบก่อนค้างมาปนกับรอบใหม่
+    """
+    tag = job_id or str(int(time.time()))
+    first = None
+    for name in SHOTS:
+        src = out_dir / name
+        if not src.exists():
+            continue
+        try:
+            DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            dest = DEBUG_DIR / f"{Path(name).stem}_{tag}.png"
+            shutil.copy2(src, dest)
+            src.unlink()
+            first = first or dest
+        except OSError:
+            continue
+    return first
 
 
 def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
@@ -376,6 +389,9 @@ def join_and_record(
 
     if not cout.exists() or cout.stat().st_size == 0:
         raise RuntimeError(_fail_reason(cout, tail, job_id))
+    kept = _keep_debug_shot(cout.parent, job_id)
+    if kept:
+        print(f"🖼  ภาพหน้าจอบอท: {kept.parent}")
     if staged:
         shutil.move(str(cout), str(out_wav))
     print(f"✅ ได้ไฟล์เสียง: {out_wav}")

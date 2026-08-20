@@ -110,6 +110,30 @@ MEET_END = ("text=/You.?ve been removed|left the meeting|Return to home"
 
 # ---------- Microsoft Teams ----------
 
+# คอนเทนเนอร์ไม่มีกล้อง/ไมค์จริง Teams จึงเด้งกล่อง "Are you sure you don't want
+# audio or video?" ซึ่งบัง Join now ไว้ ปุ่มในกล่องหมายถึง "ไม่ส่ง" ออกไป ไม่ใช่ "ไม่รับ"
+# — บอทยังได้ยินเสียงห้องอยู่ ต้องไล่กล่องนี้ก่อนถึงจะกด Join ได้
+NO_AV_BUTTON = [
+    'button:has-text("Continue without audio or video")',
+    '[role="button"]:has-text("Continue without audio or video")',
+    'text="Continue without audio or video"',
+    'button:has-text("ดำเนินการต่อโดยไม่ใช้เสียงหรือวิดีโอ")',
+]
+
+TEAMS_JOIN_BUTTON = [
+    'button[data-tid="prejoin-join-button"]',
+    'button:has-text("Join now")',
+    'button:has-text("เข้าร่วมเลย")',
+]
+
+
+async def dismiss_no_av(page, log) -> bool:
+    if await click_first(page, NO_AV_BUTTON, timeout=2500):
+        log("ปิดกล่องถามเรื่องเสียง/ภาพแล้ว")
+        return True
+    return False
+
+
 async def join_teams(page, name, log, passcode=None) -> None:
     # หน้าแรกมักถามว่าจะเปิดในแอปหรือในเบราว์เซอร์ — ต้องเลือกเบราว์เซอร์
     if await click_first(page, [
@@ -119,7 +143,7 @@ async def join_teams(page, name, log, passcode=None) -> None:
         'a:has-text("Join on the web instead")',
         'button:has-text("ดำเนินการต่อในเบราว์เซอร์นี้")',
         'button:has-text("ใช้เว็บแอปแทน")',
-    ], timeout=8000):
+    ], timeout=2500):
         log("เลือกเข้าร่วมผ่านเบราว์เซอร์")
     else:
         log("ไม่เจอปุ่มเลือกเบราว์เซอร์ — อาจอยู่หน้า pre-join แล้ว")
@@ -131,27 +155,28 @@ async def join_teams(page, name, log, passcode=None) -> None:
         'input[placeholder*="name" i]',
         'input[placeholder*="ชื่อ"]',
         'input[type="text"]',
-    ], name, timeout=8000):
+    ], name, timeout=4000):
         log("ตั้งชื่อบอท: " + name)
     else:
         log("ไม่มีช่องกรอกชื่อ — ปกติถ้าบอทล็อกอิน Microsoft อยู่แล้ว")
 
-    await click_first(page, ['[data-tid="toggle-mute"]',
-                             '[aria-label*="Mute" i]'], timeout=2500)
-    await click_first(page, ['[data-tid="toggle-video"]',
-                             '[aria-label*="camera" i]'], timeout=2500)
+    # ไม่กด toggle ไมค์/กล้อง: อ่านสถานะไม่ได้ว่าตอนนี้เปิดหรือปิด กดมั่วแล้วอาจ
+    # เปิดไมค์ขึ้นมาเอง (เจอจริงจากภาพหน้าจอ) และบอทไม่มีกล้องอยู่แล้ว
 
-    joined = await click_first(page, [
-        'button[data-tid="prejoin-join-button"]',
-        'button:has-text("Join now")',
-        'button:has-text("เข้าร่วมเลย")',
-    ], timeout=6000)
+    # ไล่กล่องก่อน ไม่งั้นมันบัง Join now อยู่ แล้วเสียเวลารอ actionability เปล่าๆ
+    await dismiss_no_av(page, log)
+    joined = await click_first(page, TEAMS_JOIN_BUTTON, timeout=6000)
+    # บางครั้งกล่องเด้งหลังกด Join — ไล่แล้วกดอีกรอบ
+    if await dismiss_no_av(page, log):
+        joined = await click_first(page, TEAMS_JOIN_BUTTON, timeout=6000) or joined
     log("กดปุ่มเข้าห้องแล้ว — รอ host กดรับถ้าห้องมี lobby" if joined
         else "หาปุ่มเข้าห้องไม่เจอ (UI อาจเปลี่ยน) — ดู bot_debug.png")
 
 
-TEAMS_END = ("text=/meeting has ended|You.?re not in this meeting|Rejoin"
-             "|call ended|การประชุมสิ้นสุด/i")
+# ระวังคำกว้างเกิน: "Rejoin" กับ "You are not in this meeting" โผล่บนหน้า pre-join/launch
+# ของ Teams ได้ด้วย ทำให้ตัวเฝ้าห้องเข้าใจว่าประชุมจบแล้วออกทันทีที่เพิ่งกดเข้า
+TEAMS_END = ("text=/meeting has ended|host has ended the meeting"
+             "|You have been removed|การประชุมสิ้นสุด/i")
 
 
 # ---------- Zoom ----------
