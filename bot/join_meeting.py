@@ -68,6 +68,20 @@ async def where(page) -> str:
         return "(อ่านสถานะหน้าไม่ได้)"
 
 
+async def visible_text(page, limit: int = 400) -> str:
+    """ข้อความที่คนเห็นบนหน้า — ตัวชี้ที่ตรงที่สุดว่าโปรแกรมประชุมกำลังบอกอะไร.
+
+    ก่อนหน้านี้ดูแค่ input กับปุ่ม จึงไล่สาเหตุได้แค่ "ไม่เจอ selector"
+    ทั้งที่หน้าเว็บเขียนบอกเหตุผลไว้ตรงๆ (รหัสผิด / ต้องล็อกอิน / host ยังไม่เปิดห้อง)
+    """
+    try:
+        raw = await page.evaluate("document.body ? document.body.innerText : ''")
+    except Exception as e:
+        return f"(อ่านข้อความบนหน้าไม่ได้: {e})"
+    words = " / ".join(x.strip() for x in (raw or "").splitlines() if x.strip())
+    return words[:limit] or "(หน้าว่าง)"
+
+
 async def _visible(page, selector, timeout=800) -> bool:
     try:
         await page.locator(selector).first.wait_for(state="visible", timeout=timeout)
@@ -140,7 +154,11 @@ async def _monitor(page, stop: asyncio.Event, end_markers: str,
         if now - last_shot >= SHOT_EVERY_SEC:
             last_shot = now
             await shoot(page, SHOT_IN_ROOM)
-            log(f"อยู่ในห้องมา {int(now - start)}s — {await where(page)}")
+            log(f"เฝ้าดูมา {int(now - start)}s ({'ในห้อง' if inside else 'ยังไม่เข้าห้อง'})"
+                f" — {await where(page)}")
+            if not inside:
+                # ยังไม่เข้าห้อง = หน้าเว็บกำลังบอกเหตุผลอยู่ เอามาลง log เลย
+                log("ข้อความบนหน้า: " + await visible_text(page))
         try:
             await asyncio.wait_for(stop.wait(), timeout=1.0)
             return  # ถูกสั่งหยุด (SIGTERM/SIGINT)
