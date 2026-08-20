@@ -610,22 +610,40 @@ def job_claim(worker: str | None = None, kinds: list[str] | None = None) -> dict
     return job_get(row[0]) if row else None
 
 
-def job_request_stop(job_id: str) -> bool:
+# ไม่มี progress เข้ามานานเกินนี้ = ไม่มี worker ถืองานนี้อยู่จริง
+# (worker รายงานทุกไม่กี่วินาที ส่วนงานบอทรายงานทุก 10 วินาที)
+STOP_ORPHAN_SECONDS = 120
+
+CANCEL_MSG = ("ยกเลิกโดยผู้ใช้ — งานนี้ไม่มีเครื่องประมวลผลถืออยู่แล้ว "
+              "(worker หลุด/ถูกรีสตาร์ตกลางทาง)")
+
+
+def job_request_stop(job_id: str) -> str:
     """ตั้งธงขอให้หยุดงาน — worker อ่านธงนี้ตอนรายงาน progress แล้วสั่งบอทออกจากห้อง.
 
     เก็บใน spec (JSONB) ไม่เพิ่มคอลัมน์ใหม่ เพื่อไม่ต้องให้ผู้ใช้ migrate ฐานข้อมูลที่ deploy แล้ว
     """
     with db.connect() as conn:
+        # งานที่ไม่มีใครถืออยู่ ตั้งธงไปก็ไม่มีใครอ่าน กดปุ่มแล้วจะเงียบหายไปเฉยๆ
+        # กรณีนั้นต้องยกเลิกงานให้เลย (queued = ยังไม่มีใครรับ, running แต่เงียบนาน = worker หลุด)
+        cancelled = conn.execute(
+            """update meeting_ai.jobs
+               set status = 'error', step = 'ยกเลิกแล้ว', error = %s
+               where id = %s and (status = 'queued' or (status = 'running'
+                 and coalesce(updated_at, claimed_at) < now() - make_interval(secs => %s)))""",
+            (CANCEL_MSG, job_id, STOP_ORPHAN_SECONDS),
+        ).rowcount
+        if cancelled:
+            return "cancelled"
         # ห้ามแตะ updated_at — reaper ใช้ฟิลด์นี้วัดว่า worker เงียบไปนานแค่ไหน
         # ถ้าปุ่มหยุดไปรีเซ็ตมัน งานที่ worker ตายทิ้งไว้จะยืดเวลาค้างออกไปอีก 30 นาที
-        # (ยิ่งกดยิ่งค้างนาน ซึ่งตรงข้ามกับที่ผู้ใช้ต้องการ)
         cur = conn.execute(
             """update meeting_ai.jobs
                set spec = coalesce(spec, '{}'::jsonb) || '{"stop": true}'::jsonb
-               where id = %s and status in ('queued', 'running')""",
+               where id = %s and status = 'running'""",
             (job_id,),
         )
-        return cur.rowcount > 0
+        return "stopped" if cur.rowcount else ""
 
 
 def job_stop_requested(job_id: str) -> bool:

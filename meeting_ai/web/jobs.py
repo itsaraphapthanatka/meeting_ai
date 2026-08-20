@@ -416,15 +416,35 @@ def claim(worker: str | None = None, kinds: list[str] | None = None) -> dict | N
 _stop_requests: set[str] = set()   # โหมดไฟล์: เก็บในหน่วยความจำพอ เพราะ worker อยู่โพรเซสเดียวกัน
 
 
-def request_stop(job_id: str) -> bool:
-    """ขอให้งานนี้หยุด — สำหรับงานบอทหมายถึง "ออกจากห้องแล้วไปสรุปเลย"."""
+def request_stop(job_id: str) -> str:
+    """ขอให้งานนี้หยุด — คืน "stopped" | "cancelled" | "" (ทำไม่ได้).
+
+    "cancelled" = ไม่มี worker ถืองานนี้อยู่ ตั้งธงไปก็ไม่มีใครอ่าน จึงยกเลิกให้เลย
+    ไม่งั้นผู้ใช้กดปุ่มแล้วไม่มีอะไรเกิดขึ้น แล้วงานค้างเป็นซากอยู่ในหน้าเว็บ
+    """
     if cloud:
         return store.job_request_stop(job_id)
     with _cv:
-        if job_id not in _jobs or _jobs[job_id]["status"] not in ("queued", "running"):
-            return False
-        _stop_requests.add(job_id)
-    return True
+        job = _jobs.get(job_id)
+        if job is None or job["status"] not in ("queued", "running"):
+            return ""
+        if job["status"] == "queued":
+            _pending_remove(job_id)
+            outcome = "cancelled"
+        else:
+            _stop_requests.add(job_id)
+            outcome = "stopped"
+    if outcome == "cancelled":
+        fail(job_id, "ยกเลิกโดยผู้ใช้ก่อนเริ่มประมวลผล")
+    return outcome
+
+
+def _pending_remove(job_id: str) -> None:
+    """เอาออกจากคิว (เรียกใต้ _cv แล้ว)."""
+    try:
+        _pending.remove(job_id)
+    except ValueError:
+        pass
 
 
 def stop_requested(job_id: str) -> bool:

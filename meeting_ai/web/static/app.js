@@ -597,8 +597,12 @@ async function sendBot() {
 
 async function stopJob(id) {
   try {
-    await api(`/api/jobs/${encodeURIComponent(id)}/stop`, { method: 'POST' });
-    banner('สั่งให้บอทออกจากห้องแล้ว — รออีกไม่เกินสิบวินาทีแล้วจะเริ่มถอดเสียง');
+    const r = await api(`/api/jobs/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+    // งานที่ไม่มีเครื่องประมวลผลถืออยู่จะถูกยกเลิกทันที ไม่ใช่ "รอสิบวินาที"
+    banner(r.cancelled
+      ? 'งานนี้ไม่มีเครื่องประมวลผลถืออยู่ (worker หลุดกลางทาง) — ยกเลิกให้แล้ว'
+      : 'สั่งให้บอทออกจากห้องแล้ว — รออีกไม่เกินสิบวินาทีแล้วจะเริ่มถอดเสียง');
+    pollJobs();
   } catch (e) {
     banner(`สั่งหยุดไม่สำเร็จ: ${e.message}`);
   }

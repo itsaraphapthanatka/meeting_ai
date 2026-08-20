@@ -415,9 +415,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.NOT_FOUND, "ไม่พบงานนี้")
             if not self._may_write_job(job):
                 return self._error(HTTPStatus.FORBIDDEN, "ไม่มีสิทธิ์สั่งหยุดงานนี้")
-            if not jobs.request_stop(job_id):
+            outcome = jobs.request_stop(job_id)
+            if not outcome:
                 return self._error(HTTPStatus.CONFLICT, "งานนี้จบไปแล้ว หยุดไม่ได้")
-            return self._json({"ok": True})
+            return self._json({"ok": True, "cancelled": outcome == "cancelled"})
 
         if len(parts) == 2 and parts[0] == "jobs":
             job = jobs.get(urllib.parse.unquote(parts[1]))
