@@ -480,17 +480,22 @@ function showNew() {
   // ตัวถอดเสียง — โชว์ทุกตัว แต่ตัวที่ใช้ไม่ได้จะเลือกไม่ได้พร้อมบอกเหตุผล
   const provs = state.config.stt_providers || [];
   const sttSel = $('#f-stt');
+  // ห้าม disabled ทุกตัว: ถ้าไม่มีตัวไหนใช้ได้ เบราว์เซอร์จะเลือกอะไรไม่ได้เลย
+  // แล้ว select แสดงว่างเปล่า พร้อมกับ #stt-note ที่หายไปด้วย — ผู้ใช้ไม่รู้เลยว่าติดอะไร
+  // (เจอจริงตอน worker ออฟไลน์ทั้งหมด) จึงปล่อยให้เลือกได้ แล้วบอกเหตุผลไว้ใต้ช่อง
   sttSel.innerHTML = provs.map((p) => {
     const label = p.available ? p.label : `${p.label} — ใช้ไม่ได้`;
-    return `<option value="${esc(p.key)}" ${p.available ? '' : 'disabled'}>${esc(label)}</option>`;
+    return `<option value="${esc(p.key)}">${esc(label)}</option>`;
   }).join('');
   const preferred = provs.find((p) => p.key === state.config.stt_default && p.available)
     || provs.find((p) => p.available);
   if (preferred) sttSel.value = preferred.key;
 
   const showSttNote = () => {
-    const p = provs.find((x) => x.key === sttSel.value);
-    $('#stt-note').textContent = p ? (p.available ? p.note : p.why) : '';
+    const p = provs.find((x) => x.key === sttSel.value) || provs[0];
+    const note = $('#stt-note');
+    note.textContent = p ? (p.available ? p.note : p.why) : '';
+    note.className = p && !p.available ? 'warn' : 'hint';
   };
   sttSel.onchange = showSttNote;
   showSttNote();

@@ -162,6 +162,21 @@ if ((Test-Path `$log) -and ((Get-Item `$log).Length -gt ${MaxLogMB}MB)) {
     Ok "ติดตั้ง task `"$TaskName`" แล้ว  (เครื่อง: $Name)"
     Ok "log: $logFile"
 
+    # บอกให้ชัดว่าโหมดที่ได้ ทำงานชนิดใดได้บ้าง — Docker Desktop ต้องมี session
+    # ของผู้ใช้ที่ล็อกอิน โหมด S4U จึงรับงานบอทไม่ได้ (docker run ตอบ Access is denied)
+    $lt = (Get-Task).Principal.LogonType
+    Info ""
+    if ($lt -eq "S4U" -or $lt -eq "Password") {
+        Info "โหมดนี้รับงานได้: ถอดเสียง / สรุป / แปล  (รันแม้ไม่ล็อกอิน)"
+        Warn "งานบอทเข้าห้องประชุมจะรับไม่ได้ — Docker Desktop ต้องมี session ที่ล็อกอินอยู่"
+        Warn "  worker จะข้ามงานบอทให้เอง ไม่คว้ามาแล้วพัง"
+        Warn "  ถ้าต้องการงานบอทด้วย: เปิด automatic logon ของ Windows แล้วติดตั้งแบบไม่ใส่ -RunAlways"
+    } else {
+        Info "โหมดนี้รับงานได้ทุกชนิด รวมงานบอท (Docker Desktop ใช้ได้)"
+        Warn "แต่เริ่มทำงานเมื่อล็อกอิน Windows แล้วเท่านั้น"
+        Warn "  ถ้าอยากให้ขึ้นเองหลังบูต: เปิด automatic logon (netplwiz) แล้วล็อกหน้าจอไว้"
+    }
+
     Start-ScheduledTask -TaskName $TaskName
     Start-Sleep -Seconds 4
     Show-Status
