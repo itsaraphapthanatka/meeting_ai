@@ -36,6 +36,10 @@ HEARTBEAT_SEC = 20.0    # เต้นบอกเซิร์ฟเวอร์
 # (เคยเจอจริง: เครื่องที่ Docker ดับไปแล้วยังคว้างานบอทมาทำ)
 CAPS_REFRESH_SEC = 60.0
 CHUNK = 1024 * 256
+# บอทหลายห้องพร้อมกันได้ — ช่วงนั่งในห้องแทบไม่ใช้ CPU (รอเฉยๆ)
+# ช่วงถอดเสียงถูกบีบให้ทำทีละงานด้วย runner.HEAVY_LOCK อยู่แล้ว
+# งานที่ไม่ใช่บอท (อัปโหลด/สรุป/แปล) ยังทำทีละงาน เพราะเข้าช่วงหนักทันที
+DEFAULT_MAX_BOTS = 3
 
 
 class WorkerError(RuntimeError):
@@ -157,7 +161,7 @@ def describe_gpu() -> str | None:
     return None
 
 
-def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
+def _run_one(client: Client, spec: dict, tmp: Path, worker: str = "") -> dict:
     job_id = spec["id"]
     last = {"at": 0.0, "step": ""}
     # เซิร์ฟเวอร์ตอบธง stop กลับมาพร้อม progress — ไม่ต้องเปิด polling อีกเส้น
@@ -180,7 +184,8 @@ def _run_one(client: Client, spec: dict, tmp: Path) -> dict:
 
     if spec["kind"] == "bot":
         result = runner.bot_job(spec, progress, tmp,
-                                stop_check=lambda: stop_flag["on"], work_dir=tmp)
+                                stop_check=lambda: stop_flag["on"], work_dir=tmp,
+                                worker=worker)
         return _upload_playback(client, job_id, result, spec)
 
     if spec["kind"] != "process":
@@ -232,10 +237,12 @@ def _upload_playback(client: Client, job_id: str, result: dict, spec: dict | Non
 
 
 def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
-        name: str | None = None) -> int:
+        name: str | None = None, max_bots: int = DEFAULT_MAX_BOTS) -> int:
     client = Client(api, token)
     stopping = {"flag": False}
-    current: dict = {"id": None, "status": "idle"}
+    active: dict[str, str] = {}          # job id -> kind ของงานที่กำลังทำอยู่
+    active_lock = threading.Lock()
+    max_bots = max(1, int(max_bots))
     worker_name = (name or socket.gethostname())[:80]
     gpu = describe_gpu()
     # เก็บใน dict เพื่อให้เธรด heartbeat อัปเดตแล้ว loop หลักเห็นค่าใหม่ด้วย
@@ -257,7 +264,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     if state["caps"].get("bot"):
         try:
             from . import bot as _bot
-            for name in _bot.cleanup_stale():
+            for name in _bot.cleanup_stale(worker_name):
                 print(f"🧹 ปิดบอทที่ค้างจากรอบก่อน: {name}")
         except Exception as e:
             print(f"⚠️  เก็บกวาดบอทที่ค้างไม่สำเร็จ: {e}", file=sys.stderr)
@@ -302,7 +309,10 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
 
     def beat() -> None:
         while not stopping["flag"]:
-            client.heartbeat(worker_name, current["status"], current["id"], gpu,
+            with active_lock:
+                busy = bool(active)
+                first = next(iter(active), None)
+            client.heartbeat(worker_name, "busy" if busy else "idle", first, gpu,
                              refresh_caps())
             for _ in range(int(HEARTBEAT_SEC * 2)):
                 if stopping["flag"]:
@@ -312,15 +322,56 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     heart = threading.Thread(target=beat, name="worker-heartbeat", daemon=True)
     heart.start()
 
+    def kinds_wanted() -> list[str] | None:
+        """ชนิดงานที่ยังรับได้ตอนนี้ — บอทเต็มโควตาแล้วก็ขอแค่ชนิดอื่น และกลับกัน."""
+        caps_now = refresh_caps()
+        allowed = runner.job_kinds(caps_now)
+        with active_lock:
+            bots = sum(1 for k in active.values() if k == "bot")
+            others = sum(1 for k in active.values() if k != "bot")
+        if bots >= max_bots:
+            allowed = [k for k in allowed if k != "bot"]
+        if others >= 1:
+            allowed = [k for k in allowed if k == "bot"]
+        return allowed
+
+    def work(spec: dict) -> None:
+        """ทำงานหนึ่งงานจนจบแล้วส่งผล — รันในเธรดของตัวเอง."""
+        job_id = spec["id"]
+        started = time.monotonic()
+        try:
+            with tempfile.TemporaryDirectory(prefix="mai-worker-") as tmpdir:
+                result = _run_one(client, spec, Path(tmpdir), worker_name)
+                result["worker"] = worker_name
+                client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/result",
+                                 result, timeout=120)
+            print(f"✅ เสร็จใน {time.monotonic() - started:.1f}s: {spec.get('title') or job_id}")
+            print()
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/error",
+                                 {"error": str(e)}, timeout=30)
+            except WorkerError:
+                pass
+            print(f"❌ งานล้มเหลว: {e}", file=sys.stderr)
+        finally:
+            with active_lock:
+                active.pop(job_id, None)
+
     backoff = poll
     while not stopping["flag"]:
+        wanted = kinds_wanted()
+        if not wanted:
+            time.sleep(poll)          # เต็มทุกช่อง รอให้งานใดงานหนึ่งจบก่อน
+            continue
         try:
-            # ใช้ caps สดตอนคว้างาน ไม่ใช่ค่าที่เช็กไว้ตอนเปิดโปรแกรม
-            spec = client.claim(worker_name, runner.job_kinds(refresh_caps()))
+            spec = client.claim(worker_name, wanted)
             backoff = poll
         except AuthError as e:
             # token ผิดคือปัญหาที่ต้องให้คนแก้ วนซ้ำไปก็ไม่หาย
-            print(f"\n❌ {e}", file=sys.stderr)
+            print()
+            print(f"❌ {e}", file=sys.stderr)
             return 2
         except WorkerError as e:
             print(f"⚠️  {e} — ลองใหม่ใน {int(backoff)}s", file=sys.stderr)
@@ -329,40 +380,32 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
             continue
 
         if spec is None:
-            if once:
+            with active_lock:
+                idle = not active
+            if once and idle:
                 print("คิวว่าง — จบ (--once)")
                 return 0
             time.sleep(poll)
             continue
 
-        job_id = spec["id"]
-        current["id"] = job_id
-        current["status"] = "busy"
-        print(f"▶️  รับงาน {spec['kind']}: {spec.get('title') or job_id}")
-        started = time.monotonic()
-        try:
-            with tempfile.TemporaryDirectory(prefix="mai-worker-") as tmpdir:
-                result = _run_one(client, spec, Path(tmpdir))
-                result["worker"] = worker_name
-                client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/result",
-                                 result, timeout=120)
-            print(f"✅ เสร็จใน {time.monotonic() - started:.1f}s\n")
-        except Exception as e:
-            traceback.print_exc()
-            try:
-                client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/error",
-                                 {"error": str(e)}, timeout=30)
-            except WorkerError:
-                pass
-            print(f"❌ งานล้มเหลว: {e}\n", file=sys.stderr)
-        finally:
-            current["id"] = None
-            current["status"] = "idle"
-            client.heartbeat(worker_name, "idle", None, gpu, state["caps"])
+        with active_lock:
+            active[spec["id"]] = spec["kind"]
+            running = len(active)
+        print(f"▶️  รับงาน {spec['kind']}: {spec.get('title') or spec['id']}"
+              f"   (กำลังทำอยู่ {running} งาน)")
+        threading.Thread(target=work, args=(spec,), daemon=True,
+                         name=f"job-{spec['id']}").start()
 
         if once:
             stopping["flag"] = True
-            return 0
+            break
+
+    # รองานที่ยังค้างให้จบก่อนออก (บอทที่อยู่ในห้องจะได้ปิดไฟล์เสียงเรียบร้อย)
+    for _ in range(600):
+        with active_lock:
+            if not active:
+                break
+        time.sleep(1)
 
     # ถูกสั่งหยุดตอนไม่มีงานค้าง
     print("👋 worker หยุดแล้ว")

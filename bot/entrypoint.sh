@@ -34,5 +34,13 @@ if [ "$MODE" = "login" ]; then
     exec python3 /app/login.py
 fi
 
-# โหมดปกติ: python เป็น PID 1 (docker stop → SIGTERM ถึง python → ปิดอัดสุภาพ)
+# โหมดปกติ: ก็อปโปรไฟล์ที่ล็อกอินไว้มาเป็นสำเนาของ container นี้ก่อน
+# Chromium ล็อก user-data-dir ได้ตัวเดียว ถ้าหลายบอททำงานพร้อมกันแล้วชี้ /prof ตัวเดียวกัน
+# ตัวที่สองจะเปิดโปรไฟล์ไม่ได้ — สำเนาทำให้ประชุมพร้อมกันหลายห้องได้ และ session ที่
+# ล็อกอินไว้ (ซึ่งอยู่ใน /prof) ไม่ถูกเขียนทับด้วย
+export PROFILE_DIR=/profwork
+mkdir -p "$PROFILE_DIR"
+cp -a /prof/. "$PROFILE_DIR"/ 2>/dev/null || true
+
+# python เป็น PID 1 (docker stop → SIGTERM ถึง python → ปิดอัดสุภาพ)
 exec python3 /app/join_meeting.py

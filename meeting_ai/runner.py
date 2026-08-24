@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import tempfile
 import traceback
 from pathlib import Path
@@ -35,6 +36,11 @@ OTHERS_LABEL = "ผู้ร่วมประชุม"
 
 # ลำดับที่ประมวลผลแทร็ก (system ก่อน mic เพื่อให้ผลลัพธ์เรียงเหมือนกันทุกครั้ง)
 TRACK_ORDER = ("system", "mic", "mixed")
+
+# งานบอทหลายห้องรันพร้อมกันได้ (ช่วงนั่งในห้องแทบไม่ใช้ CPU) แต่ช่วงถอดเสียง
+# ใช้ GPU/CPU เต็มที่ ถ้าปล่อยพร้อมกันจะแย่งกันจนช้ากว่าทำทีละงาน
+# ล็อกนี้จึงบีบเฉพาะช่วงหนัก ไม่กันช่วงที่บอทรออยู่ในห้อง
+HEAVY_LOCK = threading.Lock()
 
 ProgressFn = Callable[[str, float], None]
 FetchFn = Callable[[str], Path]
@@ -127,16 +133,29 @@ def transcribe_job(spec: dict, fetch: FetchFn, progress: ProgressFn, mix_dir: Pa
     fetch:  ชื่อแทร็ก -> path ของไฟล์บนดิสก์ (ดาวน์โหลดมาก่อนถ้าอยู่ไกล)
     mix_dir: โฟลเดอร์ที่จะเขียนไฟล์เสียงผสมสำหรับฟังย้อนหลัง
     """
-    title = spec["title"]
-    language = spec.get("language") or None
-    want_diarize = bool(spec.get("diarize")) and diarize.available()
-    num_speakers = int(spec.get("num_speakers") or 0)
     names = [n for n in TRACK_ORDER if n in spec["tracks"]]
     if not names:
         raise RuntimeError("ไม่มีแทร็กเสียงใน spec")
 
     progress("เตรียมไฟล์เสียง", 0.02)
     paths = {name: fetch(name) for name in names}
+
+    if not HEAVY_LOCK.acquire(blocking=False):
+        progress("รอคิวถอดเสียง (มีงานอื่นใช้ GPU อยู่)", 0.03)
+        HEAVY_LOCK.acquire()
+    try:
+        return _transcribe_all(spec, paths, names, progress, mix_dir)
+    finally:
+        HEAVY_LOCK.release()
+
+
+def _transcribe_all(spec: dict, paths: dict, names: list[str],
+                    progress: ProgressFn, mix_dir: Path) -> dict:
+    """ส่วนที่กินเครื่อง — เรียกใต้ HEAVY_LOCK เท่านั้น."""
+    title = spec["title"]
+    language = spec.get("language") or None
+    want_diarize = bool(spec.get("diarize")) and diarize.available()
+    num_speakers = int(spec.get("num_speakers") or 0)
 
     segments: list[dict] = []
     detected = language or config.whisper_lang
@@ -257,7 +276,7 @@ def mean_volume(path: Path) -> float | None:
 
 
 def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
-            stop_check=None, work_dir: Path | None = None) -> dict:
+            stop_check=None, work_dir: Path | None = None, worker: str = "") -> dict:
     """ส่งบอทเข้าห้องประชุม อัดเสียง แล้วถอด/แยกผู้พูด/สรุป ด้วยท่อเดิมทั้งเส้น.
 
     ไฟล์ที่บอทอัดได้ถือเป็นแทร็ก 'mixed' (ทุกคนอยู่ในไฟล์เดียว)
@@ -289,7 +308,7 @@ def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
     progress("ส่งบอทเข้าห้องประชุม (อย่าลืมกดรับเข้าห้อง)", BOT_START)
     bot.join_and_record(url, wav, name=spec.get("bot_name") or "AI Notetaker",
                         max_minutes=max_minutes, on_tick=tick, job_id=spec["id"],
-                        passcode=spec.get("passcode") or "")
+                        passcode=spec.get("passcode") or "", worker=worker)
 
     # ไฟล์เงียบทั้งอัน = บอทไม่ได้ยินอะไรเลย ต้นเหตุที่พบบ่อยสุดคือไม่มีใครกด Admit
     # ให้บอก(สาเหตุ)ตรงนี้ ไม่ใช่ปล่อยให้ไปโผล่เป็น "ถอดเสียงไม่ได้ข้อความเลย" ทีหลัง

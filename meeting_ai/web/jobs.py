@@ -524,7 +524,8 @@ def _execute(spec: dict) -> None:
         if spec["kind"] == "bot":
             # บอทอัดไฟล์เองในโฟลเดอร์ชั่วคราว ไม่มีแทร็กให้ fetch
             result = runner.bot_job(spec, progress, mix_dir,
-                                    stop_check=lambda: stop_requested(job_id), work_dir=tmp)
+                                    stop_check=lambda: stop_requested(job_id), work_dir=tmp,
+                                    worker=LOCAL_WORKER_NAME)
         else:
             result = runner.transcribe_job(spec, fetch, progress, mix_dir)
 

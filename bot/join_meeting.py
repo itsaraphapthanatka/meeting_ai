@@ -32,6 +32,8 @@ BOT_NAME = os.environ.get("BOT_NAME", "AI Notetaker")
 OUT_WAV = os.environ.get("OUT_WAV", "/out/recording.wav")
 MAX_MINUTES = int(os.environ.get("MAX_MINUTES", "180"))
 PASSCODE = os.environ.get("PASSCODE", "")
+# entrypoint ก็อป /prof มาไว้ที่นี่ ให้หลายบอททำงานพร้อมกันได้
+PROFILE_DIR = os.environ.get("PROFILE_DIR", "/prof")
 DEBUG_PNG = "/out/bot_debug.png"
 SHOT_AFTER_JOIN = "/out/bot_after_join.png"
 SHOT_IN_ROOM = "/out/bot_inroom.png"
@@ -205,7 +207,7 @@ async def run() -> int:
 
     async with async_playwright() as pw:
         context = await pw.chromium.launch_persistent_context(
-            user_data_dir="/prof",   # profile ถาวร (mount จาก host) ที่ล็อกอินไว้แล้ว
+            user_data_dir=PROFILE_DIR,   # สำเนาของ profile ที่ล็อกอินไว้ (ดู entrypoint.sh)
             headless=False,
             args=[
                 "--no-sandbox",

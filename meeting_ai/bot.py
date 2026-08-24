@@ -175,7 +175,18 @@ def missing_pieces() -> list[str]:
     return missing
 
 
-def cleanup_stale() -> list[str]:
+def worker_tag(worker: str) -> str:
+    """ส่วนของชื่อ container ที่บอกว่าเป็นของ worker ตัวไหน.
+
+    ต้องมี เพราะเปิด worker หลายตัวบนเครื่องเดียวได้ (เพื่อประชุมพร้อมกันหลายห้อง)
+    ถ้าไม่แยก cleanup_stale() ของตัวที่เพิ่งเริ่ม จะไปปิดบอทของตัวอื่นที่กำลังประชุมอยู่
+    ชื่อเครื่องเป็นภาษาไทยได้ ซึ่งใช้เป็นชื่อ container ไม่ได้ จึงถอยไปใช้ hash
+    """
+    slug = re.sub(r"[^A-Za-z0-9]", "", worker or "")[:16]
+    return slug or hashlib.md5((worker or "solo").encode("utf-8")).hexdigest()[:8]
+
+
+def cleanup_stale(worker: str = "") -> list[str]:
     """หยุด container ของบอทที่ยังรันค้างอยู่ แล้วคืนรายชื่อที่หยุดไป (ไม่แตะตัวล็อกอิน).
 
     เรียกตอน worker เริ่มทำงาน: worker ใหม่หมายความว่าตัวเก่าตายไปแล้ว
@@ -186,7 +197,9 @@ def cleanup_stale() -> list[str]:
     exe = shutil.which("docker")
     if not exe:
         return []
-    r = _run([exe, "ps", "--filter", f"name={PREFIX}", "--format", "{{.Names}}"], text=True)
+    # กรองเฉพาะของ worker ตัวนี้ (ไม่ส่งชื่อมา = โหมด CLI ดูทั้งหมด)
+    scope = f"{PREFIX}{worker_tag(worker)}_" if worker else PREFIX
+    r = _run([exe, "ps", "--filter", f"name={scope}", "--format", "{{.Names}}"], text=True)
     names = [x.strip() for x in r.stdout.splitlines() if x.strip()]
     for name in names:
         # stop ไม่ kill — ให้บอทออกจากห้องและปิดไฟล์เสียงให้เรียบร้อยก่อน
@@ -339,6 +352,7 @@ def join_and_record(
     on_tick=None,
     job_id: str | None = None,
     passcode: str = "",
+    worker: str = "",
 ) -> Path:
     """ส่งบอทเข้าห้อง แล้วคืน path ไฟล์เสียงที่อัดได้.
 
@@ -366,7 +380,7 @@ def join_and_record(
         cout = out_wav
     # ตั้งชื่อตาม job id เพื่อให้ไล่หา/สั่งหยุดจากภายนอกได้ (ชื่อ container ต้องเป็น [A-Za-z0-9_.-])
     tag = re.sub(r"[^A-Za-z0-9_.-]", "", job_id or "")[:40] or str(int(time.time()))
-    container = f"{PREFIX}{tag}"
+    container = f"{PREFIX}{worker_tag(worker)}_{tag}"
     # ชื่อซ้ำจากรอบก่อนที่ค้างอยู่ ต้องเก็บให้เรียบร้อยก่อน ไม่งั้น docker run จะฟ้องชื่อชนกัน
     subprocess.run([docker, "rm", "-f", container], capture_output=True)
 

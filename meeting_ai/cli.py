@@ -101,6 +101,11 @@ def _cmd_db_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def worker_default_bots() -> int:
+    """ค่าเริ่มต้นของ --max-bots (แยกออกมาไม่ให้ต้อง import worker ตอน parse args)."""
+    return 3
+
+
 def _cmd_worker(args: argparse.Namespace) -> int:
     from . import worker
     from .config import config
@@ -109,7 +114,7 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         print("❌ ต้องมี token — ใส่ --token หรือตั้ง WORKER_TOKEN ใน .env", file=sys.stderr)
         return 2
     return worker.run(api=args.api, token=token, once=args.once, poll=args.poll,
-                      name=args.name)
+                      name=args.name, max_bots=args.max_bots)
 
 
 def _add_template_arg(sp: argparse.ArgumentParser) -> None:
@@ -199,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--once", action="store_true", help="ทำงานเดียวแล้วออก (ใช้ทดสอบ)")
     sp.add_argument("--poll", type=float, default=3.0, help="วินาทีที่รอเมื่อคิวว่าง")
     sp.add_argument("--name", help="ชื่อเครื่องที่จะโชว์ในหน้าเว็บ (ไม่ใส่ = ชื่อ hostname)")
+    sp.add_argument("--max-bots", type=int, default=worker_default_bots(),
+                    help="รับงานบอทพร้อมกันได้กี่ห้อง (ถอดเสียงยังทำทีละงาน)")
     sp.set_defaults(func=_cmd_worker)
 
     return p
