@@ -62,7 +62,15 @@ def _pick_ipv4(host: str) -> str | None:
 
 
 def _connect_kwargs() -> dict:
-    kwargs: dict = {"autocommit": True, "connect_timeout": CONNECT_TIMEOUT}
+    # prepare_threshold=None ปิด prepared statement อัตโนมัติของ psycopg3
+    # จำเป็นกับ connection pooler แบบ transaction mode (Supabase :6543, PgBouncer)
+    # ที่สลับ backend ต่อ transaction — ไม่งั้นเจอ error
+    # "prepared statement _pg3_x does not exist / requires N parameters"
+    kwargs: dict = {
+        "autocommit": True,
+        "connect_timeout": CONNECT_TIMEOUT,
+        "prepare_threshold": None,
+    }
     raw = url()
     if "hostaddr" in raw:
         return kwargs  # ผู้ใช้ระบุมาเองแล้ว ไม่ต้องยุ่ง
