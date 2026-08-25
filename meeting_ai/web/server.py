@@ -139,6 +139,18 @@ def _live_available() -> bool:
     return True
 
 
+def _live_recording_enabled() -> bool:
+    """แอดมินเปิด/ปิดฟีเจอร์ 'อัดสดจากเบราว์เซอร์' ให้ผู้ใช้ทั้งระบบ (ค่าเริ่มต้น = เปิด).
+
+    แยกจาก _live_available (ความสามารถของเซิร์ฟเวอร์): เป็นสวิตช์เชิงนโยบายที่แอดมินคุมเอง
+    """
+    try:
+        return bool(store.get_setting("live_recording_enabled", True))
+    except Exception:
+        # ฐานข้อมูล/ไฟล์มีปัญหา อย่าให้ทั้งหน้าเว็บล่ม — ถือว่าเปิดไว้ตามค่าเริ่มต้น
+        return True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "meeting_ai"
     protocol_version = "HTTP/1.1"
@@ -253,6 +265,15 @@ class Handler(BaseHTTPRequestHandler):
         # งานเก่าที่ไม่ได้เก็บเจ้าของไว้ ให้ตกไปที่สิทธิ์ของการประชุมนั้น
         return owner == self.user_id if owner else self._may_write(job["id"])
 
+    def _update_settings(self) -> None:
+        """ปรับตั้งค่าระดับระบบ — เฉพาะแอดมิน (โหมด cloud). โหมดไฟล์เปิดให้เจ้าของเครื่องปรับได้."""
+        if backend.auth_required() and not (self.user and self.user.get("is_admin")):
+            return self._error(HTTPStatus.FORBIDDEN, "ต้องเป็นแอดมินจึงปรับตั้งค่าได้")
+        body = self._body_json()
+        if "live_recording_enabled" in body:
+            store.set_setting("live_recording_enabled", bool(body["live_recording_enabled"]))
+        return self._json({"live_recording_enabled": _live_recording_enabled()})
+
     def _body_json(self) -> dict:
         """อ่าน body เป็น JSON — body ว่างถือว่า {} แต่ถ้าเสียให้ฟ้องตรงๆ
 
@@ -362,6 +383,8 @@ class Handler(BaseHTTPRequestHandler):
                 # ถอดเสียงสดทำที่ฝั่งเซิร์ฟเวอร์ ต้องมี whisper + โมเดล + ffmpeg ครบ
                 # บน cloud อย่าง Vercel ไม่มีทั้งสามอย่าง ต้องบอกหน้าเว็บให้ปิดตัวเลือกนี้
                 "live_available": _live_available(),
+                # สวิตช์ของแอดมิน: ปิดแล้วหน้าเว็บจะซ่อนการ์ดอัดสดจากเบราว์เซอร์ทั้งใบ
+                "live_recording_enabled": _live_recording_enabled(),
                 "stt_providers": [
                     {"key": k, **v} for k, v in stt.providers(caps).items()
                 ],
@@ -380,6 +403,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if parts == ["live"] and self.command == "POST":
             return self._live()
+
+        if parts == ["settings"] and self.command == "POST":
+            return self._update_settings()
 
         if parts == ["meetings"]:
             if get:

@@ -211,6 +211,27 @@ def invite_email(code: str) -> tuple[bool, str | None]:
     return (row is not None, row[0] if row else None)
 
 
+# ---------- ตั้งค่าระบบ (แอดมินปรับ) ----------
+
+def get_setting(key: str, default: Any = None) -> Any:
+    with db.connect() as conn:
+        row = conn.execute(
+            "select value from meeting_ai.settings where key = %s", (key,)
+        ).fetchone()
+    return row[0] if row else default  # jsonb ถูกแปลงเป็น object ของ Python ให้แล้ว
+
+
+def set_setting(key: str, value: Any) -> None:
+    with db.connect() as conn:
+        conn.execute(
+            """insert into meeting_ai.settings (key, value, updated_at)
+                 values (%s, %s, now())
+               on conflict (key) do update
+                 set value = excluded.value, updated_at = now()""",
+            (key, json.dumps(value, ensure_ascii=False)),
+        )
+
+
 # ---------- การประชุม ----------
 
 _META_COLS = """id, owner_id, title, visibility, language, duration, segment_count,

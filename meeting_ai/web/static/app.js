@@ -297,12 +297,30 @@ async function refreshConfig() {
   } catch (e) { /* ไม่สำคัญพอจะรบกวนผู้ใช้ */ }
 }
 
+// สวิตช์อัดสดจากเบราว์เซอร์ (แอดมินคุม) — ค่าเริ่มต้นเปิด
+const liveOn = () => state.config.live_recording_enabled !== false;
+const liveToggleLabel = () => (liveOn() ? '🟢 อัดสด: เปิด' : '🔴 อัดสด: ปิด');
+
+async function toggleLiveRecording() {
+  const next = !liveOn();
+  try {
+    await api('/api/settings', jsonPost({ live_recording_enabled: next }));
+    await refreshConfig();               // อัปเดต state.config + วาดปุ่มใหม่
+    const card = $('#rec-card');
+    if (card) card.hidden = !next;       // ซ่อน/โชว์การ์ดทันทีถ้าอยู่หน้าประชุมใหม่
+    banner(next ? 'เปิดให้ผู้ใช้อัดสดจากเบราว์เซอร์แล้ว' : 'ปิดการอัดสดจากเบราว์เซอร์แล้ว');
+  } catch (e) {
+    banner('ปรับตั้งค่าไม่สำเร็จ: ' + (e.message || e));
+  }
+}
+
 function renderUserBox() {
   const box = $('#userbox');
   if (!state.config.auth_required) { box.hidden = true; return; }
   box.hidden = false;
   if (state.user) {
     box.innerHTML = `<span class="who">${esc(state.user.name || state.user.email)}</span>`
+      + (isAdmin() ? `<button id="btn-live-toggle" class="btn btn-sm" type="button">${liveToggleLabel()}</button>` : '')
       + (isAdmin() ? '<button id="btn-invite" class="btn btn-sm" type="button">เชิญสมาชิก</button>' : '')
       + '<button id="btn-logout" class="btn btn-sm" type="button">ออกจากระบบ</button>';
     $('#btn-logout').onclick = async () => {
@@ -311,6 +329,8 @@ function renderUserBox() {
     };
     const inv = $('#btn-invite');
     if (inv) inv.onclick = inviteMember;
+    const lt = $('#btn-live-toggle');
+    if (lt) lt.onclick = toggleLiveRecording;
   } else if (state.share) {
     box.innerHTML = '<span class="who">เปิดจากลิงก์แชร์'
       + (state.share.can_edit ? ' (แก้ได้)' : ' (อ่านอย่างเดียว)') + '</span>';
@@ -508,6 +528,10 @@ function showNew() {
     live.closest('label').title = 'เซิร์ฟเวอร์นี้ถอดเสียงเองไม่ได้ — ข้อความสดใช้ได้เฉพาะตอนรันในเครื่อง';
     live.closest('label').lastChild.textContent = ' แสดงข้อความสดระหว่างประชุม (เซิร์ฟเวอร์นี้ทำไม่ได้)';
   }
+
+  // แอดมินปิดฟีเจอร์อัดสดจากเบราว์เซอร์ → ซ่อนการ์ดทั้งใบ (อัปโหลดไฟล์/เชิญบอทยังใช้ได้)
+  const recCard = $('#rec-card');
+  if (recCard) recCard.hidden = !liveOn();
 
   const diarizeBox = $('#f-diarize');
   if (!state.config.diarize_available) {

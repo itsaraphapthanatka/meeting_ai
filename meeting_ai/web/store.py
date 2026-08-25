@@ -21,6 +21,7 @@ from ..config import config
 
 WEB_DIR = config.root / "recordings" / "web"
 INDEX_PATH = WEB_DIR / "index.json"
+SETTINGS_PATH = WEB_DIR / "settings.json"
 
 _lock = threading.RLock()
 # แคชรายละเอียดตาม mtime — ค้นหาต้องอ่านทุกไฟล์ ไม่อยากอ่านซ้ำทุกครั้ง
@@ -60,6 +61,20 @@ def _write_json(path: Path, data: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
+
+
+# ---------- ตั้งค่าระบบ (แอดมินปรับ) — มี API เดียวกับ pgstore ----------
+
+def get_setting(key: str, default: Any = None) -> Any:
+    with _lock:
+        return _read_json(SETTINGS_PATH, {}).get(key, default)
+
+
+def set_setting(key: str, value: Any) -> None:
+    with _lock:
+        data = _read_json(SETTINGS_PATH, {})
+        data[key] = value
+        _write_json(SETTINGS_PATH, data)
 
 
 def _load_index() -> list[dict]:
