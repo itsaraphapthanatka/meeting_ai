@@ -37,3 +37,6 @@ run-worker-hidden.ps1
 
 # bot Google login session (private)
 bot/profile/
+
+# database backups (มีข้อมูลจริง ห้าม commit)
+backups/
