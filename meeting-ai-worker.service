@@ -1,0 +1,25 @@
+[Unit]
+Description=meeting_ai worker (GB10) — รับงานถอดเสียง/แยกผู้พูด/บอท จาก Vercel
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=aistudiofebc
+Group=aistudiofebc
+# ให้เข้าถึง Docker ได้ (บอทเข้าห้องประชุม)
+SupplementaryGroups=docker
+WorkingDirectory=/home/aistudiofebc/project/meeting_ai
+# HOME ให้ python เจอ ~/.local (sherpa-onnx สำหรับแยกผู้พูด)
+Environment=HOME=/home/aistudiofebc
+Environment=PYTHONUNBUFFERED=1
+# กัน worker เก่าที่รันค้างอยู่ (เช่น nohup) ให้เหลือตัวเดียว — ไม่มีก็ไม่เป็นไร
+ExecStartPre=-/usr/bin/pkill -f "python3 -m meeting_ai worker"
+# token อ่านจาก .env (WORKER_TOKEN) จึงไม่ต้องใส่ในไฟล์นี้
+ExecStart=/home/aistudiofebc/project/meeting_ai/mai worker --api https://meeting-ai-swart.vercel.app --max-bots 6
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
