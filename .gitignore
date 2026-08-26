@@ -6,6 +6,10 @@ __pycache__/
 *.pyc
 .venv/
 
+# build / vendored deps (whisper.cpp source + build ที่ setup-ubuntu.sh หรือ clone เอง — ใหญ่ ห้าม commit)
+vendor/
+whisper.cpp/
+
 # data / outputs
 recordings/
 models/
