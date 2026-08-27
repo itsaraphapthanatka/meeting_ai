@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>meeting_ai — โปสเตอร์นำเสนอระบบ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+<style>
+  :root{
+    --bg:#EAEEED; --surface:#FFFFFF; --surface-2:#F3F6F5;
+    --ink:#0D1A1B; --ink-soft:#48595A; --ink-faint:#7A8B8B;
+    --line:#D3DEDC; --line-strong:#B9C8C6;
+    --accent:#0C8C7C; --accent-ink:#0A6D61; --accent-2:#B85E14;
+    --live:#C1345A;
+    --glow:rgba(12,140,124,.14);
+    --shadow:0 1px 2px rgba(13,26,27,.05),0 12px 34px -18px rgba(13,26,27,.28);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#070F0E; --surface:#0E1A18; --surface-2:#101E1B;
+      --ink:#E9F1EF; --ink-soft:#93A6A3; --ink-faint:#61736F;
+      --line:#1C2C29; --line-strong:#294039;
+      --accent:#2BD9C1; --accent-ink:#7DEAD9; --accent-2:#F2A24A;
+      --live:#FF6E93;
+      --glow:rgba(43,217,193,.16);
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 18px 44px -20px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#070F0E; --surface:#0E1A18; --surface-2:#101E1B;
+    --ink:#E9F1EF; --ink-soft:#93A6A3; --ink-faint:#61736F;
+    --line:#1C2C29; --line-strong:#294039;
+    --accent:#2BD9C1; --accent-ink:#7DEAD9; --accent-2:#F2A24A;
+    --live:#FF6E93;
+    --glow:rgba(43,217,193,.16);
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 18px 44px -20px rgba(0,0,0,.7);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"IBM Plex Sans Thai","IBM Plex Sans",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased; line-height:1.55;
+  }
+  .poster{
+    max-width:900px; margin:0 auto; padding:clamp(18px,4vw,40px);
+    display:flex; flex-direction:column; gap:clamp(20px,3.4vw,34px);
+  }
+
+  /* ---- shared bits ---- */
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:500;
+    letter-spacing:.22em; text-transform:uppercase; color:var(--accent-ink);
+    display:inline-flex; align-items:center; gap:9px;
+  }
+  .eyebrow::before{
+    content:""; width:26px; height:2px; background:var(--accent); border-radius:2px;
+  }
+  h2.section-title{
+    font-family:"Chakra Petch",sans-serif; font-weight:600;
+    font-size:clamp(19px,2.6vw,25px); margin:10px 0 0; letter-spacing:-.01em;
+    text-wrap:balance;
+  }
+  .card{
+    background:var(--surface); border:1px solid var(--line);
+    border-radius:16px; box-shadow:var(--shadow);
+  }
+
+  /* ---- hero ---- */
+  .hero{
+    position:relative; overflow:hidden;
+    padding:clamp(26px,4.4vw,46px);
+    background:
+      radial-gradient(120% 140% at 100% 0%, var(--glow), transparent 55%),
+      var(--surface);
+  }
+  .hero .eyebrow{margin-bottom:22px}
+  .wordmark{
+    font-family:"Chakra Petch",sans-serif; font-weight:700;
+    font-size:clamp(46px,10.5vw,104px); line-height:.92; letter-spacing:-.03em;
+    margin:0; text-wrap:balance;
+  }
+  .wordmark .u{color:var(--accent)}
+  .tagline{
+    margin:18px 0 0; max-width:34ch;
+    font-size:clamp(16px,2.3vw,20px); font-weight:500; color:var(--ink);
+  }
+  .subline{
+    margin:12px 0 0; max-width:52ch; color:var(--ink-soft);
+    font-size:clamp(13.5px,1.7vw,15.5px);
+  }
+  .wave{
+    margin-top:26px; width:100%; height:76px; display:block;
+    border-top:1px dashed var(--line-strong); padding-top:18px;
+  }
+  .hero-meta{
+    margin-top:20px; display:flex; flex-wrap:wrap; gap:8px;
+  }
+  .chip{
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; font-weight:500;
+    letter-spacing:.02em; color:var(--ink-soft);
+    background:var(--surface-2); border:1px solid var(--line);
+    padding:6px 11px; border-radius:999px; white-space:nowrap;
+  }
+  .chip b{color:var(--ink); font-weight:600}
+
+  /* ---- pipeline ---- */
+  .pipeline{padding:clamp(20px,3vw,30px)}
+  .flow{
+    margin-top:20px; display:grid; gap:14px;
+    grid-template-columns:repeat(4,1fr);
+  }
+  .stage{
+    position:relative; background:var(--surface-2);
+    border:1px solid var(--line); border-radius:13px; padding:16px 15px 17px;
+  }
+  .stage .n{
+    font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:600;
+    color:var(--accent); letter-spacing:.1em;
+  }
+  .stage h3{
+    font-family:"Chakra Petch",sans-serif; font-weight:600; font-size:16px;
+    margin:8px 0 5px; letter-spacing:-.01em;
+  }
+  .stage p{margin:0; font-size:12.8px; color:var(--ink-soft); line-height:1.5}
+  .stage .io{
+    margin-top:11px; font-family:"IBM Plex Mono",monospace; font-size:10.5px;
+    color:var(--ink-faint); letter-spacing:.04em;
+  }
+  .stage:not(:last-child)::after{
+    content:"→"; position:absolute; right:-11px; top:50%; transform:translateY(-50%);
+    color:var(--accent); font-weight:700; font-size:16px; z-index:2;
+  }
+
+  /* ---- features ---- */
+  .features{
+    display:grid; gap:14px; grid-template-columns:repeat(3,1fr);
+  }
+  .feat{padding:20px 18px}
+  .feat .ico{
+    width:38px; height:38px; border-radius:10px; display:grid; place-items:center;
+    background:var(--glow); color:var(--accent); margin-bottom:13px;
+  }
+  .feat .ico svg{width:20px; height:20px; display:block}
+  .feat h3{
+    font-family:"Chakra Petch",sans-serif; font-weight:600; font-size:16px;
+    margin:0 0 6px; letter-spacing:-.01em;
+  }
+  .feat p{margin:0; font-size:13px; color:var(--ink-soft); line-height:1.52}
+
+  /* ---- architecture ---- */
+  .arch{padding:clamp(22px,3.4vw,32px)}
+  .arch-grid{
+    margin-top:22px; display:grid; gap:16px; align-items:stretch;
+    grid-template-columns:1fr auto 1fr;
+  }
+  .node{
+    background:var(--surface-2); border:1px solid var(--line-strong);
+    border-radius:14px; padding:18px 18px 19px;
+  }
+  .node.gpu{
+    border-color:var(--accent);
+    background:linear-gradient(180deg,var(--glow),transparent),var(--surface-2);
+  }
+  .node .tag{
+    font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--ink-faint);
+  }
+  .node h3{
+    font-family:"Chakra Petch",sans-serif; font-weight:600; font-size:17px;
+    margin:7px 0 9px;
+  }
+  .node ul{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px}
+  .node li{
+    font-size:12.6px; color:var(--ink-soft); padding-left:16px; position:relative;
+  }
+  .node li::before{
+    content:""; position:absolute; left:0; top:8px; width:6px; height:6px;
+    border-radius:2px; background:var(--accent);
+  }
+  .link{
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:6px; color:var(--ink-faint); font-family:"IBM Plex Mono",monospace;
+    font-size:10px; letter-spacing:.08em; text-align:center; min-width:74px;
+  }
+  .link .bi{
+    font-size:20px; color:var(--accent); line-height:1;
+  }
+
+  /* ---- platforms + stack ---- */
+  .split{display:grid; gap:14px; grid-template-columns:1fr 1fr}
+  .panel{padding:20px 20px 22px}
+  .plat{display:flex; flex-direction:column; gap:10px; margin-top:16px}
+  .plat-row{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:11px 14px; border-radius:11px; background:var(--surface-2);
+    border:1px solid var(--line);
+  }
+  .plat-row .name{font-family:"Chakra Petch",sans-serif; font-weight:600; font-size:15px}
+  .badge{
+    font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:600;
+    padding:4px 10px; border-radius:999px; letter-spacing:.03em;
+  }
+  .badge.ok{color:var(--accent-ink); background:var(--glow); border:1px solid var(--accent)}
+  .badge.wip{color:var(--accent-2); background:color-mix(in srgb,var(--accent-2) 12%,transparent); border:1px solid color-mix(in srgb,var(--accent-2) 45%,transparent)}
+  .stack{display:flex; flex-wrap:wrap; gap:8px; margin-top:16px}
+  .tech{
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--ink);
+    background:var(--surface-2); border:1px solid var(--line);
+    padding:7px 11px; border-radius:8px;
+  }
+  .tech span{color:var(--ink-faint)}
+
+  /* ---- deploy strip ---- */
+  .deploy{
+    padding:clamp(20px,3vw,28px);
+    background:
+      radial-gradient(100% 160% at 0% 0%, var(--glow), transparent 60%),
+      var(--surface);
+  }
+  .deploy .eyebrow{margin-bottom:16px}
+  .specs{
+    display:grid; gap:1px; background:var(--line); border:1px solid var(--line);
+    border-radius:13px; overflow:hidden;
+    grid-template-columns:repeat(4,1fr);
+  }
+  .spec{background:var(--surface); padding:15px 15px 16px}
+  .spec .k{
+    font-family:"IBM Plex Mono",monospace; font-size:10px; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--ink-faint);
+  }
+  .spec .v{
+    font-family:"Chakra Petch",sans-serif; font-weight:600; font-size:17px;
+    margin-top:6px; color:var(--ink); font-variant-numeric:tabular-nums;
+  }
+  .spec .v small{display:block; font-family:"IBM Plex Sans Thai"; font-weight:400; font-size:11.5px; color:var(--ink-soft); letter-spacing:0; margin-top:2px}
+
+  footer{
+    display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
+    gap:10px; padding:2px 4px 4px; color:var(--ink-faint);
+    font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.04em;
+  }
+  footer .dot{color:var(--accent)}
+
+  @media (max-width:760px){
+    .flow{grid-template-columns:repeat(2,1fr)}
+    .stage:nth-child(2)::after{display:none}
+    .features{grid-template-columns:1fr 1fr}
+    .arch-grid{grid-template-columns:1fr}
+    .link{flex-direction:row; min-width:0; padding:4px 0}
+    .link .bi{transform:rotate(90deg)}
+    .split{grid-template-columns:1fr}
+    .specs{grid-template-columns:1fr 1fr}
+  }
+  @media (max-width:440px){
+    .features{grid-template-columns:1fr}
+    .flow{grid-template-columns:1fr}
+    .stage::after{display:none!important}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important}
+  }
+  @media print{
+    body{background:#fff}
+    .card,.hero,.deploy{box-shadow:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="poster">
+
+  <!-- HERO -->
+  <header class="hero card">
+    <span class="eyebrow">ระบบบันทึก &amp; สรุปการประชุมด้วย AI</span>
+    <h1 class="wordmark">meeting<span class="u">_</span>ai</h1>
+    <p class="tagline">อัดประชุม → ถอดเสียง → สรุปเป็นภาษาไทยพร้อม action items อัตโนมัติ</p>
+    <p class="subline">ประมวลผลในเครื่องด้วย GPU — เสียงไม่ออกไปที่อื่น รองรับทั้งอัปโหลดไฟล์ อัดสด และส่งบอทเข้าห้อง Google Meet / Zoom</p>
+    <canvas class="wave" id="wave" aria-hidden="true"></canvas>
+    <div class="hero-meta">
+      <span class="chip"><b>whisper.cpp</b> · CUDA</span>
+      <span class="chip"><b>LLM</b> สรุปภาษาไทย</span>
+      <span class="chip">แยกผู้พูด <b>sherpa-onnx</b></span>
+      <span class="chip">บอท <b>Playwright</b></span>
+      <span class="chip">เว็บ + CLI</span>
+    </div>
+  </header>
+
+  <!-- PIPELINE -->
+  <section class="pipeline card">
+    <span class="eyebrow">ขั้นตอนการทำงาน</span>
+    <h2 class="section-title">จากเสียงประชุม สู่บทสรุปที่พร้อมใช้</h2>
+    <div class="flow">
+      <div class="stage">
+        <div class="n">01</div><h3>อัดเสียง</h3>
+        <p>อัปโหลดไฟล์ อัดสดจากเบราว์เซอร์ หรือให้บอทเข้าห้องไปอัดให้</p>
+        <div class="io">Meet · Zoom · mp3/mp4</div>
+      </div>
+      <div class="stage">
+        <div class="n">02</div><h3>ถอดเสียง</h3>
+        <p>whisper.cpp รันบน GPU ในเครื่อง — เร็ว แม่น เสียงไม่ออกนอกเครื่อง</p>
+        <div class="io">audio → text (ไทย)</div>
+      </div>
+      <div class="stage">
+        <div class="n">03</div><h3>แยกผู้พูด</h3>
+        <p>sherpa-onnx ระบุว่าใครพูดประโยคไหน ตั้งชื่อผู้พูดได้เอง</p>
+        <div class="io">diarization</div>
+      </div>
+      <div class="stage">
+        <div class="n">04</div><h3>สรุป</h3>
+        <p>LLM สรุปประเด็น + ตาราง action items พร้อมผู้รับผิดชอบ</p>
+        <div class="io">text → สรุป + tasks</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section>
+    <span class="eyebrow" style="margin-bottom:14px;display:inline-flex">ความสามารถเด่น</span>
+    <div class="features">
+      <div class="feat card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v18M6 8v8M18 8v8M3 11v2M21 11v2"/></svg></div>
+        <h3>ถอดเสียงในเครื่อง</h3>
+        <p>whisper.cpp เร่งด้วย CUDA — ฟรี ไม่จำกัดโควตา ข้อมูลเสียงอยู่ในเครื่องคุณ</p>
+      </div>
+      <div class="feat card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg></div>
+        <h3>สรุปภาษาไทย</h3>
+        <p>ได้ประเด็นหลักและตาราง action items ระบุผู้รับผิดชอบให้อัตโนมัติ</p>
+      </div>
+      <div class="feat card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></div>
+        <h3>อัดสดจากเบราว์เซอร์</h3>
+        <p>กดอัดจากไมค์ได้เลย ไม่ต้องลง BlackHole/VB-CABLE มีมิเตอร์เตือนระดับเสียง</p>
+      </div>
+      <div class="feat card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 20a6 6 0 0 1 12 0M15 20a5 5 0 0 1 6-4"/></svg></div>
+        <h3>แยกผู้พูดหลายคน</h3>
+        <p>ระบุผู้พูดจากไฟล์เดียว หรือแยก 2 แทร็ก (ฉัน/อีกฝ่าย) ให้แม่น 100%</p>
+      </div>
+      <div class="feat card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M8 12h.01M12 12h.01M16 12h.01"/></svg></div>
+        <h3>บอทเข้าห้องอัตโนมัติ</h3>
+        <p>ส่งบอทเข้า Meet/Zoom ไปนั่งฟัง อัด แล้วสรุปให้ ไม่ต้องเปิดเครื่องไว้เอง</p>
+      </div>
+      <div class="feat card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h4l2 5 3-10 2 5h4"/></svg></div>
+        <h3>ถอดเสียงสด + คลิกฟัง</h3>
+        <p>เห็นข้อความไหลระหว่างประชุม คลิกบรรทัดเพื่อกระโดดไปฟังเสียงตรงจุดนั้น</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARCHITECTURE -->
+  <section class="arch card">
+    <span class="eyebrow">สถาปัตยกรรม</span>
+    <h2 class="section-title">เว็บบน cloud · งานหนักบนเครื่อง GPU</h2>
+    <div class="arch-grid">
+      <div class="node">
+        <div class="tag">Cloud · Vercel</div>
+        <h3>หน้าเว็บ + คิวงาน</h3>
+        <ul>
+          <li>อัปโหลด / อัดสด / ค้นหาคลังประชุม</li>
+          <li>ล็อกอิน แชร์ เก็บลง Postgres</li>
+          <li>ถือคิว ไม่ต้องมี GPU</li>
+        </ul>
+      </div>
+      <div class="link" aria-hidden="true">
+        <span class="bi">⇄</span>
+        <span>คิวงาน<br>+ ผลลัพธ์</span>
+      </div>
+      <div class="node gpu">
+        <div class="tag">On-prem · Worker</div>
+        <h3>เครื่อง GPU</h3>
+        <ul>
+          <li>ถอดเสียง whisper.cpp (CUDA)</li>
+          <li>แยกผู้พูด + สรุปด้วย LLM</li>
+          <li>รันบอทใน Docker หลายห้องพร้อมกัน</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- PLATFORMS + STACK -->
+  <div class="split">
+    <section class="panel card">
+      <span class="eyebrow">รองรับแพลตฟอร์ม</span>
+      <div class="plat">
+        <div class="plat-row"><span class="name">Google Meet</span><span class="badge ok">รองรับเต็ม</span></div>
+        <div class="plat-row"><span class="name">Zoom</span><span class="badge ok">รองรับ · ล็อกอินบอท</span></div>
+        <div class="plat-row"><span class="name">Microsoft Teams</span><span class="badge wip">กำลังพัฒนา</span></div>
+        <div class="plat-row"><span class="name">อัปโหลดไฟล์อัด</span><span class="badge ok">ทุกแพลตฟอร์ม</span></div>
+      </div>
+    </section>
+    <section class="panel card">
+      <span class="eyebrow">เทคโนโลยี</span>
+      <div class="stack">
+        <span class="tech">Python <span>stdlib</span></span>
+        <span class="tech">whisper.cpp <span>CUDA</span></span>
+        <span class="tech">sherpa-onnx</span>
+        <span class="tech">LLM <span>OpenAI-compat</span></span>
+        <span class="tech">Playwright <span>+ Chromium</span></span>
+        <span class="tech">Docker</span>
+        <span class="tech">ffmpeg</span>
+        <span class="tech">PulseAudio</span>
+        <span class="tech">Postgres</span>
+      </div>
+      <p style="margin:16px 0 0;font-size:12.5px;color:var(--ink-soft);line-height:1.55">orchestration เป็น Python stdlib ล้วน — ไม่ต้อง <span style="font-family:'IBM Plex Mono',monospace">pip install</span> ที่ฝั่งเว็บ</p>
+    </section>
+  </div>
+
+  <!-- DEPLOYMENT -->
+  <section class="deploy card">
+    <span class="eyebrow">ตัวอย่างการติดตั้งจริง</span>
+    <div class="specs">
+      <div class="spec"><div class="k">GPU</div><div class="v">GB10<small>Grace Blackwell</small></div></div>
+      <div class="spec"><div class="k">Memory</div><div class="v">121 GB<small>unified</small></div></div>
+      <div class="spec"><div class="k">Model</div><div class="v">large-v3<small>whisper turbo/full</small></div></div>
+      <div class="spec"><div class="k">บอทพร้อมกัน</div><div class="v">6 ห้อง<small>ถอดเสียงเข้าคิว GPU</small></div></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>meeting_ai <span class="dot">●</span> self-hosted meeting intelligence</span>
+    <span>Ubuntu · ARM64 · systemd service</span>
+  </footer>
+
+</div>
+
+<script>
+  (function(){
+    var c = document.getElementById('wave');
+    if(!c) return;
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+    var ctx = c.getContext('2d'), dpr = Math.min(window.devicePixelRatio||1, 2);
+    function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+    function size(){
+      var w = c.clientWidth || 800, h = c.clientHeight || 60;
+      c.width = w*dpr; c.height = h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+      return {w:w,h:h};
+    }
+    var dim = size();
+    window.addEventListener('resize', function(){ dim = size(); });
+    var bars = 68, t = 0;
+    function draw(){
+      var w = dim.w, h = dim.h, mid = h/2;
+      ctx.clearRect(0,0,w,h);
+      var accent = css('--accent') || '#0C8C7C';
+      var gap = w/bars;
+      for(var i=0;i<bars;i++){
+        var phase = i*0.5;
+        var env = 0.35 + 0.65*Math.pow(Math.sin((i/bars)*Math.PI),0.7);
+        var a = reduce ? env*0.6 : (0.5 + 0.5*Math.sin(t*0.06 + phase))*env;
+        var bh = Math.max(2, a*(h-6));
+        var x = i*gap + gap*0.5;
+        ctx.strokeStyle = accent;
+        ctx.globalAlpha = 0.25 + 0.75*a;
+        ctx.lineWidth = Math.max(2, gap*0.42);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x, mid - bh/2);
+        ctx.lineTo(x, mid + bh/2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    function loop(){ t++; draw(); if(!reduce) requestAnimationFrame(loop); }
+    if(reduce){ draw(); } else { loop(); }
+  })();
+</script>
+</body>
+</html>
