@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import socket
+import time
 import urllib.error
 import urllib.request
 
 from .config import config
+
+# โค้ด HTTP ที่ถือว่าชั่วคราว ลองใหม่ได้ (524 = Cloudflare timeout ฝั่ง origin LLM)
+_RETRY_CODES = {429, 500, 502, 503, 504, 520, 522, 524}
 
 SYSTEM_PROMPT = """คุณคือผู้ช่วยจดและสรุปการประชุมมืออาชีพ
 สรุปเป็นภาษาไทยที่กระชับ อ่านง่าย ตรงประเด็น อ้างอิงเฉพาะสิ่งที่ปรากฏใน transcript เท่านั้น
@@ -158,37 +163,94 @@ LANGUAGE_NAMES = {
 }
 
 
-def _chat(messages: list[dict], temperature: float = 0.3, timeout: int = 180) -> str:
+def _chat(messages: list[dict], temperature: float = 0.3, timeout: int = 300,
+          max_tokens: int = 4000, retries: int = 2) -> str:
+    """เรียก LLM แบบ streaming (SSE) เพื่อกัน Cloudflare 524 บน origin ที่ตอบช้า.
+
+    การถอด/สรุป transcript ยาว โมเดลอาจใช้เวลาเกิน 120 วินาที ซึ่ง Cloudflare หน้า
+    endpoint จะตัดด้วย error 524 ถ้าเป็น request เดียวรอทั้งก้อน — streaming ทำให้มี
+    byte ไหลตลอด CF จึงนับ read-timeout ใหม่เรื่อยๆ ไม่ตัดกลางคัน
+    ลองใหม่อัตโนมัติเมื่อเจอ error ชั่วคราว (524/502/503/timeout)
+    """
     if not config.llm_api_key:
         raise RuntimeError("ยังไม่ได้ตั้ง LLM_API_KEY ใน .env")
 
     url = f"{config.llm_base_url}/chat/completions"
-    payload = json.dumps(
-        {"model": config.llm_model, "messages": messages, "temperature": temperature}
-    ).encode("utf-8")
+    payload = json.dumps({
+        "model": config.llm_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": True,
+    }).encode("utf-8")
 
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {config.llm_api_key}",
-            "Content-Type": "application/json",
-            # Cloudflare หน้า endpoint บล็อก UA ของ urllib (error 1010) จึงต้องตั้งเอง
-            "User-Agent": "meeting_ai/0.1 (+https://github.com/meeting-ai)",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+    def build_req() -> urllib.request.Request:
+        return urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {config.llm_api_key}",
+                "Content-Type": "application/json",
+                # Cloudflare หน้า endpoint บล็อก UA ของ urllib (error 1010) จึงต้องตั้งเอง
+                "User-Agent": "meeting_ai/0.1 (+https://github.com/meeting-ai)",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+
+    last_err: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return _stream_chat(build_req(), timeout)
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")
+            if e.code in _RETRY_CODES and attempt < retries:
+                last_err = RuntimeError(f"HTTP {e.code}")
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise RuntimeError(f"LLM ตอบกลับผิดพลาด HTTP {e.code}: {body[:500]}") from e
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
+            reason = getattr(e, "reason", e)
+            if attempt < retries:
+                last_err = RuntimeError(f"ต่อ LLM ไม่สำเร็จ: {reason}")
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise RuntimeError(f"ต่อ LLM endpoint ไม่ได้: {reason}") from e
+
+    raise RuntimeError(f"เรียก LLM ไม่สำเร็จหลังลอง {retries + 1} ครั้ง: {last_err}")
+
+
+def _stream_chat(req: urllib.request.Request, timeout: int) -> str:
+    """อ่าน SSE stream แล้วประกอบ content. รองรับ fallback ถ้า endpoint ไม่ stream."""
+    parts: list[str] = []
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        ctype = resp.headers.get("Content-Type", "")
+        if "text/event-stream" not in ctype:
+            # endpoint ไม่ stream — อ่านทั้งก้อนแบบเดิม
             data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")
-        raise RuntimeError(f"LLM ตอบกลับผิดพลาด HTTP {e.code}: {body[:500]}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"ต่อ LLM endpoint ไม่ได้: {e.reason}") from e
+            return (data["choices"][0]["message"].get("content") or "").strip()
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            chunk = line[len("data:"):].strip()
+            if chunk == "[DONE]":
+                break
+            try:
+                delta = json.loads(chunk)["choices"][0].get("delta") or {}
+            except (ValueError, KeyError, IndexError):
+                continue
+            piece = delta.get("content")
+            if piece:
+                parts.append(piece)
 
-    return data["choices"][0]["message"]["content"].strip()
+    text = "".join(parts).strip()
+    if not text:
+        raise RuntimeError(
+            "LLM ไม่ได้คืนเนื้อหา (อาจใช้ token หมดไปกับ reasoning หรือถูกตัดกลางคัน) — "
+            "ลองใหม่อีกครั้ง หรือลดความยาว transcript"
+        )
+    return text
 
 
 def summarize(
