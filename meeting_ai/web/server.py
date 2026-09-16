@@ -11,6 +11,7 @@ import json
 import mimetypes
 import re
 import tempfile
+import time
 import urllib.parse
 import webbrowser
 from http import HTTPStatus
@@ -32,7 +33,26 @@ ALLOWED_EXT = {
 TRACK_NAMES = {"mixed", "mic", "system"}
 MAX_UPLOAD = 2 * 1024**3      # 2 GB
 MAX_LIVE_CLIP = 32 * 1024**2  # 32 MB — คลิปสดยาวไม่กี่สิบวินาที
+# เพดาน body ของ JSON API (BUG-011): เดิม _body_json อ่านตาม Content-Length โดยไม่มีเพดานเลย
+# ค่าปริยายคือเส้น control-plane (login/signup/invite/settings/visibility/share/translate/
+# heartbeat/claim/progress/bot) — body จริงของเส้นเหล่านี้หลักร้อยไบต์ถึงไม่กี่ KB
+MAX_JSON_BODY = 64 * 1024     # 64 KB
+# สองเส้นที่รับ transcript ทั้งก้อน (worker result + PATCH meeting) ต้องใหญ่กว่ามาก
+# ตัวเลขวัดจากข้อมูล production จริง 2026-09-16 (read-only, 13 meetings) ตาม BUG-011:
+#   segment_count สูงสุด 2,905 · segments JSON ใหญ่สุด 327,374 B (เฉลี่ย 38,384 B)
+#   segments + summary + translations ใหญ่สุด 334,634 B
+# 8 MB ≈ 25 เท่าของสถิติสูงสุดวันนี้ เผื่อประชุมยาวหลายชั่วโมงและคำแปลหลายภาษา
+# (บน Vercel body ถูกตัดที่ 4.5 MB อยู่แล้ว เพดานนี้จึงเป็นด่านของฝั่ง self-host เป็นหลัก)
+MAX_JSON_TRANSCRIPT = 8 * 1024**2  # 8 MB
+# segments ที่ผู้ใช้แก้แล้วส่งกลับมา: 50,000 ≈ 17 เท่าของ 2,905 รายการที่มากที่สุดวันนี้
+MAX_SEGMENTS = 50_000
+MAX_SEGMENT_TEXT = 5_000      # ตัวอักษรต่อ segment (ประโยคพูดจริงยาวหลักร้อยตัว)
 CHUNK = 1024 * 256
+# หลังตอบ 413 ต้องระบายของที่ client ยังส่งค้างอยู่ก่อนปิด ไม่งั้น TCP ส่ง RST แล้ว
+# client เห็นเป็น "connection reset" แทนที่จะเห็น 413 (วัดจริงกับ body 20 MB)
+# ระบายทีละก้อน ไม่เก็บลงแรม และหยุดเมื่อครบเพดานหรือหมดเวลา — ใหญ่กว่านี้ยอมให้ reset
+LINGER_DRAIN = 64 * 1024**2   # 64 MB
+LINGER_SECONDS = 2.0
 
 SESSION_COOKIE = "mai_session"
 # endpoint ที่เข้าได้ก่อนล็อกอิน (ไม่งั้นจะล็อกอินไม่ได้เลย)
@@ -76,6 +96,19 @@ def _check_join_url(url: str) -> tuple[bool, str]:
 
 class BadBody(ValueError):
     """body ของคำขออ่านไม่ได้ — ตอบ 400 ไม่ใช่ 500."""
+
+
+class BodyTooLarge(ValueError):
+    """body ใหญ่เกินเพดาน — ตอบ 413 โดยไม่อ่านเข้าแรม (BUG-011)."""
+
+    def __init__(self, message: str, pending: int = 0) -> None:
+        super().__init__(message)
+        self.pending = pending  # ไบต์ที่ client บอกว่าจะส่ง — ใช้กำหนดขอบเขตการระบายทิ้ง
+
+
+def _size_text(limit: int) -> str:
+    """ขนาดสำหรับข้อความ error — เพดานเล็กต้องบอกเป็น KB ไม่งั้นกลายเป็น "0 MB"."""
+    return f"{limit // 1024**2} MB" if limit >= 1024**2 else f"{limit // 1024} KB"
 
 
 def _worker_caps() -> dict | None:
@@ -373,13 +406,33 @@ class Handler(BaseHTTPRequestHandler):
             store.set_setting("live_recording_enabled", bool(body["live_recording_enabled"]))
         return self._json({"live_recording_enabled": _live_recording_enabled()})
 
-    def _body_json(self) -> dict:
+    def _content_length(self) -> int:
+        """Content-Length ที่เชื่อถือได้ — ไม่มี = 0, ไม่ใช่ตัวเลข/ติดลบ = 400 ไม่ใช่ 500."""
+        raw = (self.headers.get("Content-Length") or "").strip()
+        if not raw:
+            return 0
+        try:
+            length = int(raw)
+        except ValueError:
+            raise BadBody("Content-Length ไม่ถูกต้อง") from None
+        if length < 0:
+            raise BadBody("Content-Length ไม่ถูกต้อง")
+        return length
+
+    def _body_json(self, limit: int = MAX_JSON_BODY) -> dict:
         """อ่าน body เป็น JSON — body ว่างถือว่า {} แต่ถ้าเสียให้ฟ้องตรงๆ
 
         เดิมกลืน error แล้วคืน {} ซึ่งทำให้ error ไปโผล่เป็น "ฟิลด์ที่จำเป็นหายไป"
         ชี้ผิดจุดจนไล่ปัญหายาก
+
+        limit ทำงานแบบเดียวกับ _read_body_to (BUG-011): เดิมอ่านตาม Content-Length
+        โดยไม่จำกัด ใครยิง body 20 MB มาก็กินแรมไปทั้งก้อน เส้นที่รับ transcript
+        ทั้งชุดต้องส่ง MAX_JSON_TRANSCRIPT มาเอง
         """
-        length = int(self.headers.get("Content-Length") or 0)
+        length = self._content_length()
+        if length > limit:
+            # ปฏิเสธจาก header เลย ไม่อ่าน body ทิ้งก่อน — สิ่งที่ต้องกันคือแรมและเวลาอ่าน
+            raise BodyTooLarge(f"ข้อมูลที่ส่งมาใหญ่เกิน {_size_text(limit)}", length)
         if not length:
             return {}
         raw = self.rfile.read(length)
@@ -390,6 +443,32 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             raise BadBody("body ต้องเป็น JSON object")
         return data
+
+    def _drain_rejected_body(self, pending: int) -> None:
+        """อ่าน body ที่ปฏิเสธไปแล้วทิ้ง เพื่อให้ client ได้อ่าน 413 ก่อนคอนเนกชันถูกปิด
+
+        ปิด socket ทั้งที่ยังมีข้อมูลค้าง = TCP RST = client เห็น connection reset
+        ไม่ใช่ 413 ระบายทีละ CHUNK ไม่เก็บลงแรม จำกัดทั้งจำนวนไบต์และเวลา (กัน slowloris)
+        """
+        left = min(pending, LINGER_DRAIN)
+        if left <= 0:
+            return
+        deadline = time.monotonic() + LINGER_SECONDS
+        old_timeout = self.connection.gettimeout()
+        try:
+            self.connection.settimeout(LINGER_SECONDS)
+            while left > 0 and time.monotonic() < deadline:
+                chunk = self.rfile.read(min(CHUNK, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except OSError:
+            pass  # client หายไปเองระหว่างระบาย — ไม่ต้องทำอะไรต่อ คอนเนกชันจะถูกปิดอยู่แล้ว
+        finally:
+            try:
+                self.connection.settimeout(old_timeout)
+            except OSError:
+                pass
 
     def _read_body_to(self, dest: Path, limit: int) -> str | None:
         """สตรีม request body ลงไฟล์ คืนข้อความ error ถ้าไม่สำเร็จ."""
@@ -443,6 +522,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._static(path)
             else:
                 self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ใช้ method นี้กับ path นี้ไม่ได้")
+        except BodyTooLarge as e:
+            # ยังไม่ได้อ่าน body ออกจาก socket — ใช้คอนเนกชันนี้ต่อไม่ได้ (HTTP/1.1 keep-alive)
+            self.close_connection = True
+            try:
+                self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(e))
+                self._drain_rejected_body(e.pending)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass  # client ที่กำลังอัปโหลดอยู่หลุดไปก่อน — ปกติ ไม่ต้องขึ้น traceback
         except BadBody as e:
             self._error(HTTPStatus.BAD_REQUEST, str(e))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -910,7 +997,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"playback": str(dest)})
 
             if action == "result":
-                body = self._body_json()
+                # worker ส่ง transcript + summary ทั้งก้อนกลับมา ต้องใช้เพดานใหญ่
+                body = self._body_json(MAX_JSON_TRANSCRIPT)
                 worker = str(body.pop("worker", "") or "").strip()[:80]
                 try:
                     jobs.apply_result(job_id, body)
@@ -1066,13 +1154,17 @@ class Handler(BaseHTTPRequestHandler):
         self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ใช้ method นี้กับ path นี้ไม่ได้")
 
     def _patch(self, mid: str) -> None:
-        body = self._body_json()
+        # ผู้ใช้แก้ transcript แล้วส่ง segments ทั้งชุดกลับมา — เพดานเท่ากับ worker result
+        body = self._body_json(MAX_JSON_TRANSCRIPT)
         title, summary, segments = body.get("title"), body.get("summary"), body.get("segments")
         if title is None and summary is None and segments is None:
             return self._error(HTTPStatus.BAD_REQUEST,
                                "ต้องส่ง title, summary หรือ segments มาอย่างน้อยหนึ่งอย่าง")
 
         if segments is not None:
+            if isinstance(segments, list) and len(segments) > MAX_SEGMENTS:
+                return self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                                   f"segments มากเกิน {MAX_SEGMENTS:,} รายการ")
             clean = _clean_segments(segments)
             if clean is None:
                 return self._error(HTTPStatus.BAD_REQUEST, "รูปแบบ segments ไม่ถูกต้อง")
@@ -1259,7 +1351,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def _clean_segments(raw) -> list[dict] | None:
     """ตรวจและทำความสะอาด segments ที่ผู้ใช้แก้มาจากหน้าเว็บ."""
-    if not isinstance(raw, list):
+    if not isinstance(raw, list) or len(raw) > MAX_SEGMENTS:
         return None
     out = []
     for item in raw:
@@ -1270,7 +1362,8 @@ def _clean_segments(raw) -> list[dict] | None:
             end = float(item.get("end", 0))
         except (TypeError, ValueError):
             return None
-        text = str(item.get("text", "")).strip()
+        # ตัดข้อความเหมือนที่ทำกับ speaker มาตลอด — หนึ่งช่วงพูดยาวไม่กี่พันตัวอักษร
+        text = str(item.get("text", "")).strip()[:MAX_SEGMENT_TEXT]
         seg = {"start": round(start, 2), "end": round(end, 2), "text": text}
         speaker = item.get("speaker")
         if speaker:

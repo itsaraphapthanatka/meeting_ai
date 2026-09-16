@@ -2,6 +2,9 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-16 — BUG-011 body caps
+- [413 ต้อง lingering drain](http-413-needs-lingering-drain.md) — ตอบ 413 แล้วปิด socket ทันที = client เห็น connection reset ไม่ใช่ status
+
 ## 2026-09-16 — P0 fix round
 - Cloud-mode test/proof recipe: patch backend.cloud, backend.store, jobs.cloud, jobs.store, server.store (jobs.py freezes bindings at import); set REMOTE_WORKER=1 before import so jobs.start() spawns no thread.
 - jobs.draft(mid) in cloud = spec of ANY job status; check status == 'draft' explicitly before treating it as a draft.
