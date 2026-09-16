@@ -1,0 +1,29 @@
+# meeting_ai team learnings
+
+System-level lessons every agent must know. Read before starting; **append a dated bullet whenever something cost you time** — not facts (those go in `PROJECT-CONTEXT.md`) but "what to check first next time".
+
+## 2026-09-16 — bootstrap
+- The owner's Windows console is code page cp874. `python -m meeting_ai …` crashes with `UnicodeEncodeError: 'charmap' codec` on the first Thai character. Always run through `./mai` / `.\mai.cmd` (they export `PYTHONIOENCODING=utf-8`) or set `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1` yourself. Check this first when a "crash" only reproduces from a raw `python` call.
+- `.gitignore` ignores `*.json` globally. A new JSON file you expect to commit (fixtures, configs) silently stays untracked until you add a `!path/to/file.json` exception, as done for `vercel.json` and `.claude/agent-team.json`.
+- `whisper-cli` and the ggml model are not installed on the dev machine, so any `process` job fails after upload. Test routing, permissions and validation with the in-process recipe in `PROJECT-CONTEXT.md` and monkeypatch `runner.transcribe_job`; do not spend time "fixing" transcription locally.
+- `git status` in this repo runs inside a worktree under `.claude/worktrees/` on branch `claude/…`. The agent team files were generated there; `project_root` in `.claude/agent-team.json` points at the main checkout (`C:/project/meeting_ai`), so re-running `render.py` from a worktree needs `--out <worktree path>` or it writes into the main checkout.
+- The `agent-team` skill's `render.py` uses default file encodings and `os.path.relpath`: on Windows run it with `PYTHONUTF8=1` and expect backslash doc paths that need normalizing to `/` (done once during bootstrap).
+
+## 2026-09-16 — P0 fix round (consolidated from backend-dev ×3, test-engineer, code-reviewer, security-engineer)
+- `meeting_ai/web/jobs.py:28` does `from .backend import cloud, store` — a **frozen copy**. Simulating cloud mode needs FIVE patches: `backend.cloud`, `backend.store`, `jobs.cloud`, `jobs.store`, `server.store`. Patching `backend.cloud` alone flips `auth_required()` but leaves `jobs` on the file store.
+- `jobs.draft(mid)` in cloud mode is `store.job_get(mid)["_spec"]` for a job of ANY status (done/running included). It is not "a draft". Any permission or upload logic built on "a draft exists" must check `job["status"] == "draft"` explicitly.
+- `submit_summarize` uses job id == meeting id and `job_upsert … on conflict do update set spec = excluded.spec`: whoever may re-summarize rewrites the whole spec row. Ask "who can call this with `self.user_id is None`?" — share-edit visitors can, and they silently dropped `owner_id` until the owner-fallback fix.
+- Never compare `spec.get("owner_id") == self.user_id` directly on a path a share-only visitor can reach: `None == None` is True. Use `if owner and owner == self.user_id` (pattern in `_may_write_job`).
+- psycopg passes `None` untyped; write `%s::text is null` (precedent: `job_claim` uses `%s::text[]`) or Postgres raises "could not determine data type of parameter".
+- SQL can be proven without a database: monkeypatch `pgstore.db.connect` with a fake context manager that records `(sql, params)`; assert placeholder count == len(params) and the expected fragments. Catches ordering bugs instantly.
+- When a path is shared and mutable, the bugs "reads someone else's file" and "deletes someone else's file" come together — `_keep_debug_shot()` unlinks its sources, so a shared `/out` turned it into an evidence shredder. Check both whenever you see a shared dir.
+- Release the mount before touching the path: `docker rm -f` BEFORE `rmtree`, `_prune_stages` AFTER the `docker stop` loop — and `bot._run()` swallows timeouts (`_Timeout`, rc 124), so "after stop" is not an invariant. Confirm with `docker ps` before deleting anything a container might still mount.
+- The bot's WAV destination in worker/web mode is a `tempfile.TemporaryDirectory` on another filesystem (Ubuntu `/tmp` is often tmpfs): `shutil.move` is copy+unlink and can fail (ENOSPC, AV lock). Never delete the staging dir in a `finally` unless the move succeeded or the dir holds no non-empty WAV.
+- A `finally` written "to keep the folder tidy" deletes irreplaceable data more often than you think. Enumerate every exception path and what is in the folder at that moment before adding cleanup.
+- Fixing the list endpoint is not fixing the leak: `workers_list()` joins `jobs.title` and still served every tenant's titles through `/api/jobs` and `/api/workers`. Grep for the leaking FIELD, not just the route.
+- Adding a read-side twin (`_may_read_job`) exposed that the write-side original (`_may_write_job`) used `job["id"]` where a translate job id is not a meeting id. When you add a twin, diff it against the original line by line.
+- `config.py` evaluates env into class attributes at import and loads `.env` with `setdefault`; tests that change `STT_PROVIDER`/`STT_API_KEY` must set env BEFORE `import meeting_ai` (or run a subprocess). Provider routing is testable without whisper by patching `stt.local_available` / `stt.resolve`.
+- `store.py` computes `INDEX_PATH` and `SETTINGS_PATH` from `WEB_DIR` once at import: patching `store.WEB_DIR` alone still writes the owner's real `index.json`. Patch all three (done in `tests/_harness.py`).
+- Several agents editing one worktree concurrently: a bare `git diff --stat` includes everyone's work. Always scope with `git diff --stat -- <your files>` before reporting.
+- `$TMPDIR` is empty in Git Bash on this machine (`"$TMPDIR/x"` → `/x` → permission denied). Use the absolute scratchpad path. Long heredocs (> ~5 KB) get truncated by the Bash tool — write a script file first, then run it.
+- `Path.glob()` on a missing directory does not raise in Python 3.12 but has changed between versions; keep the explicit `try/except OSError`.
