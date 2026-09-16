@@ -17,7 +17,7 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 ## P1 — wrong behaviour
 | # | Item | Owner | Notes |
 |---|---|---|---|
-| 7 | `summarizer._chat` hard-caps `max_tokens: 4000` and ignores `finish_reason` → long summaries silently truncated (introduced in commit f068e8c) | backend-dev | make configurable, raise/retry on `length` |
+| 7 | ✅ `summarizer._chat` hard-caps `max_tokens: 4000` and ignores `finish_reason` → long summaries silently truncated (introduced in commit f068e8c) | backend-dev | **fixed 2026-09-16** · `LLM_MAX_TOKENS` / `LLM_MAX_TOKENS_CEILING`, `_stream_chat` returns `finish_reason`, `_chat` doubles the budget on `length` then raises at the ceiling · tests `test_backlog_07_summary_max_tokens` (14 tests) |
 | 8 | No transcript chunking / map-reduce → multi-hour meetings overflow the LLM context | architect → backend-dev | ADR first: chunk by timestamp, summarize parts, merge |
 | 9 | `summarize()` always outputs Thai; `--lang` / meeting language never reaches the prompt | backend-dev | add `target_lang`, use `LANGUAGE_NAMES` |
 | 10 | No rate limit on `POST /api/auth/login` (scrypt N=2¹⁴ also a CPU lever) | backend-dev + security-engineer | per-IP sliding window, best-effort on serverless |
