@@ -20,7 +20,7 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 | 7 | `summarizer._chat` hard-caps `max_tokens: 4000` and ignores `finish_reason` → long summaries silently truncated (introduced in commit f068e8c) | backend-dev | make configurable, raise/retry on `length` |
 | 8 | No transcript chunking / map-reduce → multi-hour meetings overflow the LLM context | architect → backend-dev | ADR first: chunk by timestamp, summarize parts, merge |
 | 9 | `summarize()` always outputs Thai; `--lang` / meeting language never reaches the prompt | backend-dev | add `target_lang`, use `LANGUAGE_NAMES` |
-| 10 | No rate limit on `POST /api/auth/login` (scrypt N=2¹⁴ also a CPU lever) | backend-dev + security-engineer | per-IP sliding window, best-effort on serverless |
+| 10 | ✅ No rate limit on `POST /api/auth/login` (scrypt N=2¹⁴ also a CPU lever) | backend-dev + security-engineer | **fixed (uncommitted) 2026-09-17** · two buckets (10/15min cleared on success, 60/hour never cleared), rejected before scrypt, Postgres-backed so it works on serverless · review round closed 5 bypasses that made the first version ineffective · tests `test_bug_010_login_rate_limit*` (17) · ticket [BUG-010](../tickets/BUG-010-login-rate-limit.md) · **owner must run `./mai db-init`** |
 | 11 | `_body_json` reads unbounded `Content-Length`; `_clean_segments` caps neither count nor text length | backend-dev | 1 MB body cap; segment caps |
 | 12 | Invite redemption TOCTOU: user created before `redeem_invite`, boolean result discarded | backend-dev | redeem first, 409 on failure |
 | 13 | Translate `lang` unvalidated → enters job id `<mid>.tr.<lang>` and the LLM prompt | backend-dev | restrict to `LANGUAGE_NAMES` |
