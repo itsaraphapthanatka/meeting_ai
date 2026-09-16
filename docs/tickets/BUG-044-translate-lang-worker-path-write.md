@@ -62,10 +62,11 @@ test-engineer พิสูจน์ว่าเทสไม่ vacuous ด้ว
 - แพตช์รอบแรกสร้าง regression ของตัวเอง — งานที่ id ถูกวางยาไว้ก่อนแพตช์จะ claim ได้แต่ `result`/`error` โดน 400 และ `worker.py:352-356` กลืน error ทิ้ง → ค้าง `running` → `jobs_reap(30)` requeue → **เรียก LLM ซ้ำทุก 30 นาทีไม่มีเพดาน** ปิดด้วยการ์ดที่ `claim()` + `MAX_ATTEMPTS`
 - dev เจอเองตอน self-review: `job_upsert` ไม่เคยรีเซ็ต `attempts` และ job id ของ summarize/translate คงที่ตลอดอายุการประชุม → เพดานจะไปฆ่างานปกติตอนสั่งซ้ำครั้งที่ 6
 
-**เจ้าของต้องรันบน production (read-only ก่อน):**
-```sql
-select id, status, attempts from meeting_ai.jobs where id ~ '[/\]';
+**เจ้าของต้องรันบน production (read-only):**
+```bash
+python scripts/audit_job_ids.py
 ```
+`psql` ไม่ได้ติดตั้งบนเครื่องเจ้าของ สคริปต์นี้ใช้ psycopg ที่มีอยู่แล้ว อ่าน `DATABASE_URL` จาก `.env` เอง (ไม่พิมพ์ค่าออกมา) และกรองด้วย `jobs.safe_job_id` ตัวจริงของแอป จึงจับได้ทั้ง newline/NUL ไม่ใช่แค่ `/` กับ `\`
 แถวที่เจอตอนนี้จะถูก claim ครั้งสุดท้ายแล้วกลายเป็น `error` เอง ไม่วนคิวอีก — ไม่มี DDL ใหม่ (`attempts` มีในสคีมาอยู่แล้ว)
 
 **ยกไปตั๋วใหม่ (BACKLOG #48):** `jobs.py:382` `store.set_translation(meeting_id, result["lang"], ...)` ใช้ `lang` ที่ worker ส่งกลับมาแทนค่าจาก spec — คนละ trust boundary (คนร้ายคือผู้ถือ `WORKER_TOKEN`) และการแก้ที่ถูกต้องต้องเปลี่ยน contract ระหว่าง `worker.py` กับ `apply_result` จึงต้องมีเทสของตัวเอง
