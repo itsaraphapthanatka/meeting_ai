@@ -18,13 +18,17 @@ def _cmd_record(args: argparse.Namespace) -> int:
     recorder.record(args.output, mic=not args.no_mic, system=not args.no_system)
     if args.process:
         from . import pipeline
-        pipeline.process_file(args.output, title=args.title, language=args.lang)
+        pipeline.process_file(args.output, title=args.title, language=args.lang,
+                              stt_provider=args.stt)
     return 0
 
 
 def _cmd_transcribe(args: argparse.Namespace) -> int:
-    from . import transcriber
-    t = transcriber.transcribe(args.audio, language=args.lang)
+    from . import stt
+    used = stt.resolve(args.stt)
+    # ไปที่ stderr — ไม่ใส่ -o แปลว่า transcript ออก stdout ซึ่งผู้ใช้อาจ pipe ต่อ
+    print(f"🎧 ถอดเสียงด้วย {stt.label(used)}", file=sys.stderr)
+    t, _ = stt.transcribe(args.audio, language=args.lang, provider=used)
     out = t.to_timestamped()
     if args.output:
         Path(args.output).write_text(out, encoding="utf-8")
@@ -49,7 +53,8 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
 def _cmd_process(args: argparse.Namespace) -> int:
     from . import pipeline
     pipeline.process_file(args.audio, title=args.title, language=args.lang,
-                          out_dir=args.out_dir, template=args.template)
+                          out_dir=args.out_dir, template=args.template,
+                          stt_provider=args.stt)
     return 0
 
 
@@ -64,7 +69,8 @@ def _cmd_bot(args: argparse.Namespace) -> int:
     )
     if not args.no_process:
         from . import pipeline
-        pipeline.process_file(wav, title=args.title, language=args.lang, out_dir=args.out_dir)
+        pipeline.process_file(wav, title=args.title, language=args.lang, out_dir=args.out_dir,
+                              stt_provider=args.stt)
     return 0
 
 
@@ -125,6 +131,15 @@ def _add_template_arg(sp: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_stt_arg(sp: argparse.ArgumentParser) -> None:
+    # choices เขียนเป็น string ตรงๆ ไม่ import stt มาอ่าน stt.LOCAL/stt.API
+    # เพราะ build_parser() ตั้งใจไม่ import โมดูลหนักตอน parse args — `mai --help` ต้องขึ้นทันที
+    sp.add_argument(
+        "--stt", choices=("local", "api"),
+        help="ตัวถอดเสียง (ไม่ใส่ = ใช้ STT_PROVIDER ใน .env)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mai",
@@ -142,12 +157,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--process", action="store_true", help="ถอดเสียง+สรุปต่อทันทีหลังอัดเสร็จ")
     sp.add_argument("--title", help="ชื่อการประชุม")
     sp.add_argument("--lang", help="ภาษา (th/en/auto)")
+    _add_stt_arg(sp)
     sp.set_defaults(func=_cmd_record)
 
     sp = sub.add_parser("transcribe", help="ถอดเสียงไฟล์เป็นข้อความ")
     sp.add_argument("audio", help="ไฟล์เสียง/วิดีโอ")
     sp.add_argument("-o", "--output", help="ไฟล์ผลลัพธ์ (ไม่ใส่ = พิมพ์ออกจอ)")
     sp.add_argument("--lang", help="ภาษา (th/en/auto)")
+    _add_stt_arg(sp)
     sp.set_defaults(func=_cmd_transcribe)
 
     sp = sub.add_parser("summarize", help="สรุปจากไฟล์ transcript ที่มีอยู่แล้ว")
@@ -162,6 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--title", help="ชื่อการประชุม")
     sp.add_argument("--lang", help="ภาษา (th/en/auto)")
     sp.add_argument("--out-dir", default="recordings", help="โฟลเดอร์ผลลัพธ์")
+    _add_stt_arg(sp)
     _add_template_arg(sp)
     sp.set_defaults(func=_cmd_process)
 
@@ -174,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--lang", help="ภาษา (th/en/auto)")
     sp.add_argument("--max-minutes", type=int, default=180, help="เวลาสูงสุดที่บอทอยู่ในห้อง")
     sp.add_argument("--no-process", action="store_true", help="อัดอย่างเดียว ไม่ต้องถอด/สรุป")
+    _add_stt_arg(sp)
     sp.set_defaults(func=_cmd_bot)
 
     sp = sub.add_parser("bot-login", help="ล็อกอินให้บอทครั้งเดียว (ผ่านเบราว์เซอร์) — จำเป็นถ้าห้องไม่รับ guest")

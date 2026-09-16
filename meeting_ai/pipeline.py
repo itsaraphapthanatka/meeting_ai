@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from . import summarizer, transcriber
+from . import stt, summarizer, transcriber
 
 
 def _stamp() -> str:
@@ -56,6 +56,7 @@ def process_file(
     language: str | None = None,
     out_dir: str | Path = "recordings",
     template: str = summarizer.DEFAULT_TEMPLATE,
+    stt_provider: str | None = None,
 ) -> dict:
     """รันทั้ง pipeline กับไฟล์เสียงหนึ่งไฟล์. คืน dict ของ path ผลลัพธ์."""
     audio_path = Path(audio_path)
@@ -63,8 +64,10 @@ def process_file(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"🎧 ถอดเสียง: {audio_path.name} ...")
-    transcript = transcriber.transcribe(audio_path, language=language)
+    # เลือกก่อนเริ่ม — ถ้าเป็น API ผู้ใช้ควรรู้ก่อนเสียงถูกอัปโหลด ไม่ใช่รู้หลังเสียเงินแล้ว
+    used = stt.resolve(stt_provider)
+    print(f"🎧 ถอดเสียง: {audio_path.name} ด้วย {stt.label(used)} ...")
+    transcript, _ = stt.transcribe(audio_path, language=language, provider=used)
     print(f"   ได้ {len(transcript.segments)} ช่วงประโยค")
 
     print("🧠 กำลังสรุปด้วย LLM ...")

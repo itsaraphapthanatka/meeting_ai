@@ -260,10 +260,109 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if self.user.get("is_admin"):
             return True
-        spec = jobs.draft(job["id"]) or {}
+        # _spec ติดมากับ job อยู่แล้วในโหมด cloud — ไม่ต้องยิง query ซ้ำผ่าน jobs.draft()
+        spec = job.get("_spec") or jobs.draft(job["id"]) or {}
         owner = spec.get("owner_id")
         # งานเก่าที่ไม่ได้เก็บเจ้าของไว้ ให้ตกไปที่สิทธิ์ของการประชุมนั้น
-        return owner == self.user_id if owner else self._may_write(job["id"])
+        # ต้องใช้ meeting_id ไม่ใช่ job["id"]: งานแปลมี id เป็น <mid>.tr.<lang> ซึ่งไม่ใช่ id
+        # การประชุม _may_write() จึงได้ none เสมอ แล้วเจ้าของกดหยุดงานบนการประชุมตัวเองไม่ได้
+        if owner:
+            return owner == self.user_id
+        return self._may_write(job.get("meeting_id") or job["id"])
+
+    def _may_read_job(self, job: dict) -> bool:
+        """ดูสถานะงานนี้ได้ไหม — เดิมใครก็เปิด /api/jobs/{id} ของคนอื่นได้ถ้ารู้ id.
+
+        id ของงานคือ id การประชุม (หรือ <mid>.tr.<lang>) ซึ่งเดาได้จากลิงก์แชร์ใบเดียว
+        และ payload มี title = ชื่อการประชุมของคนอื่นติดมาด้วย (BACKLOG #2/#3)
+        งานที่ไม่ได้เก็บเจ้าของไว้ (ของเก่า) ตกไปใช้สิทธิ์อ่านของการประชุมนั้นแทน
+        """
+        if not backend.auth_required():
+            return True
+        if self.user and self.user.get("is_admin"):
+            return True
+        spec = job.get("_spec") or jobs.draft(job["id"]) or {}
+        owner = spec.get("owner_id")
+        # ห้ามเทียบตรงๆ: คนถือลิงก์แชร์ไม่ได้ล็อกอิน user_id เป็น None จะไปตรงกับงานที่ไม่มีเจ้าของ
+        if owner and owner == self.user_id:
+            return True
+        return self._may_read(job.get("meeting_id") or job["id"])
+
+    def _may_write_draft(self, spec: dict) -> bool:
+        """อัปโหลดแทร็ก/สั่งประมวลผล draft นี้ได้ไหม.
+
+        draft ยังไม่มีแถวใน meetings จึงใช้ _level() ไม่ได้ — ดู owner_id ที่ฝังใน spec ตอนสร้าง
+        (แบบเดียวกับ _may_write_job) คนถือลิงก์แชร์ไม่มีสิทธิ์ เพราะลิงก์แชร์ผูกกับการประชุมที่เสร็จแล้ว
+        เดิมเช็คแค่ว่า draft มีอยู่ → ใครที่ล็อกอินก็อัปไฟล์ใส่ draft ของคนอื่นได้ (BACKLOG #1)
+        spec ที่ไม่มีเจ้าของถือว่าไม่ผ่าน (fail closed) — draft ในโหมด cloud ถูกสร้างหลังล็อกอินเสมอ
+        """
+        if not backend.auth_required():
+            return True
+        if not self.user:
+            return False
+        if self.user.get("is_admin"):
+            return True
+        return spec.get("owner_id") == self.user_id
+
+    def _draft_spec(self, mid: str) -> dict | None:
+        """spec ของการประชุมที่ "รออัปโหลด" อยู่จริง — None ถ้าไม่มีหรือเลยขั้นนั้นไปแล้ว.
+
+        โหมด cloud: jobs.draft() คือ spec ของแถวใน jobs ทุกสถานะ รวม done ด้วย
+        ถ้าเช็คแค่ "มี spec" เจ้าของ (และแอดมินกับการประชุมของใครก็ได้) จะขอ upload-url
+        ของการประชุมที่เสร็จแล้วได้ ซึ่งคืนคีย์ของไฟล์เสียงจริง แล้วเขียนทับเสียงเงียบๆ
+        ทั้งที่บทถอดเสียง/สรุปยังเป็นของเดิม = หลักฐานการประชุมเพี้ยนโดยไม่มีร่องรอย
+        โหมดไฟล์: draft อยู่ใน _drafts คนละที่กับ _jobs — jobs.get() คืน None ตั้งแต่ต้น
+        จึงต้องถาม jobs.draft() ตามเดิม (draft ถูกลบออกจาก _drafts เมื่องานสำเร็จอยู่แล้ว)
+        """
+        if not backend.cloud:
+            return jobs.draft(mid)
+        job = jobs.get(mid)
+        if job is None or job.get("status") != "draft":
+            return None
+        return job.get("_spec") or {}
+
+    def _workers_view(self) -> list[dict]:
+        """รายชื่อเครื่องประมวลผลเท่าที่ผู้เรียกควรเห็น.
+
+        workers_list() join ตาราง jobs มาเอา job_title = ชื่อการประชุมที่เครื่องนั้นกำลังทำอยู่
+        ซึ่งเป็นข้อมูลชนิดเดียวกับที่กรองออกจาก jobs[] ไปแล้ว ถ้าปล่อยไว้ผู้ใช้ทั่วไปที่ poll
+        ทุก 1.5 วินาที ก็ไล่เก็บชื่อการประชุมของทุกทีมได้ครบ (BACKLOG #2/#3)
+        เหลือชื่อเครื่อง/สถานะ/GPU ไว้ เพราะหน้าเว็บใช้บอกว่ามีเครื่องออนไลน์ให้รับงานไหม
+        """
+        workers = store.workers_list()
+        if self.user and self.user.get("is_admin"):
+            return workers
+        return [{k: v for k, v in w.items() if k not in ("job_title", "job_id")}
+                for w in workers]
+
+    def _job_scope(self) -> dict:
+        """ขอบเขตงานที่ผู้เรียกคนนี้เห็นได้ — ส่งต่อเป็น kwargs ของ jobs.active()."""
+        if not backend.auth_required():
+            return {}                                   # โหมดไฟล์: ผู้ใช้คนเดียวคือเจ้าของเครื่อง
+        if self.user:
+            if self.user.get("is_admin"):
+                return {}                               # แอดมินดูคิวทั้งระบบได้ (ใช้ไล่ปัญหา)
+            return {"owner_id": self.user_id}
+        if self.share:
+            # คนถือลิงก์แชร์เห็นเฉพาะงานของการประชุมที่แชร์ให้ (เช่นงานแปลที่ตัวเองเพิ่งสั่ง)
+            # or "" กัน meeting_id ที่หายไปกลายเป็น None = ไม่กรองอะไรเลย = เห็นคิวทั้งระบบ
+            return {"meeting_id": self.share.get("meeting_id") or ""}
+        return {"owner_id": ""}                         # ไปไม่ถึงตรงนี้ (ด่านล็อกอินกันไว้) กันพลาด
+
+    def _share_may_call(self, parts: list[str]) -> bool:
+        """เส้น API ที่คนถือลิงก์แชร์ (ไม่ได้ล็อกอิน) เรียกได้ — ตรงกับที่ app.js ใช้ในโหมดแชร์เท่านั้น.
+
+        GET /api/meetings (สาขาแชร์คืนการประชุมเดียว), GET /api/jobs และ /api/jobs/{id}
+        (หน้าเว็บ poll หลังกด แปล/สรุปใหม่ — กรองต่อด้วย _job_scope / _may_read_job)
+        และ /api/meetings/{mid}/... เฉพาะ mid ที่แชร์ (สิทธิ์อ่าน/แก้เช็คต่อใน _meeting ตามเดิม)
+        เดิมคุกกี้แชร์ใบเดียวเปิดทุกเส้น รวม /api/jobs, /api/workers ของทุกคน (BACKLOG #2)
+        """
+        get = self.command in ("GET", "HEAD")
+        if parts in (["meetings"], ["jobs"]) or (len(parts) == 2 and parts[0] == "jobs"):
+            return get
+        if len(parts) >= 2 and parts[0] == "meetings":
+            return urllib.parse.unquote(parts[1]) == self.share.get("meeting_id")
+        return False
 
     def _update_settings(self) -> None:
         """ปรับตั้งค่าระดับระบบ — เฉพาะแอดมิน (โหมด cloud). โหมดไฟล์เปิดให้เจ้าของเครื่องปรับได้."""
@@ -362,8 +461,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._auth_api(parts[1:])
 
         # ต้องล็อกอินก่อน (โหมด cloud) ยกเว้น endpoint สาธารณะและคนที่ถือลิงก์แชร์
+        # ลิงก์แชร์เปิดได้เฉพาะเส้นใน _share_may_call ไม่ใช่ทั้ง API (BACKLOG #2)
         if backend.auth_required() and not self.user and tuple(parts) not in PUBLIC_API:
-            if not self.share:
+            if not (self.share and self._share_may_call(parts)):
                 return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อน")
 
         if parts == ["config"] and get:
@@ -412,10 +512,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.user and self.share:
                     # ถือลิงก์แชร์ เห็นได้แค่การประชุมนั้นอันเดียว
                     one = store.get(self.share["meeting_id"])
-                    return self._json({"meetings": [one] if one else [], "jobs": []})
+                    # ต้องคืนงานของการประชุมนั้นด้วย ไม่ใช่ [] — คนแชร์แบบแก้ได้สั่งแปล/สรุปใหม่ได้
+                    # ถ้าไม่เห็นงานเลย หน้าเว็บจะไม่เริ่ม poll แล้วงานที่เพิ่งสั่งเหมือนหายไปเฉยๆ
+                    return self._json({"meetings": [one] if one else [],
+                                       "jobs": jobs.active(**self._job_scope())})
                 return self._json({
                     "meetings": store.search(self._query().get("q", ""), user_id=self.user_id),
-                    "jobs": jobs.active(),
+                    "jobs": jobs.active(**self._job_scope()),
                 })
             if self.command == "POST":
                 return self._create_draft()
@@ -424,15 +527,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._create_bot_job()
 
         if parts == ["jobs"] and get:
-            out = {"jobs": jobs.active()}
-            if backend.cloud:
-                out["workers"] = store.workers_list()
+            # เดิมคืนคิวของทั้งระบบให้ทุกคน — ชื่องานคือชื่อการประชุมของคนอื่น (BACKLOG #3)
+            out = {"jobs": jobs.active(**self._job_scope())}
+            # รายชื่อเครื่องประมวลผลเป็นข้อมูลระดับระบบ คนถือลิงก์แชร์ไม่ต้องเห็น (BACKLOG #2)
+            if backend.cloud and self.user:
+                out["workers"] = self._workers_view()
             return self._json(out)
 
         if parts == ["workers"] and get:
             if not backend.cloud:
                 return self._json({"workers": []})
-            return self._json({"workers": store.workers_list()})
+            # ตัด job_title/job_id ให้คนที่ไม่ใช่แอดมิน เหมือนที่แนบไปกับ /api/jobs
+            return self._json({"workers": self._workers_view()})
 
         if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "stop"                 and self.command == "POST":
             job_id = urllib.parse.unquote(parts[1])
@@ -450,6 +556,8 @@ class Handler(BaseHTTPRequestHandler):
             job = jobs.get(urllib.parse.unquote(parts[1]))
             if job is None:
                 return self._error(HTTPStatus.NOT_FOUND, "ไม่พบงานนี้")
+            if not self._may_read_job(job):
+                return self._error(HTTPStatus.FORBIDDEN, "ไม่มีสิทธิ์ดูงานนี้")
             return self._json(jobs.public(job))
 
         if len(parts) >= 2 and parts[0] == "meetings":
@@ -550,8 +658,7 @@ class Handler(BaseHTTPRequestHandler):
         if name not in TRACK_NAMES:
             return self._error(HTTPStatus.BAD_REQUEST,
                               f"ชื่อแทร็กต้องเป็น {', '.join(sorted(TRACK_NAMES))}")
-        if jobs.draft(mid) is None:
-            return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมที่รออัปโหลด")
+        # _meeting() ยืนยันแล้วว่า draft นี้มีอยู่จริงและเป็นของผู้เรียก จึงไม่ต้องถามซ้ำ
 
         q = self._query()
         ext = (q.get("ext") or "").lower().lstrip(".")
@@ -587,8 +694,7 @@ class Handler(BaseHTTPRequestHandler):
         if name not in TRACK_NAMES:
             return self._error(HTTPStatus.BAD_REQUEST,
                                f"ชื่อแทร็กต้องเป็น {', '.join(sorted(TRACK_NAMES))}")
-        if jobs.draft(mid) is None:
-            return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมที่รออัปโหลด")
+        # _meeting() ยืนยันแล้วว่า draft นี้มีอยู่จริงและเป็นของผู้เรียก จึงไม่ต้องถามซ้ำ
         ext = (self._query().get("ext") or "").lower().lstrip(".")
         if ext not in ALLOWED_EXT:
             return self._error(HTTPStatus.BAD_REQUEST, f"นามสกุล '{ext}' ไม่รองรับ")
@@ -871,17 +977,27 @@ class Handler(BaseHTTPRequestHandler):
         mid = urllib.parse.unquote(mid)
 
         # แทร็กและการสั่งประมวลผลทำกับ draft ที่ยังไม่มีในคลัง จึงเช็คก่อน store
-        if len(rest) == 3 and rest[0] == "tracks" and rest[2] == "upload-url":
+        # เดิมสามเส้นนี้ข้ามการเช็คสิทธิ์ทั้งหมด ใครที่ล็อกอินก็อัปไฟล์/สั่งประมวลผล draft
+        # ของคนอื่นได้ถ้ารู้ id (BACKLOG #1) — เช็คสิทธิ์ตรงนี้ที่เดียวแทนการกระจายไปในแต่ละ handler
+        draft_route = (
+            (len(rest) == 3 and rest[0] == "tracks" and rest[2] == "upload-url")
+            or (len(rest) == 2 and rest[0] == "tracks" and self.command == "POST")
+            or (rest == ["process"] and self.command == "POST")
+        )
+        if draft_route:
             if not store.valid_id(mid):
                 return self._error(HTTPStatus.BAD_REQUEST, "id ไม่ถูกต้อง")
-            return self._track_upload_url(mid, rest[1])
-        if len(rest) == 2 and rest[0] == "tracks" and self.command == "POST":
-            if not store.valid_id(mid):
-                return self._error(HTTPStatus.BAD_REQUEST, "id ไม่ถูกต้อง")
-            return self._put_track(mid, rest[1])
-        if rest == ["process"] and self.command == "POST":
-            if not store.valid_id(mid):
-                return self._error(HTTPStatus.BAD_REQUEST, "id ไม่ถูกต้อง")
+            spec = self._draft_spec(mid)
+            # 404 ก่อน 403 เหมือน /api/jobs/{id}/stop — ไม่มี draft อยู่จริงก็ไม่มีสิทธิ์ให้พูดถึง
+            # ข้อความเดียวกับกรณี "ไม่มี id นี้" โดยตั้งใจ ไม่บอกว่าการประชุมนั้นมีอยู่แต่ทำเสร็จแล้ว
+            if spec is None:
+                return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมที่รออัปโหลด")
+            if not self._may_write_draft(spec):
+                return self._error(HTTPStatus.FORBIDDEN, "ไม่มีสิทธิ์กับการประชุมนี้")
+            if len(rest) == 3:
+                return self._track_upload_url(mid, rest[1])
+            if len(rest) == 2:
+                return self._put_track(mid, rest[1])
             return self._start(mid)
 
         if not store.valid_id(mid):
@@ -913,7 +1029,13 @@ class Handler(BaseHTTPRequestHandler):
             meeting = store.get(mid)
             if meeting is None:
                 return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมนี้")
-            return self._json(jobs.submit_summarize(mid, meeting["title"]), HTTPStatus.ACCEPTED)
+            # คนถือลิงก์แชร์แบบแก้ได้ไม่มี user_id — ถ้าปล่อยเป็น None งานจะไม่มีเจ้าของ
+            # แล้วหายจาก /api/jobs ของเจ้าของการประชุมเอง (และทับ owner_id เดิมของแถวนี้
+            # เพราะงาน summarize ใช้ job id = id การประชุม) จึงตกไปใช้เจ้าของการประชุมแทน
+            return self._json(
+                jobs.submit_summarize(mid, meeting["title"],
+                                      owner_id=self.user_id or meeting.get("owner_id")),
+                HTTPStatus.ACCEPTED)
         if rest == ["translate"]:
             if self.command != "POST":
                 return self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ต้องใช้ POST")
@@ -1011,7 +1133,10 @@ class Handler(BaseHTTPRequestHandler):
         meeting = store.get(mid)
         if meeting is None:
             return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมนี้")
-        self._json(jobs.submit_translate(mid, meeting["title"], lang), HTTPStatus.ACCEPTED)
+        # เหตุผลของ or meeting.get("owner_id") เหมือนใน resummarize (คนถือลิงก์แชร์ไม่มี user_id)
+        self._json(jobs.submit_translate(mid, meeting["title"], lang,
+                                         owner_id=self.user_id or meeting.get("owner_id")),
+                   HTTPStatus.ACCEPTED)
 
     def _parse_range(self, size: int) -> tuple[int, int] | None:
         """แปลง header Range เป็น (start, end) แบบรวมปลาย — None ถ้าไม่มีหรืออ่านไม่ได้."""

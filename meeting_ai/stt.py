@@ -122,6 +122,11 @@ def resolve(name: str | None) -> str:
     )
 
 
+def label(name: str) -> str:
+    """ป้ายชื่อ provider แบบเดียวกับ dropdown ในหน้าเว็บ — CLI ใช้บอกว่างานนี้ถอดด้วยอะไร."""
+    return providers()[name]["label"] if name in (LOCAL, API) else name
+
+
 # ---------- ฝั่ง API ----------
 
 def _ffmpeg(args: list[str]) -> None:
