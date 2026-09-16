@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import mimetypes
 import re
 import tempfile
@@ -50,15 +51,22 @@ MAX_SEGMENT_TEXT = 5_000      # ตัวอักษรต่อ segment (ป�
 CHUNK = 1024 * 256
 # หลังตอบ 413 ต้องระบายของที่ client ยังส่งค้างอยู่ก่อนปิด ไม่งั้น TCP ส่ง RST แล้ว
 # client เห็นเป็น "connection reset" แทนที่จะเห็น 413 (วัดจริงกับ body 20 MB)
-# ระบายทีละก้อน ไม่เก็บลงแรม และหยุดเมื่อครบเพดานหรือหมดเวลา — ใหญ่กว่านี้ยอมให้ reset
+# ระบายทีละก้อน ไม่เก็บลงแรม หยุดเมื่อครบเพดานไบต์หรือครบ LINGER_SECONDS นับจากเริ่มระบาย
+# (เวลารวมจริง ไม่ใช่เวลาเงียบต่อ recv — ดู _drain_rejected_body) ใหญ่กว่านี้ยอมให้ reset
 LINGER_DRAIN = 64 * 1024**2   # 64 MB
 LINGER_SECONDS = 2.0
+# กันคอนเนกชันที่ไม่ขยับค้างกินเธรด — BaseHTTPRequestHandler.timeout เดิมเป็น None
+# (ไม่มี timeout เลย) ค่านี้ตกไปถึง socket ทุกตัวผ่าน StreamRequestHandler.setup()
+SOCKET_TIMEOUT = 30
 
 SESSION_COOKIE = "mai_session"
 # endpoint ที่เข้าได้ก่อนล็อกอิน (ไม่งั้นจะล็อกอินไม่ได้เลย)
 PUBLIC_API = {("config",), ("auth", "me"), ("auth", "login"), ("auth", "signup")}
 
 _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
+# Content-Length ต้องเป็นเลขล้วนตาม RFC 9110 — int() ยอมรับ "1_0", "+10", " 10 " ซึ่ง
+# proxy ข้างหน้าอ่านไม่เหมือนเรา (parser differential = ทางเปิดให้ request smuggling)
+_CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD = 8
 
@@ -96,6 +104,10 @@ def _check_join_url(url: str) -> tuple[bool, str]:
 
 class BadBody(ValueError):
     """body ของคำขออ่านไม่ได้ — ตอบ 400 ไม่ใช่ 500."""
+
+
+class UnsupportedBody(ValueError):
+    """framing ของ body อ่านไม่ได้ (เช่น Transfer-Encoding: chunked) — ตอบ 501 แล้วปิด."""
 
 
 class BodyTooLarge(ValueError):
@@ -187,12 +199,23 @@ def _live_recording_enabled() -> bool:
 class Handler(BaseHTTPRequestHandler):
     server_version = "meeting_ai"
     protocol_version = "HTTP/1.1"
+    timeout = SOCKET_TIMEOUT      # socketserver ใช้ค่านี้ settimeout ให้ทุกคอนเนกชัน
+    body_bytes = 0                # ความยาว body ของคำขอนี้ (ตั้งใหม่ทุกคำขอใน _route)
 
     # ---------- helpers ----------
 
     def log_message(self, fmt: str, *args) -> None:  # เงียบกว่า default ที่พิมพ์ทุก request
-        if not self.path.startswith(("/static/", "/api/jobs", "/api/live")):
-            print(f"  {self.command} {self.path}", flush=True)
+        # หลังตั้ง timeout ให้ socket แล้ว http.server เรียกทางนี้ได้ตั้งแต่ยังไม่ได้อ่าน
+        # request line (คอนเนกชันเงียบจนหมดเวลา) ตอนนั้นยังไม่มี self.path/self.command
+        path = getattr(self, "path", "")
+        if path and not path.startswith(("/static/", "/api/jobs", "/api/live")):
+            print(f"  {getattr(self, 'command', '?')} {path}", flush=True)
+
+    def log_error(self, fmt: str, *args) -> None:
+        """คอนเนกชัน keep-alive ที่เงียบจนครบ timeout เป็นเรื่องปกติ ไม่ใช่ error ที่ต้องรก console."""
+        if "timed out" in fmt:
+            return
+        super().log_error(fmt, *args)
 
     def _host_ok(self) -> bool:
         """กัน DNS rebinding — หน้าเว็บภายนอกจะยิงเข้าพอร์ตนี้ผ่านโดเมนตัวเองไม่ได้."""
@@ -200,9 +223,19 @@ class Handler(BaseHTTPRequestHandler):
         return host in ("localhost", "127.0.0.1", "::1", "") or host == self.server.bound_host
 
     def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
+        # คอนเนกชันที่เคยมี request body จะไม่ถูกใช้ซ้ำ: เราตอบหลายเส้นก่อนอ่าน body
+        # (401/403/404/405/413) ไบต์ที่ค้างอยู่จะถูกอ่านเป็น "คำขอถัดไป" บนคอนเนกชันเดิม
+        # = 2 คำตอบใน 1 คอนเนกชัน ถ้าฝั่งหน้ามี proxy ที่ pool คอนเนกชัน คำตอบจะไปโผล่ผิดคน
+        # (ของรางวัลคือคุกกี้ mai_session ของคนอื่น) ปิดทิ้งถูกกว่าไล่ตรวจทุก handler
+        if self.body_bytes:
+            self.close_connection = True
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # close_connection เป็นสถานะภายในของ http.server ไม่ได้ส่งอะไรออกสาย — ถ้าไม่บอก
+        # client ตรงๆ มันจะใช้คอนเนกชันเดิมต่อแล้วไปตายที่ "คำขอถัดไป" แทนคำขอที่ผิดจริง
+        if self.close_connection:
+            self.send_header("Connection", "close")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -407,17 +440,40 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"live_recording_enabled": _live_recording_enabled()})
 
     def _content_length(self) -> int:
-        """Content-Length ที่เชื่อถือได้ — ไม่มี = 0, ไม่ใช่ตัวเลข/ติดลบ = 400 ไม่ใช่ 500."""
-        raw = (self.headers.get("Content-Length") or "").strip()
-        if not raw:
-            return 0
-        try:
-            length = int(raw)
-        except ValueError:
-            raise BadBody("Content-Length ไม่ถูกต้อง") from None
-        if length < 0:
+        """Content-Length ที่เชื่อถือได้ — ไม่มี = 0, กำกวมหรือไม่ใช่เลขล้วน = 400 ไม่ใช่ 500.
+
+        ซ้ำสองบรรทัด (เช่น 2 กับ 100) คือสูตร request smuggling มาตรฐาน: proxy เชื่อค่าหนึ่ง
+        เราเชื่ออีกค่าหนึ่ง ส่วนที่เหลือบนสายกลายเป็นคำขอปลอม — ปฏิเสธไปเลยปลอดภัยกว่าเลือกข้าง
+        """
+        values = self.headers.get_all("Content-Length") or []
+        if len(values) > 1:
+            raise BadBody("Content-Length ซ้ำกันหลายค่า")
+        raw = values[0] if values else ""
+        if not raw.strip():
+            return 0                      # ไม่มีหรือว่าง = ไม่มี body
+        if not _CONTENT_LENGTH_RE.fullmatch(raw):
             raise BadBody("Content-Length ไม่ถูกต้อง")
-        return length
+        return int(raw)
+
+    def _begin_body(self) -> None:
+        """ตรวจ framing ของ body ก่อนตอบอะไรทั้งสิ้น แล้วจำความยาวไว้ที่ self.body_bytes.
+
+        ต้องทำก่อน handler ทุกตัว (ก่อนเช็ค Host ด้วย) เพราะเส้นที่ตอบ 401/403/404 ทิ้งไป
+        เฉยๆ โดยไม่อ่าน body คือจุดที่ทำให้เกิด "2 คำตอบใน 1 คอนเนกชัน" — ดูคอมเมนต์ใน _send
+        """
+        self.body_bytes = 0
+        te = [v.strip().lower() for v in (self.headers.get_all("Transfer-Encoding") or [])]
+        if te and te != ["identity"]:
+            # http.server ไม่ถอด chunked ให้ ถ้าเรารับไว้ body จะถูกอ่านเป็นคำขอถัดไปทั้งก้อน
+            self.close_connection = True
+            raise UnsupportedBody("เซิร์ฟเวอร์นี้รับ Transfer-Encoding: "
+                                  + ", ".join(te) + " ไม่ได้ ให้ส่งพร้อม Content-Length")
+        try:
+            self.body_bytes = self._content_length()
+        except BadBody:
+            # ไม่รู้ว่า body ยาวเท่าไร = ไม่รู้ว่าคำขอถัดไปเริ่มตรงไหน ต้องปิดคอนเนกชันสถานเดียว
+            self.close_connection = True
+            raise
 
     def _body_json(self, limit: int = MAX_JSON_BODY) -> dict:
         """อ่าน body เป็น JSON — body ว่างถือว่า {} แต่ถ้าเสียให้ฟ้องตรงๆ
@@ -429,7 +485,7 @@ class Handler(BaseHTTPRequestHandler):
         โดยไม่จำกัด ใครยิง body 20 MB มาก็กินแรมไปทั้งก้อน เส้นที่รับ transcript
         ทั้งชุดต้องส่ง MAX_JSON_TRANSCRIPT มาเอง
         """
-        length = self._content_length()
+        length = self.body_bytes
         if length > limit:
             # ปฏิเสธจาก header เลย ไม่อ่าน body ทิ้งก่อน — สิ่งที่ต้องกันคือแรมและเวลาอ่าน
             raise BodyTooLarge(f"ข้อมูลที่ส่งมาใหญ่เกิน {_size_text(limit)}", length)
@@ -447,8 +503,12 @@ class Handler(BaseHTTPRequestHandler):
     def _drain_rejected_body(self, pending: int) -> None:
         """อ่าน body ที่ปฏิเสธไปแล้วทิ้ง เพื่อให้ client ได้อ่าน 413 ก่อนคอนเนกชันถูกปิด
 
-        ปิด socket ทั้งที่ยังมีข้อมูลค้าง = TCP RST = client เห็น connection reset
-        ไม่ใช่ 413 ระบายทีละ CHUNK ไม่เก็บลงแรม จำกัดทั้งจำนวนไบต์และเวลา (กัน slowloris)
+        ปิด socket ทั้งที่ยังมีข้อมูลค้าง = TCP RST = client เห็น connection reset ไม่ใช่ 413
+
+        สองกับดักที่วัดเจอจริง (คนหยดข้อมูลทีละ 1 ไบต์ยึดเธรดไว้ได้ 21.6 วินาที):
+        - self.rfile เป็น BufferedReader: read(n) รอจนครบ n ไบต์ ใช้ read1 ที่คืนเท่าที่ recv ได้
+        - settimeout วัด "เงียบต่อหนึ่ง recv" ไม่ใช่เวลารวม คนหยดข้อมูลจึงรีเซ็ตนาฬิกาได้ไม่จบ
+          ต้องคำนวณเวลาที่เหลือจาก deadline แล้ว settimeout ใหม่ทุกรอบ
         """
         left = min(pending, LINGER_DRAIN)
         if left <= 0:
@@ -456,9 +516,12 @@ class Handler(BaseHTTPRequestHandler):
         deadline = time.monotonic() + LINGER_SECONDS
         old_timeout = self.connection.gettimeout()
         try:
-            self.connection.settimeout(LINGER_SECONDS)
-            while left > 0 and time.monotonic() < deadline:
-                chunk = self.rfile.read(min(CHUNK, left))
+            while left > 0:
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    break
+                self.connection.settimeout(max(0.05, remain))
+                chunk = self.rfile.read1(min(CHUNK, left))
                 if not chunk:
                     break
                 left -= len(chunk)
@@ -471,12 +534,17 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _read_body_to(self, dest: Path, limit: int) -> str | None:
-        """สตรีม request body ลงไฟล์ คืนข้อความ error ถ้าไม่สำเร็จ."""
-        length = int(self.headers.get("Content-Length") or 0)
+        """สตรีม request body ลงไฟล์ คืนข้อความ error ถ้าไม่สำเร็จ.
+
+        ใช้ self.body_bytes ที่ _begin_body ตรวจมาแล้ว — เดิมเรียก int() บน header ดิบ
+        ทำให้ Content-Length: abc กลายเป็น 500 พร้อมข้อความ Python หลุดไปถึง client
+        ไฟล์ใหญ่เกินเพดานคือ 413 เหมือนฝั่ง JSON (เดิมตอบ 400 และไม่ปิดคอนเนกชัน)
+        """
+        length = self.body_bytes
         if length <= 0:
             return "ไม่มีข้อมูลไฟล์ส่งมา"
         if length > limit:
-            return f"ไฟล์ใหญ่เกิน {limit // 1024**2} MB"
+            raise BodyTooLarge(f"ไฟล์ใหญ่เกิน {_size_text(limit)}", length)
         remaining = length
         with dest.open("wb") as fh:
             while remaining > 0:
@@ -508,11 +576,12 @@ class Handler(BaseHTTPRequestHandler):
         self._route()
 
     def _route(self) -> None:
-        if not self._host_ok():
-            self._error(HTTPStatus.FORBIDDEN, "Host ไม่ได้รับอนุญาต")
-            return
         path = urllib.parse.urlparse(self.path).path
         try:
+            # ต้องรู้ framing ของ body ก่อนตอบอะไร รวมถึงก่อนตอบ 403 เรื่อง Host
+            self._begin_body()
+            if not self._host_ok():
+                return self._error(HTTPStatus.FORBIDDEN, "Host ไม่ได้รับอนุญาต")
             self._resolve_user()
             if path.startswith("/api/"):
                 self._api(path)
@@ -522,6 +591,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._static(path)
             else:
                 self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ใช้ method นี้กับ path นี้ไม่ได้")
+        except UnsupportedBody as e:
+            self.close_connection = True
+            self._error(HTTPStatus.NOT_IMPLEMENTED, str(e))
         except BodyTooLarge as e:
             # ยังไม่ได้อ่าน body ออกจาก socket — ใช้คอนเนกชันนี้ต่อไม่ได้ (HTTP/1.1 keep-alive)
             self.close_connection = True
@@ -936,6 +1008,9 @@ class Handler(BaseHTTPRequestHandler):
             if spec is None:
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self.send_header("Content-Length", "0")
+                if self.body_bytes:      # เส้นนี้ไม่ผ่าน _send จึงต้องบอก close เอง
+                    self.close_connection = True
+                    self.send_header("Connection", "close")
                 self.end_headers()
                 return
             # ทั้งงาน process และ bot จบด้วยไฟล์เสียงผสมที่ worker ต้องส่งขึ้นที่เก็บ
@@ -1162,7 +1237,9 @@ class Handler(BaseHTTPRequestHandler):
                                "ต้องส่ง title, summary หรือ segments มาอย่างน้อยหนึ่งอย่าง")
 
         if segments is not None:
-            if isinstance(segments, list) and len(segments) > MAX_SEGMENTS:
+            # _clean_segments ปฏิเสธลิสต์ยาวเกินอยู่แล้ว แต่ตอบได้แค่ None = "รูปแบบไม่ถูกต้อง"
+            # ซึ่งชี้สาเหตุผิด เช็คด้วย predicate ตัวเดียวกันตรงนี้เพื่อให้ได้ 413 + เหตุผลจริง
+            if _too_many_segments(segments):
                 return self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                                    f"segments มากเกิน {MAX_SEGMENTS:,} รายการ")
             clean = _clean_segments(segments)
@@ -1349,9 +1426,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, target.read_bytes(), ctype, {"Cache-Control": "no-cache"})
 
 
+def _too_many_segments(raw) -> bool:
+    """จุดเดียวที่เทียบจำนวน segment กับ MAX_SEGMENTS (ใช้ทั้งใน _patch และ _clean_segments)."""
+    return isinstance(raw, list) and len(raw) > MAX_SEGMENTS
+
+
 def _clean_segments(raw) -> list[dict] | None:
     """ตรวจและทำความสะอาด segments ที่ผู้ใช้แก้มาจากหน้าเว็บ."""
-    if not isinstance(raw, list) or len(raw) > MAX_SEGMENTS:
+    if not isinstance(raw, list) or _too_many_segments(raw):
         return None
     out = []
     for item in raw:
@@ -1361,6 +1443,10 @@ def _clean_segments(raw) -> list[dict] | None:
             start = float(item.get("start", 0))
             end = float(item.get("end", 0))
         except (TypeError, ValueError):
+            return None
+        # NaN/Infinity ผ่าน float() ได้ (json.loads ก็รับ NaN, "1e400" = inf) แต่ json.dump
+        # เขียนออกเป็น NaN ที่อ่านกลับไม่ได้ — เคยทำให้การประชุมเปิดไม่ขึ้นถาวรหลัง PATCH
+        if not (math.isfinite(start) and math.isfinite(end)):
             return None
         # ตัดข้อความเหมือนที่ทำกับ speaker มาตลอด — หนึ่งช่วงพูดยาวไม่กี่พันตัวอักษร
         text = str(item.get("text", "")).strip()[:MAX_SEGMENT_TEXT]

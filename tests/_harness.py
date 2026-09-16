@@ -22,8 +22,10 @@ os.environ["S3_BUCKET"] = ""
 import http.client  # noqa: E402
 import json  # noqa: E402
 import shutil  # noqa: E402
+import socket  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
+import time  # noqa: E402
 import unittest  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -191,6 +193,18 @@ class FakeStore:
     def set_setting(self, key: str, value) -> None:
         self.settings[key] = value
 
+    def verify_password(self, email: str, password: str) -> dict | None:
+        """เทสต์ BUG-011 เท่านั้นสนใจว่า body ผ่านเพดานหรือไม่ ไม่สนใจล็อกอินจริง — ไม่มี
+        รหัสผ่านจริงเก็บใน FakeStore เลยตอบ None (อีเมล/รหัสผ่านผิด) เสมอ."""
+        return None
+
+    def set_visibility(self, mid: str, visibility: str) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        m["visibility"] = visibility
+        return dict(m)
+
     # ---------- helper สร้างข้อมูลตั้งต้นให้เทสต์ ----------
 
     def add_user(self, token: str, user_id: str, email: str, is_admin: bool = False) -> None:
@@ -237,15 +251,16 @@ class _HttpCaseMixin:
     """ยิง HTTP เข้า self.httpd (ตั้งใน setUp ของคลาสลูก) ด้วย http.client (ไม่โยน exception ที่ 4xx)."""
 
     def _do(self, method: str, path: str, data: bytes | None = None,
-            cookies: dict[str, str] | None = None, content_type: str | None = None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            cookies: dict[str, str] | None = None, content_type: str | None = None,
+            headers: dict[str, str] | None = None, timeout: float = 20):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
         try:
-            headers = {}
+            hdrs = dict(headers or {})
             if cookies:
-                headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+                hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
             if content_type:
-                headers["Content-Type"] = content_type
-            conn.request(method, path, body=data, headers=headers)
+                hdrs["Content-Type"] = content_type
+            conn.request(method, path, body=data, headers=hdrs)
             resp = conn.getresponse()
             raw = resp.read()
         finally:
@@ -262,9 +277,11 @@ class _HttpCaseMixin:
         return self._do("GET", path, cookies=cookies)
 
     def post_json(self, path: str, body: dict | None = None,
-                  cookies: dict[str, str] | None = None):
+                  cookies: dict[str, str] | None = None,
+                  headers: dict[str, str] | None = None, timeout: float = 20):
         return self._do("POST", path, data=json.dumps(body or {}).encode("utf-8"),
-                        cookies=cookies, content_type="application/json")
+                        cookies=cookies, content_type="application/json",
+                        headers=headers, timeout=timeout)
 
     def post_bytes(self, path: str, data: bytes, cookies: dict[str, str] | None = None):
         return self._do("POST", path, data=data, cookies=cookies,
@@ -274,9 +291,83 @@ class _HttpCaseMixin:
         return self._do("DELETE", path, cookies=cookies)
 
     def patch_json(self, path: str, body: dict | None = None,
-                   cookies: dict[str, str] | None = None):
+                   cookies: dict[str, str] | None = None,
+                   headers: dict[str, str] | None = None, timeout: float = 20):
         return self._do("PATCH", path, data=json.dumps(body or {}).encode("utf-8"),
-                        cookies=cookies, content_type="application/json")
+                        cookies=cookies, content_type="application/json",
+                        headers=headers, timeout=timeout)
+
+    def raw_request(self, method: str, path: str,
+                    headers: dict[str, str] | list[tuple[str, str]],
+                    body: bytes = b"", send_body: bool = True,
+                    timeout: float = 5.0) -> tuple[int, str, float]:
+        """ยิง HTTP ดิบผ่าน socket แทน http.client (BUG-011) — ใช้ตอนต้องคุม Content-Length
+
+        เองแบบไม่ตรงกับความยาว body จริง (ประกาศใหญ่แต่ส่งนิดเดียว, ไม่ใช่ตัวเลข, ติดลบ, ว่าง,
+        หายไปเลย) http.client คำนวณ Content-Length ให้เองตามความยาว body เสมอ ใช้พิสูจน์กรณี
+        เหล่านี้ไม่ได้ คืน (status, response text ทั้งก้อนเท่าที่อ่านได้, วินาทีที่ใช้)
+        status -1 = ส่ง body ไม่สำเร็จ, -2 = อ่านตอบกลับไม่สำเร็จ/timeout, -3 = ไม่ใช่ HTTP response
+        เจตนาไม่อ่าน body ของ response ให้ครบ (พอเจอ header จบก็หยุด) เพราะบางเทสต์ส่ง body
+        ใหญ่มากและ response อาจสะท้อนกลับมาใหญ่พอกัน — ใช้ text นี้เช็คแค่ status/หัวข้อความ error
+
+        headers รับ dict (ปกติ) หรือ list ของ (key, value) — ต้องใช้ list เมื่อต้องส่ง header
+        ชื่อซ้ำกันหลายบรรทัด (เช่น สอง `Content-Length`) ซึ่ง dict ทำไม่ได้
+        """
+        t0 = time.monotonic()
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
+        chunks: list[bytes] = []
+        try:
+            head = f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+            items = headers.items() if isinstance(headers, dict) else headers
+            for k, v in items:
+                head += f"{k}: {v}\r\n"
+            head += "\r\n"
+            s.sendall(head.encode("utf-8"))
+            if send_body and body:
+                try:
+                    s.sendall(body)
+                except OSError as e:
+                    return -1, f"send failed: {e!r}", time.monotonic() - t0
+            try:
+                while True:
+                    b = s.recv(65536)
+                    if not b:
+                        break
+                    chunks.append(b)
+                    blob = b"".join(chunks)
+                    if b"\r\n\r\n" in blob and len(blob) > 40:
+                        break
+            except OSError as e:
+                return -2, f"recv failed: {e!r}", time.monotonic() - t0
+        finally:
+            s.close()
+        text = b"".join(chunks).decode("utf-8", "replace")
+        status = int(text.split(" ")[1]) if text.startswith("HTTP/") else -3
+        return status, text, time.monotonic() - t0
+
+    def raw_send_and_collect(self, data: bytes, timeout: float = 1.5) -> bytes:
+        """ส่ง raw bytes ก้อนเดียว (คุมทั้งคำขอเอง รวม header/แนวการเข้ารหัส body) เข้า socket
+
+        เดียวกัน แล้วอ่านทุกอย่างที่ตอบกลับมาจนกว่าคอนเนกชันจะปิด (EOF) หรือหมดเวลา — ต่างจาก
+        `raw_request` ที่หยุดอ่านทันทีที่เจอ header block แรก ตัวนี้ตั้งใจอ่าน **ทุก response**
+        บนคอนเนกชันเดียว ใช้นับจำนวน `HTTP/1.1 ` ทั้งหมด (BUG-011 request smuggling / keep-alive
+        regression) คืน raw bytes ทั้งก้อน (ไม่ decode ให้ เพราะเทสต์พวกนี้สนใจ byte count ตรงๆ)
+        """
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
+        chunks: list[bytes] = []
+        try:
+            s.sendall(data)
+            try:
+                while True:
+                    b = s.recv(65536)
+                    if not b:
+                        break
+                    chunks.append(b)
+            except OSError:
+                pass  # timeout หรือคอนเนกชันหลุด — ถือว่าอ่านจบเท่าที่ได้
+        finally:
+            s.close()
+        return b"".join(chunks)
 
     def _start_server(self) -> None:
         self.httpd = server.Server(("127.0.0.1", 0), server.Handler)

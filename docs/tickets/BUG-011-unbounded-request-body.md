@@ -2,7 +2,7 @@
 
 - **Severity:** P1 (BACKLOG #11) — QA report จัดเป็น BLOCKER 2 + HIGH 3
 - **Owner:** backend-dev
-- **Status:** open
+- **Status:** **fixed (uncommitted)** 2026-09-16
 - **Source:** [docs/qa/QA-REPORT-2026-09-16.md](../qa/QA-REPORT-2026-09-16.md) BLOCKER 2 / HIGH 3 · พบโดย api-tester (ยิงจริง)
 
 ## อาการ
@@ -51,3 +51,49 @@
 
 ## ห้ามแตะ
 `meeting_ai/config.py` — เจ้าของกำลังแก้ค้างไว้ใน working tree สำหรับ BACKLOG #7 (คนละเรื่องกัน)
+
+
+---
+
+## Resolution — fixed (uncommitted) 2026-09-16
+
+ผ่าน review 1 รอบ โดย code-reviewer, security-engineer และ test-engineer ทำงานขนานกัน ทั้งสามเจอปัญหาจริงพร้อม PoC ระดับ byte
+
+**ไฟล์ที่แก้:** `meeting_ai/web/server.py` เท่านั้น (โค้ด production)
+
+**เพดานที่เลือก** (อ้างตัวเลข production ที่วัดวันนี้: 2,905 segments / 327,374 B / payload รวม 334,634 B)
+- `MAX_JSON_BODY` 64 KB สำหรับ control-plane ทั้ง 15 call site
+- `MAX_JSON_TRANSCRIPT` 8 MB เฉพาะ `POST /api/worker/jobs/{id}/result` และ `PATCH /api/meetings/{id}` (~25 เท่าของสถิติจริง)
+- `MAX_SEGMENTS` 50,000 · `MAX_SEGMENT_TEXT` 5,000
+
+**สิ่งที่เพิ่มเข้ามาในรอบ review — สำคัญกว่าตัวเพดานเอง**
+
+รีวิวพบว่าแพตช์รอบแรกยังเปิดช่องไว้หลายจุด และหนึ่งในนั้นแพตช์เป็นคนสร้างเอง:
+
+1. **Request smuggling บน keep-alive** — ยืนยันด้วย byte stream ได้ 2 responses ต่อ 1 คอนเนกชัน 4 รูปแบบ (chunked ซ้อนคำขอ, `Content-Length` สั้นกว่า body จริง, CL ซ้ำสองค่า, 404 ที่ตอบก่อนอ่าน body) ทำได้ในโหมด cloud โดยไม่ต้องล็อกอิน แก้ด้วยกฎกลางใน `_begin_body()`/`_send()`: คอนเนกชันที่เคยมี request body จะไม่ถูกใช้ซ้ำ + `Transfer-Encoding` ที่ไม่ใช่ identity → 501 + `Content-Length` ซ้ำ → 400
+2. **slowloris** — `LINGER_SECONDS` ไม่ได้บังคับเวลาจริงเพราะ `BufferedReader.read()` รอจนครบ n และ `settimeout` นับเฉพาะช่วงเงียบ วัดได้ 21.62 วิต่อเธรด และ 100 คอนเนกชันด้วย 7.4 KB แก้ด้วย `read1()` + คำนวณ timeout ใหม่ทุกรอบ + `Handler.timeout = 30`
+3. **413 ไม่ส่ง header `Connection: close`** ทำให้คำขอ *ถัดไป* ตายด้วย `RemoteDisconnected`
+4. **`_read_body_to()`** ยังใช้ `int()` ดิบ → 500 และคาย exception ของ Python ให้ client
+5. **`NaN`/`Infinity` ใน segments** เขียนลงไฟล์ได้ ทำให้ `GET` และ export ตอบ 500 **ถาวร** — ผู้ถือลิงก์แชร์แบบแก้ไขได้ก็ทำได้
+6. `_content_length()` เคยรับ `1_0`, `+10`, `" 10 "` = parser differential กับ proxy
+7. ของแถมที่ dev เจอเอง: `Handler.timeout` ที่เพิ่งใส่ทำให้ `log_message` พังด้วย AttributeError ก่อนมี `self.path`
+
+**ผลหลังแก้ (วัดโดย dev และ QA lead ยืนยันซ้ำอิสระ)**
+
+| | ก่อน | หลัง |
+|---|---|---|
+| smuggling ทั้ง 4 แบบ | 2 responses | **1** ทุกแบบ |
+| keep-alive ปกติ (GET ×2) | 2 | **2** — ไม่ได้เหวี่ยงปิดทุกคอนเนกชัน |
+| หยด 1 ไบต์/0.4 วิ | 21.62 วิ | **2.03 วิ** |
+| 100 คอนเนกชัน | ค้าง 100/100 | ปล่อยครบใน **2.59 วิ** |
+| 413 | ไม่มี `Connection: close` | มี และใช้คอนเนกชันต่อได้ |
+| `NaN` | meeting พังถาวร | **400** ไม่มีไฟล์เสีย |
+
+**Regression test:** `tests/test_bug_011_body_size_caps.py` (43 tests) — ชุดเต็ม **107 tests OK, skipped 1, exit 0** (เดิม 64)
+test-engineer พิสูจน์ว่าเทสไม่ vacuous ด้วยการย้อนกลไกทีละจุด และพบว่าเทสของ `_read_body_to` ต้องย้อน **สองจุดพร้อมกัน** ถึงจะได้บั๊กเดิมคืน เพราะ `_begin_body()` ดักไว้ก่อน — แก้ docstring ให้ตรงความจริงแล้ว
+
+**Migration / SQL:** none
+
+**ยกไปตั๋วใหม่:** BACKLOG #50 (worker result เกิน 8 MB ทิ้ง transcript ถาวร), #51 (`except Exception` คาย exception ของ Python), #52 (`Server:` header เปิดเผยเวอร์ชัน Python) · และ slowloris เฟส header ยังเปิดอยู่ (`timeout` วัดความเงียบ ไม่ใช่เวลารวม) ควรเปิดตั๋วแยก
+
+**สิ่งที่แลกมาและต้องรู้:** ทุก POST/PATCH ที่มี body จบด้วยการปิดคอนเนกชัน (หนึ่ง TCP ต่อหนึ่งคำขอที่มี body) ส่วน GET/HEAD/static ยัง keep-alive ตามเดิม
