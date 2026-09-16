@@ -17,7 +17,17 @@ import os
 os.environ["MEETING_AI_CLOUD"] = "0"
 os.environ["DATABASE_URL"] = ""
 os.environ["REMOTE_WORKER"] = "1"
+# BUG-045: blank *every* S3_* var (not just S3_BUCKET) plus the remote-blobs opt-in flag.
+# config._load_dotenv() runs os.environ.setdefault() at import time (server.py/jobs.py import
+# config), so any of these left unset here would pick up the owner's real R2 production
+# credentials from .env into this test process — the exact class of accident BUG-045 already
+# cost a full key rotation for. No test in this suite is allowed to hold a usable credential.
+os.environ["S3_ENDPOINT"] = ""
 os.environ["S3_BUCKET"] = ""
+os.environ["S3_ACCESS_KEY_ID"] = ""
+os.environ["S3_SECRET_ACCESS_KEY"] = ""
+os.environ["S3_REGION"] = ""
+os.environ["MEETING_AI_REMOTE_BLOBS"] = ""
 
 import http.client  # noqa: E402
 import json  # noqa: E402

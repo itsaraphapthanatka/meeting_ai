@@ -2,6 +2,9 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-16 — BUG-045 blob storage opt-in
+- [Blob storage opt-in](blob-storage-opt-in.md) — S3 needs cloud mode or MEETING_AI_REMOTE_BLOBS=1; test with fake S3_* because .env holds production R2 keys.
+
 ## 2026-09-16 — P0 fix round
 - Cloud-mode test/proof recipe: patch backend.cloud, backend.store, jobs.cloud, jobs.store, server.store (jobs.py freezes bindings at import); set REMOTE_WORKER=1 before import so jobs.start() spawns no thread.
 - jobs.draft(mid) in cloud = spec of ANY job status; check status == 'draft' explicitly before treating it as a draft.

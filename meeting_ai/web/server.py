@@ -1292,7 +1292,10 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
 
     print(f"🌐 meeting_ai web  →  {url}")
     print(f"   เก็บข้อมูลแบบ: {backend.mode()}"
-          + ("  (มีระบบล็อกอิน)" if backend.auth_required() else "  (ไม่มีล็อกอิน)"))
+          + ("  (มีระบบล็อกอิน)" if backend.auth_required() else "  (ไม่มีล็อกอิน)"),
+          flush=True)  # flush ก่อน เพราะบรรทัดของที่เก็บไฟล์ออกทาง stderr — เวลา redirect จะได้เรียงถูก
+    # เลือกที่เก็บไฟล์เสียงตั้งแต่ตอนเริ่ม เพื่อให้บรรทัดบอกสถานะ S3/ดิสก์ โผล่ก่อนรับ request แรก
+    backend.storage()
     if host not in ("127.0.0.1", "localhost", "::1") and not backend.auth_required():
         print("⚠️  ผูกกับ interface ภายนอก และไม่มีระบบล็อกอิน — ใครในเครือข่ายก็เปิดได้")
     if not (config.llm_api_key and "your-key" not in config.llm_api_key):

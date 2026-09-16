@@ -14,6 +14,7 @@ import hmac
 import http.client
 import os
 import socket
+import sys
 import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
@@ -277,20 +278,80 @@ def missing_pieces() -> list[str]:
     return gaps
 
 
-def get_storage(local_root: Path) -> Storage:
+REMOTE_ENV = "MEETING_AI_REMOTE_BLOBS"
+
+
+def remote_opt_in() -> bool:
+    """สั่งให้โหมดไฟล์ต่อที่เก็บภายนอกของจริงหรือยัง — ต้องสั่งเอง ไม่เดาให้."""
+    return (os.environ.get(REMOTE_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def configured() -> bool:
+    """ตั้ง S3_* ไว้ครบพร้อมใช้หรือไม่ — ครบไม่ได้แปลว่าจะใช้."""
+    return bool(os.environ.get("S3_BUCKET")) and not missing_pieces()
+
+
+def _notice(msg: str) -> None:
+    """บอกสถานะที่เก็บไฟล์ทาง stderr — ห้ามทำให้ผู้เรียกพังไม่ว่ากรณีใด
+
+    การเลือกที่เก็บเกิดได้ทั้งตอนสตาร์ตและใน request thread แรก (Vercel cold start)
+    คอนโซล cp874 เขียนภาษาไทยไม่ได้ ถ้าปล่อย UnicodeEncodeError ขึ้นไปจะกลายเป็น 500
+    จากบรรทัดเตือน — ยอมเสียอักษรไทยดีกว่า และถ้า stderr ใช้ไม่ได้เลยก็เงียบไป
+    """
+    for text in (msg, msg.encode("ascii", "replace").decode("ascii")):
+        try:
+            print(text, file=sys.stderr, flush=True)
+            return
+        except UnicodeEncodeError:
+            continue
+        except Exception:
+            return
+
+
+def get_storage(local_root: Path, *, allow_remote: bool = False) -> Storage:
+    """เลือกที่เก็บไฟล์เสียง แล้วประกาศทุกครั้งว่าเลือกอะไร
+
+    BUG-045: เดิมแค่เจอ S3_BUCKET ใน environment ก็ต่อบัคเก็ตจริงให้เองเงียบ ๆ การรันเทส
+    ในเครื่อง (โหมดไฟล์) จึงคืน presigned URL ที่เขียนบัคเก็ต production ได้ ต้องหมุนกุญแจ R2
+    ทั้งชุด ตอนนี้ของจริงต้องมีคนสั่ง: โหมด cloud สั่งผ่าน allow_remote ส่วนโหมดไฟล์ต้องตั้ง
+    MEETING_AI_REMOTE_BLOBS=1 เอง (ยังใช้ S3 กับโหมดไฟล์ได้ตามเดิม แค่ต้องตั้งใจ)
+
+    allow_remote เป็น keyword-only ตั้งใจ — ไม่อยากให้ใครเผลอส่ง positional ที่เป็น truthy
+    แล้วเปิดที่เก็บของจริงโดยไม่รู้ตัว และค่าเริ่มต้นคือ False (ผู้เรียกใหม่ได้ดิสก์ไว้ก่อน)
+    """
     global _current
     if _current is not None:
         return _current
-    if not missing_pieces() and os.environ.get("S3_BUCKET"):
+    ready = configured()
+    if ready and (allow_remote or remote_opt_in()):
+        bucket = os.environ["S3_BUCKET"]
+        endpoint = os.environ["S3_ENDPOINT"]
         _current = S3Storage(
-            endpoint=os.environ["S3_ENDPOINT"],
-            bucket=os.environ["S3_BUCKET"],
+            endpoint=endpoint,
+            bucket=bucket,
             access_key=os.environ["S3_ACCESS_KEY_ID"],
             secret_key=os.environ["S3_SECRET_ACCESS_KEY"],
             region=os.environ.get("S3_REGION", "auto"),
         )
+        # ห้ามพิมพ์คีย์ — endpoint กับชื่อ bucket พอให้รู้ว่ากำลังต่อของจริงตัวไหน
+        _notice(f"⚠️  ไฟล์เสียงจะขึ้นที่เก็บภายนอกของจริง: bucket '{bucket}' ที่ {endpoint}"
+                " — ลิงก์ที่ออกให้เขียนบัคเก็ตนี้ได้")
     else:
         _current = LocalStorage(local_root)
+        gaps = missing_pieces()
+        if ready:
+            # คนที่ตั้ง S3_* มาเองต้องรู้ว่าทำไมมันไม่ทำงาน ไม่ใช่เงียบแล้วปล่อยให้งง
+            _notice(f"ℹ️  ตั้ง S3_* ไว้ครบแต่ยังไม่เปิดใช้ — เก็บไฟล์เสียงลงดิสก์ที่ {local_root}"
+                    f" · ถ้าตั้งใจใช้ bucket '{os.environ['S3_BUCKET']}' จริง ให้ตั้ง {REMOTE_ENV}=1")
+        elif remote_opt_in():
+            # สั่งเปิดของจริงไว้แล้วแต่ตั้งค่าไม่ครบ (พิมพ์ชื่อตัวแปรผิดสักตัว) — ตกไปดิสก์แบบเงียบ
+            # คือบั๊กเดียวกับ BUG-045 ในทางกลับกัน ต้องบอกว่าขาดอะไร
+            _notice(f"⚠️  ตั้ง {REMOTE_ENV}=1 ไว้แต่ยังใช้ที่เก็บภายนอกไม่ได้ ขาด: "
+                    + "; ".join(gaps or ["S3_BUCKET"]) + f" — เก็บลงดิสก์ที่ {local_root}")
+        elif allow_remote and gaps:
+            # โหมด cloud ตั้ง S3_* มาไม่ครบ — บน Vercel ดิสก์เขียนไม่ได้ จะกลายเป็น 500 ตอนอัปโหลด
+            _notice("⚠️  โหมด cloud แต่ตั้ง S3_* ไม่ครบ ขาด: " + "; ".join(gaps)
+                    + f" — เก็บลงดิสก์ที่ {local_root} (บน serverless เขียนดิสก์ไม่ได้)")
     return _current
 
 

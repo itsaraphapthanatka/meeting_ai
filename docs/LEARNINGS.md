@@ -27,3 +27,7 @@ System-level lessons every agent must know. Read before starting; **append a dat
 - Several agents editing one worktree concurrently: a bare `git diff --stat` includes everyone's work. Always scope with `git diff --stat -- <your files>` before reporting.
 - `$TMPDIR` is empty in Git Bash on this machine (`"$TMPDIR/x"` → `/x` → permission denied). Use the absolute scratchpad path. Long heredocs (> ~5 KB) get truncated by the Bash tool — write a script file first, then run it.
 - `Path.glob()` on a missing directory does not raise in Python 3.12 but has changed between versions; keep the explicit `try/except OSError`.
+
+## 2026-09-16 — BUG-045 review
+- Proving an env-driven code path (`S3_*`, `MEETING_AI_CLOUD`, `STT_*`) with `env -u VAR python …` proves nothing: `config._load_dotenv` runs on almost every import and refills the key from the owner's real `.env` via `setdefault` — including the production R2 bucket and `DATABASE_URL`. Pass `VAR=` (explicit empty) instead, and sanity-check that the output shows the fake value you injected.
+

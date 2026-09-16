@@ -38,6 +38,8 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 | 39 | `bot.py` raw `subprocess.run` docker calls without timeout (`docker rm -f` in `join_and_record`, `docker stop` in `leave()`, `login()`), and `proc.wait(timeout=120)` raises uncaught `TimeoutExpired` instead of a Thai error | backend-dev | route through `bot._run()`; catch `TimeoutExpired` → `proc.kill()` + message |
 | 42 | Verify production has no `meetings.owner_id is null` rows: `pgstore.access()` grants `owner` to every user for such rows (intended for data migrated from file mode) | owner / devops-engineer | `select count(*) from meeting_ai.meetings where owner_id is null;` |
 
+| 45 | ✅ `backend.storage()` picked S3/R2 whenever `S3_BUCKET` was set, ignoring the mode — `files` mode on a box holding `.env` handed out presigned PUT URLs for the **production** bucket, which is why the R2 keys need rotating | backend-dev | **fixed (uncommitted) 2026-09-17** · remote blobs now require `MEETING_AI_REMOTE_BLOBS=1` outside cloud mode and every path announces which store it chose · tests `test_bug_045_blob_storage_optin` (13) · ticket [BUG-045](../tickets/BUG-045-implicit-remote-blob-storage.md) |
+
 ## P2 — quality, debt, docs
 | # | Item | Owner | Notes |
 |---|---|---|---|
