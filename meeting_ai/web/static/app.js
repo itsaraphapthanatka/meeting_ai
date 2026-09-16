@@ -221,6 +221,11 @@ function renderWorkers() {
   const rows = ws.map((w) => {
     const cls = w.status === 'busy' ? 'busy' : (w.alive ? 'idle' : 'gone');
     const label = { busy: 'กำลังทำงาน', idle: 'ว่าง', gone: 'หลุดไป' }[cls];
+    // server ตัด job_title/job_id ออกจาก worker ที่ส่งให้ผู้ใช้ทั่วไป (ไม่ใช่แอดมิน) เพราะเดิม
+    // ชื่องานคือชื่อการประชุมของทีมอื่น รั่วออกมาทาง poll ทุก 1.5 วิ (BACKLOG #2/#3) — สองฟิลด์นี้
+    // จึงเป็น undefined เสมอสำหรับผู้ใช้ทั่วไป ต้องเช็ค falsy ก่อนใช้ทุกครั้ง ห้ามแสดงตรงๆ
+    // (ตอนนี้ไม่มี element ไหนผูกกับ job_id เป็นลิงก์/คลิกเป้าหมาย ถ้าจะเพิ่มในอนาคตก็ต้อง
+    // เช็ค w.job_id ก่อนเช่นกัน) เมื่อไม่มี job_title ให้ถอยไปแสดงแค่ "เห็นล่าสุด/เงียบไป" เหมือนเดิม
     const detail = w.status === 'busy' && w.job_title
       ? esc(w.job_title)
       : (w.alive ? `เห็นล่าสุด ${fmtAgo(w.quiet_for)}` : `เงียบไป ${fmtAgo(w.quiet_for)}`);
@@ -442,6 +447,7 @@ async function pollJobs() {
   const before = state.jobs.filter((j) => j.status === 'running' || j.status === 'queued');
   state.jobs = data.jobs || [];
   renderJobs();
+  // ผ่าน renderWorkers() ตัวเดียวกับ refreshWorkers() เสมอ — การ์ด job_title/job_id ที่นั่นพอแล้ว
   if (data.workers) { state.workers = data.workers; renderWorkers(); }
 
   const stillActive = new Set(state.jobs.map((j) => j.id));

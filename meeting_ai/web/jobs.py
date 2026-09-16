@@ -57,9 +57,16 @@ def get(job_id: str) -> dict | None:
         return dict(job) if job else None
 
 
-def active() -> list[dict]:
+def active(owner_id: str | None = None, meeting_id: str | None = None) -> list[dict]:
+    """งานที่ยังค้างอยู่ — กรองตามเจ้าของ/การประชุมได้ (ผู้เรียกเป็นคนตัดสินว่ากรองด้วยอะไร).
+
+    เดิมไม่มีพารามิเตอร์เลย ทุกคนที่ล็อกอินจึงเห็นงานของทั้งระบบ รวมชื่อการประชุมของคนอื่น
+    ที่เป็นข้อมูลส่วนบุคคล (BACKLOG #3)
+    โหมดไฟล์ไม่มีระบบล็อกอิน (backend.auth_required() เป็น False) มีผู้ใช้คนเดียวคือเจ้าของเครื่อง
+    จึงข้ามการกรองโดยเจตนา — พารามิเตอร์ยังรับไว้เพื่อให้ call site เขียนเหมือนกันทั้งสองโหมด
+    """
     if cloud:
-        return store.job_active()
+        return store.job_active(owner_id=owner_id, meeting_id=meeting_id)
     with _cv:
         return [public(j) for j in _jobs.values() if j["status"] in ("queued", "running")]
 
@@ -222,17 +229,24 @@ def start(mid: str) -> dict | None:
     return _enqueue(mid, d["title"], "process")
 
 
-def submit_summarize(meeting_id: str, title: str) -> dict:
-    """สรุปใหม่จากบทถอดเสียงที่เก็บไว้แล้ว (ไม่ต้องถอดเสียงซ้ำ)."""
+def submit_summarize(meeting_id: str, title: str, owner_id: str | None = None) -> dict:
+    """สรุปใหม่จากบทถอดเสียงที่เก็บไว้แล้ว (ไม่ต้องถอดเสียงซ้ำ).
+
+    ฝัง owner_id ใน spec แบบเดียวกับ create_draft/create_bot — เดิมสองงานนี้ไม่มีเจ้าของ
+    เลยหลุดตัวกรอง owner_id ของ active() ไปโผล่ในรายการของทุกคน (BACKLOG #3)
+    build_spec() อ่านจาก spec แค่ meeting/lang ฝั่ง worker จึงไม่เห็นความต่าง
+    """
     return _enqueue(meeting_id, title, "summarize",
-                    spec={"kind": "summarize", "meeting": meeting_id},
+                    spec={"kind": "summarize", "meeting": meeting_id, "owner_id": owner_id},
                     _meeting=meeting_id)
 
 
-def submit_translate(meeting_id: str, title: str, lang: str) -> dict:
+def submit_translate(meeting_id: str, title: str, lang: str, owner_id: str | None = None) -> dict:
     # คั่นด้วยจุดเพราะปลอดภัยใน URL (`#` จะกลายเป็น fragment)
+    # owner_id: เหตุผลเดียวกับ submit_summarize
     return _enqueue(f"{meeting_id}.tr.{lang}", title, "translate",
-                    spec={"kind": "translate", "meeting": meeting_id, "lang": lang},
+                    spec={"kind": "translate", "meeting": meeting_id, "lang": lang,
+                          "owner_id": owner_id},
                     _meeting=meeting_id, _lang=lang)
 
 

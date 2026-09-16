@@ -46,6 +46,8 @@ DEBUG_DIR = config.root / "logs"
 # Docker Desktop บน Windows bind-mount โฟลเดอร์ชั่วคราวของระบบไม่ได้บางเครื่อง
 # (ตอบ 'Access is denied' จาก daemon) แต่ path ใต้โปรเจกต์ใช้ได้ เพราะ
 # bot/profile ก็ถูก mount จากที่นั้นและทำงานได้
+# ห้าม mount โฟลเดอร์นี้ตรงๆ ให้ container: งานหนึ่งได้โฟลเดอร์ย่อยของตัวเอง (ดู _job_slot)
+# เพราะฝั่ง container เขียนชื่อไฟล์ตายตัว ถ้าใช้ร่วมกันบอทหลายตัวจะทับกันเอง
 STAGE_DIR = config.root / "recordings" / "bot"
 LOG_TAIL_LINES = 40
 STATUS_NAME = "bot_status.txt"   # คอนเทนเนอร์เขียนสถานะจริงไว้ให้อ่าน
@@ -186,6 +188,21 @@ def worker_tag(worker: str) -> str:
     return slug or hashlib.md5((worker or "solo").encode("utf-8")).hexdigest()[:8]
 
 
+def _job_slot(job_id: str | None, worker: str = "") -> tuple[str, Path]:
+    """ชื่อ container กับโฟลเดอร์พักที่จะ mount เป็น /out ของงานหนึ่งงาน — ใช้ suffix เดียวกัน.
+
+    ฝั่ง container เขียนชื่อไฟล์ตายตัว (/out/bot_status.txt, /out/bot_*.png ดู bot/join_meeting.py)
+    เดิม mount recordings/bot ทั้งโฟลเดอร์ให้ทุกบอท: สถานะของห้องหนึ่งถูกรายงานให้อีกงาน
+    และงานที่จบก่อนลบภาพหน้าจอของงานที่ยังอยู่ในห้อง (prod รัน --max-bots 6)
+    แยกโฟลเดอร์ต่องานฝั่ง host ก็จบ ไม่ต้องแก้ฝั่ง container
+    ติด worker tag ไว้ด้วยให้ cleanup_stale() ลบได้เฉพาะของตัวเอง — อีก worker บนเครื่องเดียวกัน
+    อาจกำลัง mount โฟลเดอร์ของมันอยู่
+    """
+    tag = re.sub(r"[^A-Za-z0-9_.-]", "", job_id or "")[:40] or str(int(time.time()))
+    suffix = f"{worker_tag(worker)}_{tag}"
+    return f"{PREFIX}{suffix}", STAGE_DIR / suffix
+
+
 def cleanup_stale(worker: str = "") -> list[str]:
     """หยุด container ของบอทที่ยังรันค้างอยู่ แล้วคืนรายชื่อที่หยุดไป (ไม่แตะตัวล็อกอิน).
 
@@ -204,6 +221,17 @@ def cleanup_stale(worker: str = "") -> list[str]:
     for name in names:
         # stop ไม่ kill — ให้บอทออกจากห้องและปิดไฟล์เสียงให้เรียบร้อยก่อน
         _run([exe, "stop", "-t", "20", name], timeout=50)
+    # เก็บโฟลเดอร์พักที่ค้างจากรอบก่อน — ต้องทำหลังสั่ง stop ครบแล้ว เพราะ container
+    # ที่ยังรันอยู่ mount โฟลเดอร์นั้นเป็น /out อยู่ ลบตอนนั้นไฟล์เสียงที่กำลังเขียนจะพัง
+    # แต่ "สั่ง stop แล้ว" ไม่เท่ากับ "หยุดแล้ว": _run() กลืน timeout ไว้เงียบๆ
+    # จึงต้องถามใหม่ว่าเหลือตัวไหนรันอยู่ แล้วเว้นโฟลเดอร์ของพวกนั้นไว้
+    # ถามไม่สำเร็จ (rc != 0 รวมถึง timeout) = ไม่รู้ว่าใครยังอยู่ ไม่ลบอะไรเลยปลอดภัยกว่า
+    if worker:
+        still = _run([exe, "ps", "--filter", f"name={PREFIX}{worker_tag(worker)}_",
+                      "--format", "{{.Names}}"], text=True)
+        if still.returncode == 0:
+            _prune_stages(worker, frozenset(
+                x.strip() for x in still.stdout.splitlines() if x.strip()))
     return names
 
 
@@ -295,11 +323,13 @@ def _read_status(out_dir: Path) -> str:
 def _keep_debug_shot(out_dir: Path, job_id: str | None) -> Path | None:
     """ย้ายภาพหน้าจอของบอทไปไว้ที่ที่ยังอยู่หลังงานจบ คืน path ตัวแรกที่เก็บได้.
 
-    เก็บทุกครั้ง ไม่ใช่แค่ตอนพลาด — โฟลเดอร์ /out เป็นที่ชั่วคราวของ worker
-    ซึ่งถูกลบทิ้ง ภาพจึงหายไปพร้อมกันทั้งที่เป็นหลักฐานเดียวว่าหน้าจอบอทเป็นอย่างไร
+    เก็บทุกครั้ง ไม่ใช่แค่ตอนพลาด — โฟลเดอร์ /out คือโฟลเดอร์พักต่องาน ซึ่ง join_and_record()
+    ลบทิ้งเมื่องานจบ ภาพจึงหายไปพร้อมกันทั้งที่เป็นหลักฐานเดียวว่าหน้าจอบอทเป็นอย่างไร
     และลบต้นฉบับด้วย ไม่ให้ภาพของรอบก่อนค้างมาปนกับรอบใหม่
     """
-    tag = job_id or str(int(time.time()))
+    # job_id กลายเป็นชื่อไฟล์ใน logs/ จึงต้องกรองด้วยชุดเดียวกับ _job_slot ก่อน
+    # (ผู้เรียกบางทางไม่ได้ผ่าน store.valid_id มา ห้ามให้ '/' หรือ '..' หลุดเข้ามาประกอบ path)
+    tag = re.sub(r"[^A-Za-z0-9_.-]", "", job_id or "") or str(int(time.time()))
     first = None
     for name in SHOTS:
         src = out_dir / name
@@ -314,6 +344,63 @@ def _keep_debug_shot(out_dir: Path, job_id: str | None) -> Path | None:
         except OSError:
             continue
     return first
+
+
+def _prune_stages(worker: str, live: frozenset[str] = frozenset()) -> list[Path]:
+    """ลบโฟลเดอร์พักของงานที่ค้างไว้ตอน worker ตายกลางคัน คืนรายการที่ลบไป.
+
+    ปกติ join_and_record() ลบโฟลเดอร์ของตัวเองใน finally อยู่แล้ว ที่เหลือค้างคือรอบที่
+    โพรเซสถูกฆ่า/เครื่องดับ ไม่มีใครลบให้ — ปล่อยไว้ recordings/bot/ จะโตขึ้นหนึ่งโฟลเดอร์ต่องาน
+    เก็บเฉพาะของ worker ตัวนี้ (prefix = worker_tag) เพราะ worker ตัวอื่นบนเครื่องเดียวกัน
+    อาจกำลัง mount โฟลเดอร์ของมันเป็น /out ให้บอทที่ยังประชุมอยู่
+    ไม่ส่งชื่อ worker มา (โหมด CLI) = ไม่รู้ว่าอันไหนของใคร ไม่ลบอะไรเลยปลอดภัยกว่า
+    live = ชื่อ container ที่ยังรันอยู่ ณ ตอนเรียก ห้ามแตะโฟลเดอร์ของพวกนี้เลย ทั้งลบและ
+    เก็บภาพ — worker_tag ตัดที่ 16 ตัวอักษร ชื่อเครื่องยาวๆ อย่าง meeting-ai-worker-01/-02
+    จึงได้ prefix เดียวกัน และ _run() กลืน timeout (คืน _Timeout rc 124) สั่ง stop ไปแล้ว
+    ไม่ได้แปลว่าหยุดจริง ส่วนบอทที่ยังรอหน้าห้องก็ยังไม่มี wav ตัวกันเรื่อง wav จึงช่วยไม่ได้
+    โฟลเดอร์ที่มี wav ขนาดไม่ใช่ศูนย์ = เสียงประชุมจริงที่กำพร้า เก็บไว้ให้คนตัดสินใจ (backlog #25)
+    แต่ภาพหน้าจอย้ายเข้า logs/ ก่อน ไม่งั้นหลักฐานหายไปกับโฟลเดอร์
+    """
+    if not worker:
+        return []
+    removed: list[Path] = []
+    try:
+        stages = sorted(STAGE_DIR.glob(f"{worker_tag(worker)}_*"))
+    except OSError:
+        return []
+    for d in stages:
+        if not d.is_dir():
+            continue
+        if PREFIX + d.name in live:
+            continue        # บอทตัวนี้ยังอยู่ในห้อง โฟลเดอร์คือ /out ที่ ffmpeg กำลังเขียน
+        # ชื่อโฟลเดอร์คือ <worker tag>_<job id> ตัดส่วน worker ออก ให้ไฟล์ใน logs/
+        # ชื่อรูปแบบเดียวกับทางปกติ (bot_debug_<job id>.png ตามที่ README บอกไว้)
+        _keep_debug_shot(d, d.name.split("_", 1)[-1])
+        try:
+            if any(w.stat().st_size > 0 for w in d.glob("*.wav")):
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append(d)
+    return removed
+
+
+def _stage_removable(stage: Path, moved: bool) -> bool:
+    """ลบโฟลเดอร์พักของงานนี้ได้ไหม — ย้ายไม่สำเร็จ = เสียงประชุมยังอยู่ที่นี่ที่เดียว ห้ามลบ.
+
+    นโยบายเดียวกับ _prune_stages: wav ที่มีข้อมูลจริงห้ามหายเพราะโค้ดเก็บกวาดของเราเอง
+    shutil.move() ข้ามคนละ filesystem (โหมด worker ปลายทางคือ tempdir ของ job ที่อาจอยู่
+    คนละ mount) ไม่ใช่ rename แต่เป็น copy+unlink ซึ่งพังกลางทางได้จริง — ดิสก์เต็มตอนรัน
+    --max-bots 6 พร้อมกัน หรือไฟล์ถูกโปรแกรมแอนตี้ไวรัสล็อกบน Windows
+    ถ้า finally ลบทิ้งตรงนั้น เสียงประชุมทั้งชั่วโมงหายถาวร ไม่มีที่ไหนเหลือให้กู้
+    """
+    if moved:
+        return True
+    try:
+        return not any(w.stat().st_size > 0 for w in stage.glob("*.wav"))
+    except OSError:
+        return False        # อ่านโฟลเดอร์ไม่ได้ = ไม่รู้ว่ามีเสียงอยู่ไหม อย่าเพิ่งลบ
 
 
 def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
@@ -333,10 +420,16 @@ def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
     if "ผิดพลาด" in joined or "Timeout" in joined:
         hints.append("เปิดหน้าห้องไม่สำเร็จ (เน็ตช้า / ลิงก์ผิด / ห้องยังไม่เปิด)")
 
+    # สถานะสุดท้ายที่คอนเทนเนอร์เขียนไว้ บอกได้ว่าไปตายขั้นไหน โดยไม่ต้องอ่าน log เป็น
+    # "waiting" = บอทกดขอเข้าห้องแล้วแต่ไม่มีใครกด Admit ให้ (สาเหตุที่พบบ่อยที่สุด)
+    # ต้องอ่านก่อนโฟลเดอร์พักถูกลบใน finally ของ join_and_record()
+    status = _read_status(out_wav.parent)
     shot = _keep_debug_shot(out_wav.parent, job_id)
     parts = ["ไม่ได้ไฟล์เสียง — บอทเข้าห้องไม่สำเร็จ"]
     if hints:
         parts.append("สาเหตุที่เจอใน log: " + " · ".join(hints))
+    if status:
+        parts.append(f"สถานะล่าสุดที่บอทรายงาน: {status}")
     if shot:
         parts.append(f"ภาพหน้าจอตอนพลาด: {shot}")
     if lines:
@@ -371,18 +464,19 @@ def join_and_record(
 
     out_wav = Path(out_wav).resolve()
     out_wav.parent.mkdir(parents=True, exist_ok=True)
-    # ให้ container เขียนลงที่พักใต้โปรเจกต์ก่อน แล้วค่อยย้ายไปปลายทางจริง
-    staged = config.root not in out_wav.parents
-    if staged:
-        STAGE_DIR.mkdir(parents=True, exist_ok=True)
-        cout = STAGE_DIR / out_wav.name
-    else:
-        cout = out_wav
     # ตั้งชื่อตาม job id เพื่อให้ไล่หา/สั่งหยุดจากภายนอกได้ (ชื่อ container ต้องเป็น [A-Za-z0-9_.-])
-    tag = re.sub(r"[^A-Za-z0-9_.-]", "", job_id or "")[:40] or str(int(time.time()))
-    container = f"{PREFIX}{worker_tag(worker)}_{tag}"
+    # และได้โฟลเดอร์พักของงานนี้มาด้วย — ให้ container เขียนลงที่พักใต้โปรเจกต์ก่อน
+    # แล้วค่อยย้ายไปปลายทางจริง (พักเสมอ ไม่ว่าปลายทางจะอยู่ในโปรเจกต์หรือไม่
+    # เพราะ /out มีไฟล์ชื่อตายตัวของ container ปนอยู่ ห้ามให้ไปโผล่ปลายทาง)
+    container, stage = _job_slot(job_id, worker)
     # ชื่อซ้ำจากรอบก่อนที่ค้างอยู่ ต้องเก็บให้เรียบร้อยก่อน ไม่งั้น docker run จะฟ้องชื่อชนกัน
+    # ต้องมาก่อนล้างโฟลเดอร์ ไม่งั้นลบ /out ใต้เท้า container เก่าที่ยังเขียนไฟล์อยู่
     subprocess.run([docker, "rm", "-f", container], capture_output=True)
+    # ล้างให้ว่างก่อนเริ่ม: งานเดิมที่ถูกสั่งรันซ้ำด้วย job id เดิมจะได้ไม่ไปอ่าน
+    # bot_status.txt ของรอบก่อน แล้วรายงานว่า "อยู่ในห้อง" ทั้งที่ container ใหม่ยังไม่ทันเปิดหน้าเว็บ
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True, exist_ok=True)
+    cout = stage / out_wav.name
 
     cmd = [
         docker, "run", "--rm", "--name", container,
@@ -439,12 +533,27 @@ def join_and_record(
         except subprocess.TimeoutExpired:
             proc.kill()
 
-    if not cout.exists() or cout.stat().st_size == 0:
-        raise RuntimeError(_fail_reason(cout, tail, job_id))
-    kept = _keep_debug_shot(cout.parent, job_id)
-    if kept:
-        print(f"🖼  ภาพหน้าจอบอท: {kept.parent}")
-    if staged:
-        shutil.move(str(cout), str(out_wav))
+    moved = False
+    try:
+        if not cout.exists() or cout.stat().st_size == 0:
+            raise RuntimeError(_fail_reason(cout, tail, job_id))
+        kept = _keep_debug_shot(cout.parent, job_id)
+        if kept:
+            print(f"🖼  ภาพหน้าจอบอท: {kept.parent}")
+        try:
+            shutil.move(str(cout), str(out_wav))
+        except OSError as e:
+            # ย้ายข้าม filesystem (ปลายทางเป็น tempdir) ล้มได้ เช่น ENOSPC — เสียงยังอยู่ครบที่โฟลเดอร์พัก
+            # (_stage_removable กันไม่ให้ถูกลบ) ต้องบอก path ไปด้วย ไม่งั้นคนอ่าน error จะสรุปว่าเสียงหาย
+            raise RuntimeError(f"ย้ายไฟล์เสียงไปปลายทางไม่สำเร็จ ({e}) — "
+                               f"ไฟล์ที่อัดได้ยังอยู่ที่ {cout}") from e
+        moved = True
+    finally:
+        # ถึงตรงนี้ container จบแล้ว เสียงย้ายไปปลายทาง ภาพอยู่ใน logs/ แล้ว
+        # โฟลเดอร์พักของงานนี้จึงต้องหายไปด้วย ไม่งั้น recordings/bot/ โตขึ้นหนึ่งโฟลเดอร์ต่องาน
+        # (ตัวที่ค้างเพราะ worker ตายกลางคัน ให้ _prune_stages() ตอนเริ่มรอบใหม่เก็บ)
+        # ยกเว้นตอน move พัง — เสียงยังอยู่ที่นี่ที่เดียว ดู _stage_removable()
+        if _stage_removable(cout.parent, moved):
+            shutil.rmtree(cout.parent, ignore_errors=True)
     print(f"✅ ได้ไฟล์เสียง: {out_wav}")
     return out_wav

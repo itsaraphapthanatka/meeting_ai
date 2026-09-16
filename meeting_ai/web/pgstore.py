@@ -718,13 +718,24 @@ def job_requeue(job_id: str) -> bool:
     return row is not None
 
 
-def job_active() -> list[dict]:
+def job_active(owner_id: str | None = None, meeting_id: str | None = None) -> list[dict]:
+    """งานที่ยังค้างอยู่ — กรองตามเจ้าของและ/หรือการประชุมได้ (None = ไม่กรองเงื่อนไขนั้น).
+
+    เจ้าของงานอยู่ใน spec (jsonb) ไม่ใช่คอลัมน์ เพราะฝังไว้ตั้งแต่ตอนสร้างงาน
+    จะได้ไม่ต้อง migrate ฐานข้อมูลที่ deploy ไปแล้ว (วิธีเดียวกับธง stop ใน job_request_stop)
+    %s::text ต้อง cast เหมือน job_claim เพราะ psycopg ส่ง NULL มาโดยไม่ระบุชนิด
+    แล้ว Postgres จะฟ้อง "could not determine data type of parameter"
+    """
     with db.connect() as conn:
         rows = conn.execute(
             """select id, meeting_id, kind, status, step, progress, title, error, warning,
                       created_at, worker
-               from meeting_ai.jobs where status in ('queued','running')
-               order by created_at"""
+               from meeting_ai.jobs
+               where status in ('queued','running')
+                 and (%s::text is null or spec->>'owner_id' = %s)
+                 and (%s::text is null or meeting_id = %s)
+               order by created_at""",
+            (owner_id, owner_id, meeting_id, meeting_id),
         ).fetchall()
     return [
         {"id": r[0], "meeting_id": r[1], "kind": r[2], "status": r[3], "step": r[4],
