@@ -32,7 +32,7 @@ from meeting_ai.web import jobs  # noqa: E402
 with psycopg.connect(url, prepare_threshold=None) as conn:
     with conn.cursor() as cur:
         cur.execute(
-            "select id, status, attempts, created from meeting_ai.jobs order by created desc"
+            "select id, status, attempts, created_at from meeting_ai.jobs order by created_at desc"
         )
         rows = cur.fetchall()
 
