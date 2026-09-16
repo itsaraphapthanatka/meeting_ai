@@ -21,6 +21,8 @@ bin/
 # ต้องเข้า git — เป็นตัวบอก Vercel ว่า route ทุก path ไปที่ api/index.py
 # ถ้าไม่มี การ deploy จาก GitHub (หรือ clone ใหม่) จะ route ไม่ถูก /api/* จะ 404
 !vercel.json
+# คอนฟิกทีม agent (สร้างโดย /agent-team init) ตั้งใจให้เข้า git — ไม่มี secret ข้างใน
+!.claude/agent-team.json
 # คีย์ OAuth ของ Google ที่ดาวน์โหลดมามีรูปนี้ ย้ำอีกชั้นว่าห้ามเข้า git
 client_secret*.json
 *.srt
