@@ -24,6 +24,10 @@
     <span>meeting_ai</span>
   </div>
   <div id="stats" class="stats"></div>
+  <!-- จอแคบ: ปุ่มกลมตัวอักษรเดียวแทนกล่องบัญชีทั้งก้อน (อีเมล + ปุ่มแอดมิน 3 ปุ่ม)
+       ซึ่งบนจอ 390px ทำให้ปุ่มตัดเป็นสองบรรทัดและดัน topbar สูงเกือบ 80px
+       กดแล้ว #userbox เดิมจะถูก CSS ย้ายลงมาเป็นแผ่นล่างจอ ปุ่มยังเป็นชุดเดิมทุกปุ่ม -->
+  <button id="btn-account" class="acct" type="button" hidden aria-label="บัญชีและการตั้งค่า"></button>
   <div id="userbox" class="userbox" hidden></div>
   <button id="btn-new" class="btn btn-primary">+ ประชุมใหม่</button>
 </header>

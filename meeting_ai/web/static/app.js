@@ -351,10 +351,27 @@ async function toggleLiveRecording() {
   }
 }
 
+/* แผ่นบัญชีของจอแคบ — แพตเทิร์นเดียวกับ action sheet ของหน้ารายละเอียด:
+   ไม่ได้ทำปุ่มชุดใหม่ ให้ CSS ย้าย #userbox เดิมลงมาเป็นแผ่นล่างจอ ปุ่มทุกปุ่มจึงยังเป็นของเดิม */
+function openAccountSheet() {
+  document.body.classList.add('account-open');
+  $('#sheet-scrim').hidden = false;
+}
+
+function closeAccountSheet() {
+  document.body.classList.remove('account-open');
+  if (!document.body.classList.contains('sheet-open')) $('#sheet-scrim').hidden = true;
+}
+
 function renderUserBox() {
   const box = $('#userbox');
-  if (!state.config.auth_required) { box.hidden = true; return; }
+  const acct = $('#btn-account');
+  if (!state.config.auth_required) { box.hidden = true; acct.hidden = true; return; }
   box.hidden = false;
+  // ตัวอักษรแรกของชื่อ/อีเมล — ภาษาไทยก็ใช้ได้ ไม่ต้อง uppercase (ไทยไม่มีตัวพิมพ์ใหญ่)
+  const label = (state.user && (state.user.name || state.user.email)) || '';
+  acct.hidden = !label;
+  acct.textContent = label.slice(0, 1).toUpperCase();
   if (state.user) {
     box.innerHTML = `<span class="who">${esc(state.user.name || state.user.email)}</span>`
       + (isAdmin() ? `<button id="btn-live-toggle" class="btn btn-sm" type="button">${liveToggleLabel()}</button>` : '')
@@ -567,7 +584,9 @@ const VIEW_BAR = {
 
 function setView(v) {
   document.body.dataset.view = v;
-  closeMeetingSheet();   // ออกจากหน้าแล้วแผ่นต้องไม่ค้างทับหน้าถัดไป
+  // ออกจากหน้าแล้วแผ่นต้องไม่ค้างทับหน้าถัดไป
+  closeAccountSheet();
+  closeMeetingSheet();
   const bar = $('#mobilebar');
   const spec = VIEW_BAR[v] || VIEW_BAR.home;
   bar.hidden = !isMobile();
@@ -607,7 +626,8 @@ function openMeetingSheet() {
 
 function closeMeetingSheet() {
   document.body.classList.remove('sheet-open');
-  $('#sheet-scrim').hidden = true;
+  // ม่านใช้ร่วมกับแผ่นบัญชี — ซ่อนได้ต่อเมื่อไม่มีแผ่นไหนเปิดค้างอยู่
+  if (!document.body.classList.contains('account-open')) $('#sheet-scrim').hidden = true;
 }
 
 /* จอแคบ: สรุปกับบทถอดเสียงเป็นแท็บ แทนที่จะต่อกันยาว */
@@ -1881,9 +1901,16 @@ $('#m-new').onclick = () => showNew();
 $('#m-devices').onclick = () => showDevices();
 $('#mb-action').onclick = () => openMeetingSheet();
 // สลับระหว่างจอกว้าง/แคบกลางคัน (หมุนเครื่อง, ย่อหน้าต่าง) ต้องอัปเดตแถบเอง
-$('#sheet-scrim').onclick = closeMeetingSheet;
+$('#btn-account').onclick = openAccountSheet;
+// ปุ่มในแผ่นเป็นปุ่มเดิมของ #userbox — กดแล้วต้องปิดแผ่นเอง ไม่งั้นม่านค้างทับหน้า
+$('#userbox').addEventListener('click', (e) => {
+  if (e.target.closest('button')) closeAccountSheet();
+});
+$('#sheet-scrim').onclick = () => { closeMeetingSheet(); closeAccountSheet(); };
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && document.body.classList.contains('sheet-open')) closeMeetingSheet();
+  if (e.key !== 'Escape') return;
+  closeMeetingSheet();
+  closeAccountSheet();
 });
 
 MOBILE_Q.addEventListener('change', () => {
@@ -1891,7 +1918,7 @@ MOBILE_Q.addEventListener('change', () => {
   // ฟอร์ม/หน้ารายละเอียดที่ค้างอยู่ต้องสลับระหว่าง "กางทั้งหมด" กับ "เลือกทีละอัน" ตามไปด้วย
   if ($('#cap-seg')) { setupCapturePicker(); setupAdvSummary(); }
   if ($('#d-seg')) setupDetailTabs();
-  if (!isMobile()) closeMeetingSheet();
+  if (!isMobile()) { closeMeetingSheet(); closeAccountSheet(); }
 });
 
 $('#list').onclick = (e) => {

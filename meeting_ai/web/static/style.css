@@ -757,7 +757,7 @@ body.auth-only #stats { display: none; }
    ของเดิมแค่ยุบสองคอลัมน์เป็นหนึ่ง = เอา sidebar (ค้นหา + คิวงาน + เครื่องประมวลผล + รายการ)
    ไปกองทับฟอร์ม "ประชุมใหม่" ทั้งก้อน หน้าเดียวยาวเกิน 3000px และไม่มีลำดับความสำคัญอะไรเลย
    ตอนนี้ body[data-view] เป็นตัวเลือกว่าจะโชว์ region ไหน (ดู setView() ใน app.js) */
-.mobilebar, .m-cta, .m-chip, .seg { display: none; }
+.mobilebar, .m-cta, .m-chip, .seg, .acct { display: none; }
 
 /* กล่องตัวเลือกเพิ่มเติม — ใช้ทั้งสองจอ ต่างกันแค่เปิด/ปิดตั้งต้น (ตั้งจาก JS) */
 .adv { margin: 0 0 16px; }
@@ -831,9 +831,64 @@ body.auth-only #stats { display: none; }
   /* ไม่มีปุ่มย้อนกลับ = หัวข้อต้องไม่ชิดขอบจอ */
   .mb-back-hidden .mb-title { padding-left: 10px; }
 
-  /* topbar บนมือถือเหลือแค่แบรนด์กับบัญชี — ปุ่ม "+ ประชุมใหม่" ย้ายไปเป็นการ์ดใหญ่ในหน้าแรก */
-  .topbar #btn-new { display: none; }
+  /* topbar บนมือถือเหลือแค่แบรนด์กับปุ่มบัญชีกลม ๆ ปุ่มเดียว
+     ของเดิมมีอีเมล + ปุ่มแอดมิน 3 ปุ่มเรียงกัน บนจอ 390px ข้อความในปุ่มตัดเป็นสองบรรทัด
+     ("อัด สด: เปิด" / "เชิญ สมาชิก" / "ออก จาก ระบบ") ดัน topbar สูงเกือบ 80px */
+  .topbar { gap: 10px; }
+  .topbar #btn-new,
   .topbar #stats { display: none; }
+  .acct:not([hidden]) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    margin-left: auto;
+    width: 36px;
+    height: 36px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .userbox { display: none; }
+  body.account-open .userbox {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    position: fixed;
+    z-index: 60;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 14px 14px calc(18px + env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-radius: 22px 22px 0 0;
+    box-shadow: 0 -8px 30px rgba(0, 0, 0, .35);
+  }
+  body.account-open .userbox > * {
+    width: 100%;
+    min-height: 48px;
+    text-align: left;
+    font-size: 16px;
+  }
+  /* บรรทัดชื่อ/อีเมลเป็นหัวข้อของแผ่น ไม่ใช่ปุ่ม */
+  body.account-open .userbox .who {
+    min-height: 0;
+    padding: 2px 4px 10px;
+    color: var(--muted);
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 6px;
+    /* อีเมลยาวกว่าจอได้ ต้องตัดบรรทัดไม่ใช่ดันแผ่นให้กว้างเกิน */
+    overflow-wrap: anywhere;
+  }
 
   .m-cta {
     display: flex;
