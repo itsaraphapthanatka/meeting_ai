@@ -17,15 +17,27 @@ import os
 os.environ["MEETING_AI_CLOUD"] = "0"
 os.environ["DATABASE_URL"] = ""
 os.environ["REMOTE_WORKER"] = "1"
+# BUG-045: blank *every* S3_* var (not just S3_BUCKET) plus the remote-blobs opt-in flag.
+# config._load_dotenv() runs os.environ.setdefault() at import time (server.py/jobs.py import
+# config), so any of these left unset here would pick up the owner's real R2 production
+# credentials from .env into this test process — the exact class of accident BUG-045 already
+# cost a full key rotation for. No test in this suite is allowed to hold a usable credential.
+os.environ["S3_ENDPOINT"] = ""
 os.environ["S3_BUCKET"] = ""
+os.environ["S3_ACCESS_KEY_ID"] = ""
+os.environ["S3_SECRET_ACCESS_KEY"] = ""
+os.environ["S3_REGION"] = ""
+os.environ["MEETING_AI_REMOTE_BLOBS"] = ""
 
 import hashlib  # noqa: E402
 import http.client  # noqa: E402
 import json  # noqa: E402
 import secrets  # noqa: E402
 import shutil  # noqa: E402
+import socket  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
+import time  # noqa: E402
 import unittest  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -72,9 +84,20 @@ class FakeStore:
         self.valid_id = filestore.valid_id
         self.new_id = filestore.new_id
 
-        # ---- signup / invite (BUG-012) ----
-        self.users: dict[str, dict] = {}               # email (lower) -> {"id","email","name","is_admin","password_hash"}
-        self.invites: dict[str, dict] = {}             # code -> {"email","used_at","used_by","expired"}
+        # ---- auth / signup / invite / rate limit (BUG-010 + BUG-012 รวมกัน) ----
+        # ทั้งสองตั๋วแก้คนละจุดของ auth pipeline เดียวกัน: BUG-010 เติม rate limit หน้า
+        # _login()/_signup() ส่วน BUG-012 เปลี่ยนจุดตัดสินสิทธิ์ของ _signup() จาก "สร้างผู้ใช้
+        # ก่อนแล้วค่อย redeem" (มีช่องแข่ง) เป็น claim_invite/claim_first_admin แบบ atomic
+        # ก่อนเสมอ (pgstore.py:238-313) — ทรงข้อมูลที่นี่จึงต้องตรงกับ pgstore.py จริง (BUG-012
+        # เป็นฝ่ายกำหนด เพราะ signup flow จริงเรียก ensure_user/set_password/has_password ผ่าน
+        # server.py._signup() เทียบ pgstore.py:81-138): self.users คีย์ด้วยอีเมลตัวพิมพ์เล็ก
+        # เก็บ "password_hash" (ไม่ใช่ "password" ตรงๆ) BUG-010 ไม่แคร์ทรงภายในนี้ แค่ต้องมี
+        # verify_password_calls นับจำนวนครั้งจริงที่ verify_password ถูกเรียก เพื่อพิสูจน์ว่า
+        # ไม่มีการคำนวณ hash หลังถูกบล็อก (ดูตั๋ว BUG-010 ข้อพิสูจน์ D)
+        self.users: dict[str, dict] = {}          # email (lower) -> {"id","email","name","is_admin","password_hash"}
+        self.invites: dict[str, dict] = {}         # code -> {"email","used_at","used_by","expired"}
+        self.rate_limits: dict[str, list] = {}     # key -> [expires_at (monotonic), hits] เลียน pgstore.rate_limits
+        self.verify_password_calls: list[str] = [] # บันทึกทุกครั้งที่ "คำนวณ hash" (พิสูจน์ว่าไม่ถูกเรียกหลังบล็อก)
         # ล็อกแยกต่อ "ตาราง" จำลอง — ล็อกเฉพาะช่วง statement เดียวกันในแต่ละเมธอด ไม่ครอบ
         # หลายเมธอดต่อกัน มิฉะนั้น fake นี้จะบังคับ atomicity ให้ทั้ง flow ของ _signup เอง
         # ทำให้เทสต์ concurrency ผ่านโดยไม่ได้พิสูจน์ว่า production code ใช้ผลลัพธ์ของ
@@ -218,12 +241,96 @@ class FakeStore:
     def set_setting(self, key: str, value) -> None:
         self.settings[key] = value
 
+    def job_done(self, job_id: str, meeting_id: str, step: str, warning: str | None = None) -> None:
+        j = self.jobs.get(job_id)
+        if j is None:
+            return
+        j["status"] = "done"
+        j["step"] = step
+        j["meeting_id"] = meeting_id
+        j["warning"] = warning
+
+    def set_translation(self, mid: str, lang: str, text: str) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        translations = dict(m.get("translations") or {})
+        translations[lang] = text
+        m["translations"] = translations
+        return dict(m)
+
+    def set_visibility(self, mid: str, visibility: str) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        m["visibility"] = visibility
+        return dict(m)
+
+    # ---------- auth (BUG-010) — เลียน pgstore เท่าที่ _login เรียกใช้ ----------
+    # ไม่มี scrypt จริงที่นี่ (ปลอมนี้ไม่ต้องช้าเท่าของจริง — sha256 ธรรมดาพอ) —
+    # verify_password_calls ต่างหากคือสิ่งที่พิสูจน์ว่า "ไม่มีการคำนวณ hash หลังถูกบล็อก"
+    # (ดูตั๋ว ข้อพิสูจน์ D) ทรง users/password_hash เดียวกับที่ ensure_user/set_password
+    # (ส่วน BUG-012 ข้างล่าง) ใช้ — ไฟล์นี้มี "จุดเขียนรหัสผ่าน" เดียว (set_password + add_account)
+    # และ "จุดอ่านรหัสผ่าน" เดียว (verify_password) ไม่ให้มีสองทรงชนกันเหมือนก่อนรวม PR
+
+    def verify_password(self, email: str, password: str) -> dict | None:
+        self.verify_password_calls.append(email)
+        u = self.users.get((email or "").strip().lower())
+        if u is None or not u.get("password_hash"):
+            return None
+        if u["password_hash"] != hashlib.sha256(password.encode("utf-8")).hexdigest():
+            return None
+        return {"id": u["id"], "email": u["email"], "name": u.get("name"),
+                "is_admin": u.get("is_admin", False)}
+
+    def drop_session(self, token: str) -> None:
+        self.sessions.pop(token, None)
+
+    def create_invite(self, created_by: str | None, email: str | None = None) -> str:
+        code = f"inv-{len(self.invites) + 1}"
+        self.invites[code] = {"email": (email.strip().lower() if email else None),
+                              "used_at": False, "used_by": None, "expired": False}
+        return code
+
+    # ---------- rate limit ชั้น "Postgres" จำลอง (BUG-010) ----------
+    # fixed window เหมือน pgstore.rate_hit เป๊ะ (ดู pgstore.py) แต่เก็บในหน่วยความจำของ
+    # อินสแตนซ์ FakeStore เอง (คนละที่กับ web/ratelimit.py) เพื่อพิสูจน์ว่าชั้นนี้บล็อกได้เอง
+    # จริง แม้ตัวนับในหน่วยความจำของ process (web/ratelimit.py) ถูกล้างทุกคำขอ (จำลองว่าคนละ
+    # invocation บน Vercel ที่ไม่แชร์หน่วยความจำกัน)
+
+    def rate_hit(self, key: str, limit: int, window: float) -> float:
+        now = time.monotonic()
+        entry = self.rate_limits.get(key)
+        if entry is None or entry[0] <= now:
+            entry = [now + window, 0]
+            self.rate_limits[key] = entry
+        entry[1] += 1
+        if entry[1] > limit:
+            return max(1.0, entry[0] - now)
+        return 0.0
+
+    def rate_reset(self, key: str) -> None:
+        self.rate_limits.pop(key, None)
+
     # ---------- helper สร้างข้อมูลตั้งต้นให้เทสต์ ----------
+
+    def add_account(self, email: str, password: str, user_id: str | None = None,
+                     is_admin: bool = False, name: str | None = None) -> str:
+        """สร้างบัญชีที่ตั้งรหัสผ่านไว้แล้ว (สำหรับเทส login) — ไม่ผ่าน scrypt จริง แต่เก็บเป็น
+        password_hash แบบเดียวกับ set_password (ทรงเดียวกันทั้งไฟล์ — ไม่งั้น verify_password
+        จะไม่มีวันเจอ)."""
+        email = email.strip().lower()
+        uid = user_id or f"uid-{len(self.users) + 1}"
+        self.users[email] = {"id": uid, "email": email, "name": name, "is_admin": is_admin,
+                              "password_hash": hashlib.sha256(password.encode("utf-8")).hexdigest()}
+        return uid
 
     def add_user(self, token: str, user_id: str, email: str, is_admin: bool = False) -> None:
         self.sessions[token] = {"id": user_id, "email": email, "name": None, "is_admin": is_admin}
         # เทสต์เดิม (CloudCase) seed ผู้ใช้ผ่านทางนี้ — ลงทะเบียนใน self.users ด้วยพร้อมกัน
         # ไม่งั้น count_users() จะเห็น 0 ทั้งที่มีคน login อยู่ 3 คน (ดู docstring count_users)
+        # password_hash เป็นค่าปลอมที่ไม่ตรงกับ sha256 ของรหัสผ่านจริงใดๆ (ตั้งใจ — บัญชีที่ seed
+        # ผ่านทางนี้ใช้ล็อกอินด้วยรหัสผ่านจริงไม่ได้ ต้องผ่าน add_account/set_password เท่านั้น)
         self.users[email.strip().lower()] = {
             "id": user_id, "email": email, "name": None, "is_admin": is_admin,
             "password_hash": "seeded-for-test",
@@ -385,15 +492,20 @@ class _HttpCaseMixin:
     """ยิง HTTP เข้า self.httpd (ตั้งใน setUp ของคลาสลูก) ด้วย http.client (ไม่โยน exception ที่ 4xx)."""
 
     def _do(self, method: str, path: str, data: bytes | None = None,
-            cookies: dict[str, str] | None = None, content_type: str | None = None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            cookies: dict[str, str] | None = None, content_type: str | None = None,
+            headers: dict[str, str] | None = None, timeout: float = 20,
+            extra_headers: dict[str, str] | None = None):
+        # สองสาขาตั้งชื่อพารามิเตอร์นี้ต่างกัน (headers / extra_headers) รับทั้งคู่
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
         try:
-            headers = {}
+            hdrs = dict(headers or {})
             if cookies:
-                headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+                hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
             if content_type:
-                headers["Content-Type"] = content_type
-            conn.request(method, path, body=data, headers=headers)
+                hdrs["Content-Type"] = content_type
+            if extra_headers:
+                hdrs.update(extra_headers)  # เช่น Authorization: Bearer ... สำหรับ worker API
+            conn.request(method, path, body=data, headers=hdrs)
             resp = conn.getresponse()
             raw = resp.read()
         finally:
@@ -406,25 +518,113 @@ class _HttpCaseMixin:
                 body = raw
         return resp.status, body, dict(resp.getheaders())
 
-    def get(self, path: str, cookies: dict[str, str] | None = None):
-        return self._do("GET", path, cookies=cookies)
+    def get(self, path: str, cookies: dict[str, str] | None = None,
+            extra_headers: dict[str, str] | None = None):
+        return self._do("GET", path, cookies=cookies, extra_headers=extra_headers)
 
     def post_json(self, path: str, body: dict | None = None,
-                  cookies: dict[str, str] | None = None):
+                  cookies: dict[str, str] | None = None,
+                  headers: dict[str, str] | None = None, timeout: float = 20,
+                  extra_headers: dict[str, str] | None = None):
         return self._do("POST", path, data=json.dumps(body or {}).encode("utf-8"),
-                        cookies=cookies, content_type="application/json")
+                        cookies=cookies, content_type="application/json",
+                        headers=headers, timeout=timeout, extra_headers=extra_headers)
 
-    def post_bytes(self, path: str, data: bytes, cookies: dict[str, str] | None = None):
+    def post_raw(self, path: str, data: bytes, cookies: dict[str, str] | None = None,
+                 content_type: str = "application/json",
+                 headers: dict[str, str] | None = None,
+                 extra_headers: dict[str, str] | None = None):
+        """เหมือน post_json แต่ส่ง body ดิบ — ใช้ทดสอบ body ว่างสนิท (0 ไบต์) ของ BUG-010."""
         return self._do("POST", path, data=data, cookies=cookies,
-                        content_type="application/octet-stream")
+                        content_type=content_type, headers=headers,
+                        extra_headers=extra_headers)
+
+    def post_bytes(self, path: str, data: bytes, cookies: dict[str, str] | None = None,
+                   extra_headers: dict[str, str] | None = None):
+        return self._do("POST", path, data=data, cookies=cookies,
+                        content_type="application/octet-stream", extra_headers=extra_headers)
 
     def delete(self, path: str, cookies: dict[str, str] | None = None):
         return self._do("DELETE", path, cookies=cookies)
 
     def patch_json(self, path: str, body: dict | None = None,
-                   cookies: dict[str, str] | None = None):
+                   cookies: dict[str, str] | None = None,
+                   headers: dict[str, str] | None = None, timeout: float = 20):
         return self._do("PATCH", path, data=json.dumps(body or {}).encode("utf-8"),
-                        cookies=cookies, content_type="application/json")
+                        cookies=cookies, content_type="application/json",
+                        headers=headers, timeout=timeout)
+
+    def raw_request(self, method: str, path: str,
+                    headers: dict[str, str] | list[tuple[str, str]],
+                    body: bytes = b"", send_body: bool = True,
+                    timeout: float = 5.0) -> tuple[int, str, float]:
+        """ยิง HTTP ดิบผ่าน socket แทน http.client (BUG-011) — ใช้ตอนต้องคุม Content-Length
+
+        เองแบบไม่ตรงกับความยาว body จริง (ประกาศใหญ่แต่ส่งนิดเดียว, ไม่ใช่ตัวเลข, ติดลบ, ว่าง,
+        หายไปเลย) http.client คำนวณ Content-Length ให้เองตามความยาว body เสมอ ใช้พิสูจน์กรณี
+        เหล่านี้ไม่ได้ คืน (status, response text ทั้งก้อนเท่าที่อ่านได้, วินาทีที่ใช้)
+        status -1 = ส่ง body ไม่สำเร็จ, -2 = อ่านตอบกลับไม่สำเร็จ/timeout, -3 = ไม่ใช่ HTTP response
+        เจตนาไม่อ่าน body ของ response ให้ครบ (พอเจอ header จบก็หยุด) เพราะบางเทสต์ส่ง body
+        ใหญ่มากและ response อาจสะท้อนกลับมาใหญ่พอกัน — ใช้ text นี้เช็คแค่ status/หัวข้อความ error
+
+        headers รับ dict (ปกติ) หรือ list ของ (key, value) — ต้องใช้ list เมื่อต้องส่ง header
+        ชื่อซ้ำกันหลายบรรทัด (เช่น สอง `Content-Length`) ซึ่ง dict ทำไม่ได้
+        """
+        t0 = time.monotonic()
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
+        chunks: list[bytes] = []
+        try:
+            head = f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+            items = headers.items() if isinstance(headers, dict) else headers
+            for k, v in items:
+                head += f"{k}: {v}\r\n"
+            head += "\r\n"
+            s.sendall(head.encode("utf-8"))
+            if send_body and body:
+                try:
+                    s.sendall(body)
+                except OSError as e:
+                    return -1, f"send failed: {e!r}", time.monotonic() - t0
+            try:
+                while True:
+                    b = s.recv(65536)
+                    if not b:
+                        break
+                    chunks.append(b)
+                    blob = b"".join(chunks)
+                    if b"\r\n\r\n" in blob and len(blob) > 40:
+                        break
+            except OSError as e:
+                return -2, f"recv failed: {e!r}", time.monotonic() - t0
+        finally:
+            s.close()
+        text = b"".join(chunks).decode("utf-8", "replace")
+        status = int(text.split(" ")[1]) if text.startswith("HTTP/") else -3
+        return status, text, time.monotonic() - t0
+
+    def raw_send_and_collect(self, data: bytes, timeout: float = 1.5) -> bytes:
+        """ส่ง raw bytes ก้อนเดียว (คุมทั้งคำขอเอง รวม header/แนวการเข้ารหัส body) เข้า socket
+
+        เดียวกัน แล้วอ่านทุกอย่างที่ตอบกลับมาจนกว่าคอนเนกชันจะปิด (EOF) หรือหมดเวลา — ต่างจาก
+        `raw_request` ที่หยุดอ่านทันทีที่เจอ header block แรก ตัวนี้ตั้งใจอ่าน **ทุก response**
+        บนคอนเนกชันเดียว ใช้นับจำนวน `HTTP/1.1 ` ทั้งหมด (BUG-011 request smuggling / keep-alive
+        regression) คืน raw bytes ทั้งก้อน (ไม่ decode ให้ เพราะเทสต์พวกนี้สนใจ byte count ตรงๆ)
+        """
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
+        chunks: list[bytes] = []
+        try:
+            s.sendall(data)
+            try:
+                while True:
+                    b = s.recv(65536)
+                    if not b:
+                        break
+                    chunks.append(b)
+            except OSError:
+                pass  # timeout หรือคอนเนกชันหลุด — ถือว่าอ่านจบเท่าที่ได้
+        finally:
+            s.close()
+        return b"".join(chunks)
 
     def _start_server(self) -> None:
         self.httpd = server.Server(("127.0.0.1", 0), server.Handler)

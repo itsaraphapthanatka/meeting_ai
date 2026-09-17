@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -26,9 +27,11 @@ from . import db
 # บน Vercel เขียนดิสก์ไม่ได้ ต้องสลับไปที่เก็บภายนอก (ดู README หัวข้อ deploy)
 WEB_DIR = config.root / "recordings" / "web"
 
-_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
+_ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}")
 SNIPPET_PAD = 70
 SESSION_DAYS = 30
+# โอกาสที่คำขอหนึ่งจะพ่วงงานเก็บกวาดแถว rate_limits ที่หมดอายุไปด้วย (ดู rate_hit)
+RATE_PURGE_CHANCE = 0.01
 
 # ---------- helpers ที่ใช้ร่วมกับแบ็กเอนด์แบบไฟล์ ----------
 
@@ -37,7 +40,8 @@ def new_id() -> str:
 
 
 def valid_id(mid: str) -> bool:
-    return bool(_ID_RE.match(mid or ""))
+    # fullmatch ด้วยเหตุผลเดียวกับ store.valid_id (`$` ปล่อยให้มีตัวขึ้นบรรทัดใหม่ท้ายสุดผ่านได้)
+    return bool(_ID_RE.fullmatch(mid or ""))
 
 
 def fmt_time(sec: float) -> str:
@@ -171,6 +175,51 @@ def drop_session(token: str) -> None:
 def purge_expired() -> None:
     with db.connect() as conn:
         conn.execute("delete from meeting_ai.sessions where expires_at < now()")
+        conn.execute("delete from meeting_ai.rate_limits where expires_at < now()")
+
+
+# ---------- จำกัดอัตราคำขอ (ตัวนับกลาง ใช้ร่วมกันทุก instance) ----------
+
+def rate_hit(key: str, limit: int, window: int) -> float:
+    """นับคำขอหนึ่งครั้งของ key คืนจำนวนวินาทีที่ต้องรอ (0.0 = ยังไม่เกินโควตา).
+
+    ต้องนับในฐานข้อมูล ไม่ใช่ในหน่วยความจำ เพราะบน Vercel แต่ละ request ไปคนละ instance
+    ตัวนับใน process จึงไม่ได้กันอะไรเลย (ดู docs/tickets/BUG-010)
+
+    หน้าต่างเป็นแบบ fixed window: แถวหมดอายุเมื่อไรเริ่มนับใหม่จากหนึ่ง และการถูกบล็อก
+    **ไม่ต่ออายุหน้าต่าง** — คนที่โดนจึงรอไม่เกิน window วินาที ไม่มีการล็อกถาวร
+    """
+    with db.connect() as conn:
+        row = conn.execute(
+            """insert into meeting_ai.rate_limits (key, hits, expires_at)
+               values (%s, 1, now() + make_interval(secs => %s::double precision))
+               on conflict (key) do update
+                  set hits = case when rate_limits.expires_at <= now()
+                                  then 1 else rate_limits.hits + 1 end,
+                      expires_at = case when rate_limits.expires_at <= now()
+                                        then now() + make_interval(secs => %s::double precision)
+                                        else rate_limits.expires_at end
+               returning hits, extract(epoch from (expires_at - now()))""",
+            (key, window, window),
+        ).fetchone()
+        if random.random() < RATE_PURGE_CHANCE:
+            # เก็บกวาดแบบฉวยโอกาส: purge_expired() ไม่มีใครเรียกจริงในโค้ดฐานนี้ ถ้าไม่กวาด
+            # ตรงนี้ แถวจะค้างตลอดอายุระบบ (หนึ่งแถวต่อ IP ต่อ scope) เผื่อเวลาไว้หนึ่งชั่วโมง
+            # กันลบแถวที่เพิ่งหมดอายุแล้วอาจถูกใช้ต่อ — ล้มเหลวเมื่อไรก็ต้องไม่ทำให้ล็อกอินพัง
+            try:
+                conn.execute("delete from meeting_ai.rate_limits "
+                             "where expires_at < now() - interval '1 hour'")
+            except Exception:
+                pass
+    if row is None or row[0] <= limit:
+        return 0.0
+    return max(1.0, float(row[1] or 0))
+
+
+def rate_reset(key: str) -> None:
+    """ล้างตัวนับของ key — เรียกเมื่อคำขอสำเร็จจริง (ล็อกอินผ่าน) คนใช้งานจริงจะได้ไม่สะสมโควตา."""
+    with db.connect() as conn:
+        conn.execute("delete from meeting_ai.rate_limits where key = %s", (key,))
 
 
 # ---------- คำเชิญ ----------
@@ -606,6 +655,8 @@ def revoke_shares(mid: str) -> int:
 
 def job_upsert(job_id: str, kind: str, title: str, spec: dict,
                status: str = "queued", meeting_id: str | None = None) -> dict:
+    # ส่งงาน id เดิมเข้าคิวใหม่ (สรุป/แปลซ้ำ) = เริ่มรอบใหม่ จึงรีเซ็ต attempts ไปด้วย
+    # ไม่งั้นเพดาน jobs.MAX_ATTEMPTS จะนับสะสมข้ามรอบแล้วไปบล็อกงานที่ปกติดี
     with db.connect() as conn:
         row = conn.execute(
             """insert into meeting_ai.jobs (id, meeting_id, kind, title, spec, status, step, progress)
@@ -613,7 +664,7 @@ def job_upsert(job_id: str, kind: str, title: str, spec: dict,
                on conflict (id) do update set
                  kind = excluded.kind, title = excluded.title, spec = excluded.spec,
                  status = excluded.status, step = excluded.step, progress = 0,
-                 error = null, warning = null, updated_at = now()
+                 error = null, warning = null, attempts = 0, updated_at = now()
                returning id""",
             (job_id, meeting_id, kind, title, json.dumps(spec, ensure_ascii=False),
              status, "รอคิว" if status == "queued" else "รออัปโหลดไฟล์"),
@@ -625,7 +676,7 @@ def job_get(job_id: str) -> dict | None:
     with db.connect() as conn:
         row = conn.execute(
             """select id, meeting_id, kind, status, step, progress, title, error, warning,
-                      spec, created_at
+                      spec, created_at, attempts
                from meeting_ai.jobs where id = %s""",
             (job_id,),
         ).fetchone()
@@ -636,6 +687,9 @@ def job_get(job_id: str) -> dict | None:
         "step": row[4], "progress": row[5], "title": row[6], "error": row[7],
         "warning": row[8], "_spec": row[9] or {},
         "created": row[10].isoformat(timespec="seconds"),
+        # ขึ้นต้นด้วย _ = ฟิลด์ภายใน jobs.public() ตัดทิ้งก่อนส่งให้เบราว์เซอร์
+        # jobs.claim ใช้ตัวนี้จำกัดจำนวนครั้งที่งานเดิมถูกหยิบไปทำซ้ำ (MAX_ATTEMPTS)
+        "_attempts": row[11] or 0,
     }
 
 

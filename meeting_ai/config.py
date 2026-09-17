@@ -61,6 +61,11 @@ class Config:
     remote_worker: bool = _get("REMOTE_WORKER", "0").lower() in ("1", "true", "yes", "on")
     worker_token: str = _get("WORKER_TOKEN", "")
 
+    # อยู่หลัง reverse proxy (nginx/Cloudflare) หรือเปล่า — มีผลกับการหา IP ผู้เรียกที่ใช้
+    # เป็นคีย์จำกัดอัตราคำขอ ถ้าเปิดทั้งที่ไม่มี proxy จริง ใครก็ปลอม X-Forwarded-For
+    # เพื่อเลี่ยง rate limit ได้ จึงต้องเปิดเอง (บน Vercel api/index.py เปิดให้แล้ว)
+    trust_proxy: bool = _get("TRUST_PROXY", "0").lower() in ("1", "true", "yes", "on")
+
     root: Path = ROOT
 
     @classmethod
