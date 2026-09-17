@@ -14,6 +14,7 @@ import json
 import random
 import re
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -362,6 +363,38 @@ def _meta_from_row(row) -> dict:
     }
 
 
+# บน Vercel การ deploy โค้ดกับการรัน migration เป็นคนละขั้นตอน โค้ดจึงขึ้นก่อน schema เสมอ
+# ถ้า select/insert อ้างคอลัมน์ที่ยังไม่มี ทั้งหน้า "เปิดการประชุม" จะพังทันที (เจอจริง 2026-09-18)
+# waveform ไม่สำคัญพอจะทำให้ระบบใช้ไม่ได้ — ตรวจก่อนแล้วถอยไปใช้ query เดิมถ้ายังไม่มี
+_peaks_ok: bool | None = None
+_peaks_checked_at = 0.0
+_PEAKS_RECHECK_SEC = 60.0     # ถ้ายังไม่มี ให้ลองใหม่เรื่อย ๆ จะได้ไม่ต้อง redeploy หลังรัน db-init
+
+
+def _has_peaks(conn) -> bool:
+    global _peaks_ok, _peaks_checked_at
+    now = time.monotonic()
+    if _peaks_ok is True:
+        return True      # คอลัมน์ไม่หายไปเองแล้ว จำได้ตลอดอายุโพรเซส
+    if _peaks_ok is False and (now - _peaks_checked_at) < _PEAKS_RECHECK_SEC:
+        return False
+    row = conn.execute(
+        """select 1 from information_schema.columns
+           where table_schema = 'meeting_ai' and table_name = 'meetings'
+             and column_name = 'peaks'"""
+    ).fetchone()
+    _peaks_ok = row is not None
+    _peaks_checked_at = now
+    return _peaks_ok
+
+
+def reset_peaks_cache() -> None:
+    """ให้ db-init/เทสต์บังคับตรวจใหม่ทันทีโดยไม่ต้องรอ 60 วินาที."""
+    global _peaks_ok, _peaks_checked_at
+    _peaks_ok = None
+    _peaks_checked_at = 0.0
+
+
 def create(
     mid: str,
     title: str,
@@ -379,32 +412,42 @@ def create(
     peaks: list[int] | None = None,
 ) -> dict:
     with db.connect() as conn:
+        with_peaks = _has_peaks(conn)
+        cols = """id, owner_id, title, visibility, language, duration, segment_count,
+                  source, template, speakers, summary, summary_error, segments,
+                  translations, audio_key, search_text"""
+        vals = "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'{}'::jsonb,%s,%s"
+        upd = ""
+        args = [mid, owner_id, title, visibility, language, duration, len(segments),
+                source, template, speakers or [], summary, summary_error,
+                json.dumps(segments, ensure_ascii=False), audio_name,
+                _search_text(title, summary, segments)]
+        if with_peaks:
+            cols += ", peaks"
+            vals += ",%s"
+            upd = "peaks = excluded.peaks, "
+            args.append(json.dumps(peaks) if peaks else None)
         conn.execute(
-            f"""insert into meeting_ai.meetings
-                  (id, owner_id, title, visibility, language, duration, segment_count,
-                   source, template, speakers, summary, summary_error, segments,
-                   translations, audio_key, search_text, peaks)
-                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'{{}}'::jsonb,%s,%s,%s)
+            f"""insert into meeting_ai.meetings ({cols})
+                values ({vals})
                 on conflict (id) do update set
                   title = excluded.title, language = excluded.language,
                   duration = excluded.duration, segment_count = excluded.segment_count,
                   speakers = excluded.speakers, summary = excluded.summary,
                   summary_error = excluded.summary_error, segments = excluded.segments,
                   audio_key = excluded.audio_key, search_text = excluded.search_text,
-                  peaks = excluded.peaks, updated_at = now()""",
-            (mid, owner_id, title, visibility, language, duration, len(segments),
-             source, template, speakers or [], summary, summary_error,
-             json.dumps(segments, ensure_ascii=False), audio_name,
-             _search_text(title, summary, segments),
-             json.dumps(peaks) if peaks else None),
+                  {upd}updated_at = now()""",
+            tuple(args),
         )
     return get(mid)
 
 
 def get(mid: str) -> dict | None:
     with db.connect() as conn:
+        with_peaks = _has_peaks(conn)
+        extra = ", peaks" if with_peaks else ""
         row = conn.execute(
-            f"""select {_META_COLS}, summary, segments, translations, peaks
+            f"""select {_META_COLS}, summary, segments, translations{extra}
                 from meeting_ai.meetings where id = %s""",
             (mid,),
         ).fetchone()
@@ -414,7 +457,7 @@ def get(mid: str) -> dict | None:
     out["summary"] = row[16] or ""
     out["segments_list"] = row[17] or []
     out["translations"] = row[18] or {}
-    out["peaks"] = row[19] or None
+    out["peaks"] = (row[19] or None) if with_peaks else None
     out["transcript"] = timestamped({"segments": out["segments_list"]})
     return out
 

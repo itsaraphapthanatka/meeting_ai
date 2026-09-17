@@ -139,6 +139,13 @@ def init() -> list[str]:
             """select table_name from information_schema.tables
                where table_schema = 'meeting_ai' order by table_name"""
         ).fetchall()
+    # โพรเซสเดียวกันอาจจำไว้แล้วว่าคอลัมน์ที่เพิ่งเติมยังไม่มี — เพิ่ง migrate เสร็จ ให้ลืมทันที
+    # import ในฟังก์ชันเพราะ pgstore import db (ไว้บนสุดจะเป็นวงกลม)
+    try:
+        from . import pgstore
+        pgstore.reset_peaks_cache()
+    except Exception:
+        pass
     return [r[0] for r in rows]
 
 
