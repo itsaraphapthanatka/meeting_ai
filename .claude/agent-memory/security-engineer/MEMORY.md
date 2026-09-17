@@ -2,6 +2,9 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — login rate limit (BUG-010)
+- [Rate-limit audit checklist](rate-limit-audit-checklist.md) — six probes that beat a per-IP limiter: reset-on-success, spoofable proxy header, regex-not-parser IP key, dead cleanup, silent fail-open, shared NAT lockout.
+- Report: docs/runbooks/security/AUDIT-2026-09-17-login-rate-limit.md (High 2 · Medium 4 · Low 2).
 ## 2026-09-16 — BUG-011 body caps review
 - [Deadline ไม่ใช่ timeout](http-deadline-is-not-a-timeout.md) — `rfile.read(n)` บล็อกจนครบ n และ socket timeout รีเซ็ตทุกไบต์ที่เข้ามา: วัด "เวลาที่เซิร์ฟเวอร์ปิดคอนเนกชัน" ไม่ใช่ ttfb
 - [Keep-alive desync checklist](keepalive-desync-checklist.md) — 3 การทดสอบด้วย socket ดิบที่ต้องยิงทุกครั้งที่ diff แตะการอ่าน body (นับ responses ต่อ 1 คอนเนกชัน)

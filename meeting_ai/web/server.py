@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import math
 import mimetypes
 import re
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -21,7 +23,7 @@ from pathlib import Path
 
 from .. import diarize, stt, summarizer
 from ..config import config
-from . import backend, exports, jobs
+from . import backend, exports, jobs, ratelimit
 from .backend import store
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -69,6 +71,19 @@ _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
 _CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD = 8
+
+# โควตาของเส้นที่ยิงได้โดยไม่ต้องล็อกอินและเรียก scrypt (~16 MB + CPU ต่อครั้ง) — มีสองถัง
+# ต่อ IP เพราะถังเดียวไม่พอ (ดู docs/tickets/BUG-010 รอบรีวิวที่ 1):
+#   1) ถังแคบ 10 ครั้ง/15 นาที — กัน "เดารหัสผ่านรัวๆ" สูงกว่าการใช้งานจริงมาก
+#      (คนพิมพ์ผิดไม่กี่ครั้ง ตัวจัดการรหัสผ่านลองครั้งเดียว) และ **ล้างเมื่อล็อกอินสำเร็จ**
+#      เพื่อไม่ให้ออฟฟิศที่ออกเน็ต IP เดียวถูกล็อก
+#   2) ถังแข็ง 60 ครั้ง/ชั่วโมง — **ไม่ล้างเมื่อสำเร็จ** เพราะถ้าล้างได้ คนที่มีบัญชีจริงใบเดียว
+#      (หรือรหัสผ่านที่ซื้อมา) จะสลับ "เดา 9 ครั้ง + ล็อกอินของตัวเอง 1 ครั้ง" ไปได้ไม่จำกัด
+#      = ไม่มีเพดานค่า scrypt เลย ถังนี้คือเพดานจริงของงาน scrypt ต่อ IP
+AUTH_RATE_LIMIT = 10
+AUTH_RATE_WINDOW = 15 * 60
+AUTH_HARD_LIMIT = 60
+AUTH_HARD_WINDOW = 60 * 60
 
 
 # บอทอยู่ในห้องได้นานสุดเท่านี้ (นาที) — กันงานค้างกิน worker ไปทั้งวันถ้าลืมกดหยุด
@@ -201,11 +216,61 @@ def _live_recording_enabled() -> bool:
         return True
 
 
+def _ip_key(raw: str) -> str:
+    """ทำที่อยู่ผู้เรียกให้เป็นคีย์นับคำขอ — คืน "" ถ้าไม่ใช่ IP.
+
+    ใช้ ipaddress ของ stdlib แทนการเทียบด้วย regex เอง เพราะ regex ยอมรับขยะอย่าง `....`
+    หรือ `999.999.999.999` และที่ร้ายกว่าคือ `127.0.0.1:8080` — proxy บางตัว (Azure
+    Application Gateway, IIS ARR) ต่อพอร์ตมาด้วย ถ้าเก็บพอร์ตไว้ในคีย์ ทุกการเชื่อมต่อจะได้
+    ถังของตัวเอง = ไม่ได้จำกัดอะไรเลย จึงตัดพอร์ตทิ้งก่อนแล้วค่อยแปลง
+
+    IPv6 นับรวมเป็น /64 (ผู้ใช้หนึ่งรายมักได้ทั้งบล็อก /64 มาใช้ฟรีๆ ถ้านับที่ /128
+    คนเดียวจะมีถังไม่จำกัด) ส่วน IPv4 ที่ห่อมาในรูป ::ffff:a.b.c.d ให้ยุบกลับเป็น IPv4
+    """
+    addr = (raw or "").strip()
+    if addr.startswith("["):                       # [2001:db8::1]:443
+        addr = addr[1:].partition("]")[0]
+    elif addr.count(":") == 1:                     # 203.0.113.4:8080
+        addr = addr.partition(":")[0]
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return ""
+    if ip.version == 6:
+        if ip.ipv4_mapped:
+            return str(ip.ipv4_mapped)
+        return f"{ipaddress.IPv6Network((ip, 64), strict=False).network_address}/64"
+    return str(ip)
+
+
+# เตือนครั้งเดียวพอเมื่อตัวนับกลางใช้ไม่ได้ — ถ้าเงียบสนิท ระบบจะ "ดูเหมือนมี rate limit"
+# ทั้งที่ไม่มี (สภาพปกติระหว่าง deploy เสร็จแต่ยังไม่ได้รัน ./mai db-init) ซึ่งแย่กว่าไม่แก้
+_rate_db_warned = False
+
+
+def _warn_rate_db(exc: Exception) -> None:
+    global _rate_db_warned
+    if _rate_db_warned:
+        return
+    _rate_db_warned = True
+    print("⚠️  ตัวนับ rate limit ในฐานข้อมูลใช้ไม่ได้ (rate limit ของ /api/auth/* "
+          f"เหลือเฉพาะตัวนับในหน่วยความจำของแต่ละ process): {exc} — รัน `mai db-init` "
+          "เพื่อสร้างตาราง meeting_ai.rate_limits", file=sys.stderr, flush=True)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "meeting_ai"
     protocol_version = "HTTP/1.1"
     timeout = SOCKET_TIMEOUT      # socketserver ใช้ค่านี้ settimeout ให้ทุกคอนเนกชัน
     body_bytes = 0                # ความยาว body ของคำขอนี้ (ตั้งใหม่ทุกคำขอใน _route)
+    # เชื่อหัวข้อ X-Forwarded-For ได้เฉพาะเมื่อรู้ว่ามี proxy คั่นอยู่จริง — ไม่งั้นใครก็ปลอม
+    # หัวข้อนี้เพื่อเลี่ยง rate limit ได้ (api/index.py บน Vercel ตั้งเป็น True ให้แล้ว)
+    trust_proxy = config.trust_proxy
+    # หัวข้อที่ยอมอ่านเมื่อ trust_proxy เปิด — **ต้องมีเฉพาะหัวข้อที่ proxy ข้างหน้าเขียนทับจริง**
+    # nginx/Cloudflare ส่งหัวข้อที่ไม่รู้จักผ่านไปตรงๆ ดังนั้น X-Vercel-Forwarded-For จึงเชื่อได้
+    # เฉพาะบน Vercel เท่านั้น (api/index.py override ค่านี้) ถ้าใส่ไว้ตรงนี้ คนยิงจะส่งหัวข้อนั้น
+    # มาเองเพื่อเลือกถังของตัวเองได้ทุกคำขอ
+    forwarded_headers = ("X-Forwarded-For",)
 
     # ---------- helpers ----------
 
@@ -257,6 +322,134 @@ class Handler(BaseHTTPRequestHandler):
     def _query(self) -> dict[str, str]:
         raw = urllib.parse.urlparse(self.path).query
         return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+
+    # ---------- จำกัดอัตราคำขอของเส้นสาธารณะที่ราคาแพง ----------
+
+    def _client_ip(self) -> str:
+        """คีย์ที่อยู่ผู้เรียกสำหรับนับคำขอ (IPv6 นับเป็น /64 — ดู _ip_key).
+
+        อ่านหัวข้อ forwarded ได้เฉพาะเมื่อ trust_proxy เปิด และเอา **ตัวขวาสุด** เท่านั้น
+        (ตัวซ้ายๆ คือค่าที่ client ใส่มาเอง เชื่อไม่ได้) ถ้าค่าไม่ใช่ IP ให้ตกไปใช้ที่อยู่จริง
+        ของ TCP ซึ่งปลอมไม่ได้
+        """
+        if self.trust_proxy:
+            for name in self.forwarded_headers:
+                raw = (self.headers.get(name) or "").strip()
+                if raw:
+                    key = _ip_key(raw.rpartition(",")[2])
+                    if key:
+                        return key
+        try:
+            peer = str(self.client_address[0])
+        except (IndexError, TypeError):
+            return "?"
+        return _ip_key(peer) or peer
+
+    def _rate_buckets(self, scope: str) -> tuple[tuple[str, int, int, bool], ...]:
+        """ถังที่ต้องผ่านทั้งหมด — (key, limit, window, ล้างเมื่อสำเร็จไหม)."""
+        ip = self._client_ip()
+        return ((f"{scope}:{ip}", AUTH_RATE_LIMIT, AUTH_RATE_WINDOW, True),
+                (f"{scope}.hour:{ip}", AUTH_HARD_LIMIT, AUTH_HARD_WINDOW, False))
+
+    def _bucket_hit(self, key: str, limit: int, window: int) -> float:
+        """นับหนึ่งครั้งในถังเดียว คืนวินาทีที่ต้องรอ (0.0 = ผ่าน)."""
+        wait = ratelimit.hit(key, limit, window)
+        if wait:
+            return wait          # โพรเซสนี้บล็อกไปแล้ว ไม่ต้องเสียเวลาไปถาม DB ซ้ำ
+        if not backend.cloud:
+            return 0.0           # โหมดไฟล์ไม่มีตาราง rate_limits (และไม่มีระบบล็อกอินอยู่แล้ว)
+        try:
+            wait = store.rate_hit(key, limit, window)
+        except Exception as e:
+            # DB ล่ม/ยังไม่ได้ db-init — ยังเหลือชั้นในหน่วยความจำ อย่าปิดประตูล็อกอินทั้งระบบ
+            # แต่ต้องส่งเสียงออกมาหนึ่งครั้ง ไม่ใช่ fail-open เงียบๆ
+            _warn_rate_db(e)
+            return 0.0
+        if wait:
+            ratelimit.block(key, wait)
+        return wait
+
+    def _rate_limited(self, scope: str) -> float:
+        """นับคำขอนี้หนึ่งครั้ง คืนวินาทีที่ต้องรอ (0.0 = ผ่าน) — ต้องเรียก *ก่อน* ทำงานหนักเสมอ.
+
+        คนที่ถือ session ที่ยังใช้ได้ข้ามถังแคบไปได้ (แต่ไม่ข้ามถังแข็ง) — ไม่งั้นคนนอกยิงขยะ
+        11 ครั้งจาก IP ขององค์กร จะล็อกคนที่ล็อกอินอยู่แล้วทั้งตึกออกจากระบบไปด้วย
+        """
+        for key, limit, window, soft in self._rate_buckets(scope):
+            if soft and self.user:
+                continue
+            wait = self._bucket_hit(key, limit, window)
+            if wait:
+                return wait
+        return 0.0
+
+    def _rate_ok(self, scope: str) -> None:
+        """คำขอสำเร็จจริง — ล้าง *เฉพาะถังแคบ* เพื่อให้คนใช้งานจริง (รวมออฟฟิศที่ออกเน็ต IP
+        เดียว) ไม่สะสมโควตา ถังแข็งห้ามล้าง ไม่งั้นใครมีบัญชีจริงใบเดียวก็ปลดเพดานได้ทั้งหมด.
+        """
+        for key, _limit, _window, soft in self._rate_buckets(scope):
+            if not soft:
+                continue
+            ratelimit.reset(key)
+            if backend.cloud:
+                try:
+                    store.rate_reset(key)
+                except Exception as e:
+                    _warn_rate_db(e)
+
+    def _drain_body(self, cap: int = 64 * 1024) -> None:
+        """อ่าน body ทิ้งไม่เกิน cap ไบต์ ก่อนจะตอบแล้วปิดสาย.
+
+        ถ้าตอบ+ปิดทันทีโดยไม่อ่านอะไรเลย ฝั่งที่ยังส่ง body อยู่จะเจอ TCP reset และมักอ่าน
+        คำตอบ 429 ของเราไม่ทัน (เห็นเป็น connection error แทนข้อความที่ควรแสดงให้ผู้ใช้)
+        มี cap เพราะจุดประสงค์ของ 429 คือ *ไม่* จ่ายค่างานให้คำขอนี้ — body ใหญ่กว่านั้นปล่อยตัด
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        left = min(max(length, 0), cap)
+        if left <= 0:
+            return
+        # บน Vercel ตัว runtime ห่อ handler ไว้ self.connection อาจไม่ใช่ซ็อกเก็ตจริง —
+        # ตั้ง timeout ไม่ได้ก็ไม่เป็นไร ห้ามให้ 429 กลายเป็น 500
+        old, changed = None, False
+        try:
+            old = self.connection.gettimeout()
+            self.connection.settimeout(2)   # กันคนส่ง body ช้าๆ ถ่วงเธรดไว้
+            changed = True
+        except (AttributeError, OSError):
+            pass
+        try:
+            while left > 0:
+                chunk = self.rfile.read(min(left, CHUNK))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            if changed:
+                try:
+                    self.connection.settimeout(old)
+                except (AttributeError, OSError):
+                    pass
+
+    def _too_many(self, wait: float) -> None:
+        """429 พร้อม Retry-After — ข้อความเดียวกันทุกกรณี ไม่บอกว่าอีเมลนั้นมีบัญชีจริงไหม.
+
+        ปิดการเชื่อมต่อด้วย (Connection: close) เพราะเราตอบก่อนอ่าน body ทั้งก้อน ถ้าปล่อยให้
+        keep-alive ต่อ ไบต์ของ body ที่ค้างในซ็อกเก็ตจะถูกอ่านเป็นคำขอถัดไปแล้วเพี้ยนทั้งสาย
+        (และการบังคับให้เปิดการเชื่อมต่อใหม่ก็เพิ่มราคาให้ฝั่งที่ยิงรัวอีกชั้น)
+        """
+        self._drain_body()
+        secs = max(1, int(wait + 0.999))
+        left = f"{(secs + 59) // 60} นาที" if secs >= 60 else f"{secs} วินาที"
+        body = json.dumps({"error": f"พยายามบ่อยเกินไป — รออีก {left} แล้วลองใหม่",
+                           "retry_after": secs}, ensure_ascii=False).encode("utf-8")
+        self._send(HTTPStatus.TOO_MANY_REQUESTS, body, "application/json; charset=utf-8",
+                   {"Retry-After": str(secs), "Connection": "close"})
+        self.close_connection = True
 
     # ---------- คุกกี้ / ผู้ใช้ ----------
 
@@ -927,6 +1120,12 @@ class Handler(BaseHTTPRequestHandler):
                    {"Set-Cookie": self._cookie_header(token)})
 
     def _login(self) -> None:
+        # ตัดสินใจก่อนอ่าน body และก่อน verify_password — เพราะ verify_password ทำ scrypt
+        # ทุกครั้งแม้ไม่พบอีเมล (กัน timing oracle) ถ้าเช็คทีหลังจะเหลือช่องเผา CPU/แรมของ
+        # เซิร์ฟเวอร์ให้คนที่ไม่ต้องล็อกอินเลย (ดู docs/tickets/BUG-010)
+        wait = self._rate_limited("login")
+        if wait:
+            return self._too_many(wait)
         body = self._body_json()
         email = str(body.get("email") or "").strip().lower()
         password = str(body.get("password") or "")
@@ -936,9 +1135,17 @@ class Handler(BaseHTTPRequestHandler):
         if user is None:
             # ไม่บอกว่าอีเมลผิดหรือรหัสผิด กัน enumerate อีเมลในระบบ
             return self._error(HTTPStatus.UNAUTHORIZED, "อีเมลหรือรหัสผ่านไม่ถูกต้อง")
+        self._rate_ok("login")
         self._login_response(user)
 
     def _signup(self) -> None:
+        # เส้นสาธารณะเหมือนกัน แต่ภัยหลักไม่ใช่ scrypt — คนที่ไม่มีรหัสเชิญที่ใช้ได้จะถูกตีกลับ
+        # ก่อนถึง set_password เสมอ ภัยคือ "เดารหัสเชิญ" ได้ไม่จำกัดผ่าน invite_email() และ
+        # การยิง count_users()/has_password() เข้าฐานข้อมูลฟรีทุกครั้ง
+        # แยกถังจากล็อกอินเพื่อไม่ให้การสมัครไปกินโควตาล็อกอินของเครื่องเดียวกัน
+        wait = self._rate_limited("signup")
+        if wait:
+            return self._too_many(wait)
         body = self._body_json()
         email = str(body.get("email") or "").strip().lower()
         password = str(body.get("password") or "")
@@ -971,6 +1178,7 @@ class Handler(BaseHTTPRequestHandler):
         if not first_run:
             store.redeem_invite(invite, user["id"])
         user["is_admin"] = first_run or user.get("is_admin", False)
+        self._rate_ok("signup")
         self._login_response(user)
 
     # ---------- API สำหรับ worker แยกเครื่อง ----------

@@ -2,6 +2,11 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — auth rate limit (BUG-010)
+- [กับดัก 4 ข้อของ rate limiter](rate-limit-design-traps.md) — สำเร็จแล้วล้างโควตา / เชื่อหัวข้อ proxy ผิดตัว / regex แปลง IP + IPv6 /128 / แคชทิ้งคีย์ที่เพิ่งนับ
+- อย่าใช้ `sed`/replace ทั้งไฟล์กับ SQL: รอบแรกเติม `::double precision` หลุดไปสอง statement ที่ไม่เกี่ยวกับตั๋วและทดสอบกับ Postgres จริงไม่ได้ — ตรวจ `git diff` ของไฟล์ SQL ทีละบรรทัดเสมอ
+- [Early reject + keep-alive](http-server-early-reject.md) — ตอบก่อนอ่าน body ต้องส่ง `Connection: close` ไม่งั้นคำขอถัดไปบนสายเดิมเพี้ยน
+- [ทรง deploy กำหนดที่เก็บ state](deploy-shape-matters-serverless.md) — ตัวนับต้องอยู่ใน Postgres; ล็อกอินมีเฉพาะโหมด cloud จึงไม่ต้องทำฝาแฝดใน store.py
 ## 2026-09-16 — BUG-011 body caps
 - [413 ต้อง lingering drain](http-413-needs-lingering-drain.md) — ตอบ 413 แล้วปิด socket ทันที = client เห็น connection reset ไม่ใช่ status
 ## 2026-09-17 — BUG-055 stale detail cache (file mode)

@@ -80,6 +80,12 @@ class FakeStore:
         self.valid_id = filestore.valid_id
         self.new_id = filestore.new_id
 
+        # ---- auth / rate limit (BUG-010) ----
+        self.users: dict[str, dict] = {}               # email -> {"id","email","name","is_admin","password"}
+        self.invites: dict[str, dict] = {}              # code -> {"email"}
+        self.rate_limits: dict[str, list] = {}          # key -> [expires_at (monotonic), hits] เลียน pgstore.rate_limits
+        self.verify_password_calls: list[str] = []      # บันทึกทุกครั้งที่ "คำนวณ hash" (พิสูจน์ว่าไม่ถูกเรียกหลังบล็อก)
+
     # ---------- ผู้ใช้ / แชร์ ----------
 
     def user_for_session(self, token: str) -> dict | None:
@@ -232,8 +238,94 @@ class FakeStore:
             return None
         m["visibility"] = visibility
         return dict(m)
+    # ---------- auth (BUG-010) — เลียน pgstore เท่าที่ _login/_signup เรียกใช้ ----------
+    # ไม่มี scrypt จริงที่นี่ (ปลอมนี้ไม่ต้องช้าเท่าของจริง) — verify_password_calls ต่างหาก
+    # คือสิ่งที่พิสูจน์ว่า "ไม่มีการคำนวณ hash หลังถูกบล็อก" (ดูตั๋ว ข้อพิสูจน์ D)
+
+    def ensure_user(self, email: str, name: str | None = None, is_admin: bool = False) -> dict:
+        email = email.strip().lower()
+        u = self.users.get(email)
+        if u is None:
+            u = {"id": f"uid-{len(self.users) + 1}", "email": email, "name": name,
+                 "is_admin": is_admin, "password": None}
+            self.users[email] = u
+        elif is_admin:
+            u["is_admin"] = True
+        return {k: v for k, v in u.items() if k != "password"}
+
+    def set_password(self, user_id: str, password: str) -> None:
+        for u in self.users.values():
+            if u["id"] == user_id:
+                u["password"] = password
+                return
+
+    def verify_password(self, email: str, password: str) -> dict | None:
+        self.verify_password_calls.append(email)
+        u = self.users.get(email.strip().lower())
+        if u is None or u.get("password") is None or u["password"] != password:
+            return None
+        return {"id": u["id"], "email": u["email"], "name": u.get("name"),
+                "is_admin": u.get("is_admin", False)}
+
+    def has_password(self, email: str) -> bool:
+        u = self.users.get(email.strip().lower())
+        return bool(u and u.get("password") is not None)
+
+    def create_session(self, user_id: str, user_agent: str | None = None) -> str:
+        token = f"sess-{user_id}-{len(self.sessions) + 1}"
+        u = next((v for v in self.users.values() if v["id"] == user_id), None)
+        self.sessions[token] = {"id": user_id, "email": u["email"] if u else None,
+                                 "name": u.get("name") if u else None,
+                                 "is_admin": u.get("is_admin", False) if u else False}
+        return token
+
+    def drop_session(self, token: str) -> None:
+        self.sessions.pop(token, None)
+
+    def create_invite(self, created_by: str | None, email: str | None = None) -> str:
+        code = f"inv-{len(self.invites) + 1}"
+        self.invites[code] = {"email": email}
+        return code
+
+    def invite_email(self, code: str) -> tuple:
+        inv = self.invites.get(code)
+        if inv is None:
+            return False, None
+        return True, inv.get("email")
+
+    def redeem_invite(self, code: str, user_id: str) -> bool:
+        return self.invites.pop(code, None) is not None
+
+    # ---------- rate limit ชั้น "Postgres" จำลอง (BUG-010) ----------
+    # fixed window เหมือน pgstore.rate_hit เป๊ะ (ดู pgstore.py) แต่เก็บในหน่วยความจำของ
+    # อินสแตนซ์ FakeStore เอง (คนละที่กับ web/ratelimit.py) เพื่อพิสูจน์ว่าชั้นนี้บล็อกได้เอง
+    # จริง แม้ตัวนับในหน่วยความจำของ process (web/ratelimit.py) ถูกล้างทุกคำขอ (จำลองว่าคนละ
+    # invocation บน Vercel ที่ไม่แชร์หน่วยความจำกัน)
+
+    def rate_hit(self, key: str, limit: int, window: float) -> float:
+        now = time.monotonic()
+        entry = self.rate_limits.get(key)
+        if entry is None or entry[0] <= now:
+            entry = [now + window, 0]
+            self.rate_limits[key] = entry
+        entry[1] += 1
+        if entry[1] > limit:
+            return max(1.0, entry[0] - now)
+        return 0.0
+
+    def rate_reset(self, key: str) -> None:
+        self.rate_limits.pop(key, None)
 
     # ---------- helper สร้างข้อมูลตั้งต้นให้เทสต์ ----------
+
+    def add_account(self, email: str, password: str, user_id: str | None = None,
+                     is_admin: bool = False, name: str | None = None) -> str:
+        """สร้างบัญชีที่ตั้งรหัสผ่านไว้แล้ว (สำหรับเทส login) — ไม่ผ่าน scrypt จริง."""
+        email = email.strip().lower()
+        uid = user_id or f"uid-{len(self.users) + 1}"
+        self.users[email] = {"id": uid, "email": email, "name": name,
+                              "is_admin": is_admin, "password": password}
+        return uid
 
     def add_user(self, token: str, user_id: str, email: str, is_admin: bool = False) -> None:
         self.sessions[token] = {"id": user_id, "email": email, "name": None, "is_admin": is_admin}
@@ -316,6 +408,15 @@ class _HttpCaseMixin:
         return self._do("POST", path, data=json.dumps(body or {}).encode("utf-8"),
                         cookies=cookies, content_type="application/json",
                         headers=headers, timeout=timeout, extra_headers=extra_headers)
+
+    def post_raw(self, path: str, data: bytes, cookies: dict[str, str] | None = None,
+                 content_type: str = "application/json",
+                 headers: dict[str, str] | None = None,
+                 extra_headers: dict[str, str] | None = None):
+        """เหมือน post_json แต่ส่ง body ดิบ — ใช้ทดสอบ body ว่างสนิท (0 ไบต์) ของ BUG-010."""
+        return self._do("POST", path, data=data, cookies=cookies,
+                        content_type=content_type, headers=headers,
+                        extra_headers=extra_headers)
 
     def post_bytes(self, path: str, data: bytes, cookies: dict[str, str] | None = None,
                    extra_headers: dict[str, str] | None = None):

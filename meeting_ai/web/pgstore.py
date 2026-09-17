@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,8 @@ WEB_DIR = config.root / "recordings" / "web"
 _ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}")
 SNIPPET_PAD = 70
 SESSION_DAYS = 30
+# โอกาสที่คำขอหนึ่งจะพ่วงงานเก็บกวาดแถว rate_limits ที่หมดอายุไปด้วย (ดู rate_hit)
+RATE_PURGE_CHANCE = 0.01
 
 # ---------- helpers ที่ใช้ร่วมกับแบ็กเอนด์แบบไฟล์ ----------
 
@@ -172,6 +175,51 @@ def drop_session(token: str) -> None:
 def purge_expired() -> None:
     with db.connect() as conn:
         conn.execute("delete from meeting_ai.sessions where expires_at < now()")
+        conn.execute("delete from meeting_ai.rate_limits where expires_at < now()")
+
+
+# ---------- จำกัดอัตราคำขอ (ตัวนับกลาง ใช้ร่วมกันทุก instance) ----------
+
+def rate_hit(key: str, limit: int, window: int) -> float:
+    """นับคำขอหนึ่งครั้งของ key คืนจำนวนวินาทีที่ต้องรอ (0.0 = ยังไม่เกินโควตา).
+
+    ต้องนับในฐานข้อมูล ไม่ใช่ในหน่วยความจำ เพราะบน Vercel แต่ละ request ไปคนละ instance
+    ตัวนับใน process จึงไม่ได้กันอะไรเลย (ดู docs/tickets/BUG-010)
+
+    หน้าต่างเป็นแบบ fixed window: แถวหมดอายุเมื่อไรเริ่มนับใหม่จากหนึ่ง และการถูกบล็อก
+    **ไม่ต่ออายุหน้าต่าง** — คนที่โดนจึงรอไม่เกิน window วินาที ไม่มีการล็อกถาวร
+    """
+    with db.connect() as conn:
+        row = conn.execute(
+            """insert into meeting_ai.rate_limits (key, hits, expires_at)
+               values (%s, 1, now() + make_interval(secs => %s::double precision))
+               on conflict (key) do update
+                  set hits = case when rate_limits.expires_at <= now()
+                                  then 1 else rate_limits.hits + 1 end,
+                      expires_at = case when rate_limits.expires_at <= now()
+                                        then now() + make_interval(secs => %s::double precision)
+                                        else rate_limits.expires_at end
+               returning hits, extract(epoch from (expires_at - now()))""",
+            (key, window, window),
+        ).fetchone()
+        if random.random() < RATE_PURGE_CHANCE:
+            # เก็บกวาดแบบฉวยโอกาส: purge_expired() ไม่มีใครเรียกจริงในโค้ดฐานนี้ ถ้าไม่กวาด
+            # ตรงนี้ แถวจะค้างตลอดอายุระบบ (หนึ่งแถวต่อ IP ต่อ scope) เผื่อเวลาไว้หนึ่งชั่วโมง
+            # กันลบแถวที่เพิ่งหมดอายุแล้วอาจถูกใช้ต่อ — ล้มเหลวเมื่อไรก็ต้องไม่ทำให้ล็อกอินพัง
+            try:
+                conn.execute("delete from meeting_ai.rate_limits "
+                             "where expires_at < now() - interval '1 hour'")
+            except Exception:
+                pass
+    if row is None or row[0] <= limit:
+        return 0.0
+    return max(1.0, float(row[1] or 0))
+
+
+def rate_reset(key: str) -> None:
+    """ล้างตัวนับของ key — เรียกเมื่อคำขอสำเร็จจริง (ล็อกอินผ่าน) คนใช้งานจริงจะได้ไม่สะสมโควตา."""
+    with db.connect() as conn:
+        conn.execute("delete from meeting_ai.rate_limits where key = %s", (key,))
 
 
 # ---------- คำเชิญ ----------
