@@ -2,6 +2,10 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-16 — BUG-044 (path traversal via translate lang + worker audio)
+- [Job id = filename](job-id-and-lang-are-filesystem-input.md) — allow-list user strings that get spliced into ids; validate the id before the 404 check in `_worker_api`.
+- [Prove fixes against a pre-fix copy](proving-fixes-against-pre-fix-code.md) — `git show HEAD:<file>` into a scratchpad tree (exclude `.env`), then clean the files the PoC wrote.
+
 ## 2026-09-16 — P0 fix round
 - Cloud-mode test/proof recipe: patch backend.cloud, backend.store, jobs.cloud, jobs.store, server.store (jobs.py freezes bindings at import); set REMOTE_WORKER=1 before import so jobs.start() spawns no thread.
 - jobs.draft(mid) in cloud = spec of ANY job status; check status == 'draft' explicitly before treating it as a draft.

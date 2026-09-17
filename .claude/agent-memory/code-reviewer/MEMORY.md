@@ -2,6 +2,10 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-16 — BUG-044 worker job id / translate lang review
+- [Regex `$` accepts a trailing newline](regex-dollar-allows-trailing-newline.md) — every id validator here inherits it; test an id with a trailing newline before approving.
+- [Tightening worker id validation strands queued jobs](tightening-worker-id-validation-strands-queued-jobs.md) — /error 400s too, so the reaper re-runs the job forever.
+
 ## 2026-09-16 — P0 fix round
 - In this repo, review any new `try/finally` cleanup against every exception path: bot staging `finally` deleted the only copy of meeting audio when shutil.move failed cross-filesystem.
 - `bot._run()` returns _Timeout(rc 124) silently; comments saying 'after docker stop finished' are not invariants.
