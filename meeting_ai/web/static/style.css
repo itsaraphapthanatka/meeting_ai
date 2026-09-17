@@ -1,34 +1,49 @@
-/* meeting_ai web UI — ธีมเดียวรองรับทั้งสว่างและมืด */
+/* meeting_ai web UI — ธีมเดียวรองรับทั้งสว่างและมืด
+   ดีไซน์ระบบสี (2026-09-16): Deep Electric Indigo เป็นสีหลัก, Vibrant Teal = สถานะ
+   "กำลังฟัง/สด", เขียว = สำเร็จ, แดงนวล = อัด/ปิดไมค์, ส้มอำพัน = กำลังประมวลผล
+   นิวทรัลสองสี (Charcoal / Off-White) สลับหน้าที่กันระหว่างสว่าง/มืดพอดี */
 
 :root {
-  --bg: #f6f7f9;
+  --bg: #f2f2f7;
   --surface: #ffffff;
-  --surface-2: #f0f2f5;
-  --border: #dfe3e8;
-  --text: #1a1d21;
-  --muted: #6b7280;
-  --accent: #2563eb;
-  --accent-soft: #e8effd;
-  --rec: #dc2626;
-  --ok: #059669;
-  --warn: #b45309;
+  --surface-2: #e5e5ea;
+  --border: #d1d1d6;
+  --text: #1c1c1e;
+  --muted: #6c6c70;
+  --accent: #5856d6;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  --live: #64d2ff;
+  --live-soft: color-mix(in srgb, var(--live) 18%, var(--surface));
+  --rec: #ff453a;
+  /* white-on-red ปุ่มเต็ม (.btn-rec/.fab-rec/.fab-stop) ต้องเข้มกว่า #ff453a ดิบๆ —
+     คอนทราสต์ตัวหนังสือขาวบน #ff453a เหลือแค่ ~3.5:1 (ต่ำกว่า WCAG AA 4.5:1)
+     ผสมดำ 20% แล้วได้ ~5:1 โดยยังเป็นสีแดงตระกูลเดียวกัน */
+  --rec-strong: color-mix(in srgb, var(--rec) 80%, black);
+  --ok: #32d74b;
+  --warn: #ff9500;
   --radius: 10px;
+  --radius-lg: 16px;
+  --font-mono: "SFMono-Regular", Consolas, "Cascadia Code", "SF Mono", monospace;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .1);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14161a;
-    --surface: #1c1f24;
-    --surface-2: #23272e;
-    --border: #31363f;
-    --text: #e8eaed;
-    --muted: #9aa3af;
-    --accent: #6699ff;
-    --accent-soft: #1e2a44;
-    --rec: #f87171;
-    --ok: #34d399;
-    --warn: #fbbf24;
+    --bg: #1c1c1e;
+    --surface: #2c2c2e;
+    --surface-2: #3a3a3c;
+    --border: #48484a;
+    --text: #f2f2f7;
+    --muted: #98989d;
+    /* Apple systemIndigo dark variant — สว่างกว่าตัวสว่างเล็กน้อยให้อ่านง่ายบนพื้นมืด */
+    --accent: #5e5ce6;
+    --accent-soft: color-mix(in srgb, var(--accent) 20%, var(--surface));
+    --live: #64d2ff;
+    --live-soft: color-mix(in srgb, var(--live) 20%, var(--surface));
+    --rec: #ff453a;
+    --rec-strong: color-mix(in srgb, var(--rec) 80%, black);
+    --ok: #32d74b;
+    --warn: #ff9500;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4);
   }
 }
@@ -43,7 +58,13 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: "Sarabun", "Noto Sans Thai", "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* Sarabun/Noto Sans Thai มาก่อนเสมอ — UI นี้เป็นภาษาไทยทั้งหมด ฟอนต์ละตินอย่าง
+     SF Pro/Inter ไม่มีตัวอักษรไทยจึงอยู่ท้ายแถวเป็นแค่ fallback ให้ตัวเลข/อังกฤษปนอยู่ */
+  font-family: "Sarabun", "Noto Sans Thai", "SF Pro Text", "Inter", "Segoe UI",
+    system-ui, -apple-system, sans-serif;
+  /* body/บทถอดเสียง 15px — เว้นบรรทัด 1.65 (ไม่ใช่ 1.33 ตามสเปกตั้งต้น) เพราะข้อความไทย
+     ซ้อนสระบน/สระล่าง/วรรณยุกต์ได้ถึงสามชั้น เว้นแคบไปจะดันอ่านยากที่สุดในบทถอดเสียง
+     ที่ต้องกวาดสายตาไว มาตรฐาน 1.5-1.6 ถือว่าแคบสุดที่ยอมรับได้แล้ว */
   font-size: 15px;
   line-height: 1.65;
 }
@@ -62,16 +83,20 @@ body {
   z-index: 10;
 }
 
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; flex: none; }
-.logo { font-size: 20px; }
+/* "App title" ของดีไซน์ระบบ (24/32 ตัวหนา) เอาไว้กับชื่อแบรนด์เท่านั้น เพราะเป็นข้อความ
+   ละตินล้วน ("meeting_ai") ไม่มีวรรณยุกต์ซ้อนให้เว้นบรรทัดแคบแล้วพัง — ห้ามเอาไปใช้กับ
+   หัวข้อที่เป็นภาษาไทย (h2 ทั่วไป) เพราะยาวได้และตัดบรรทัดได้เสมอ */
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 24px; line-height: 32px; flex: none; }
+.logo { font-size: 22px; }
 .stats { color: var(--muted); font-size: 13px; margin-left: auto; }
 #btn-new { flex: none; white-space: nowrap; }
 
 /* จอมือถือ: บีบ padding เอาที่คืนให้เนื้อหา และให้สถิติย่อด้วย …
-   ไม่งั้น "1 การประชุม · รวม 1 นาที 30 วิ" ตัดเป็นสามบรรทัดดัน topbar สูงจนเสียที่ */
+   ไม่งั้น "1 การประชุม · รวม 1 นาที 30 วิ" ตัดเป็นสามบรรทัดดัน topbar สูงจนเสียที่
+   แบรนด์ก็ย่อจาก 24px ลงมาเป็นสเกล "หัวข้อย่อย" (18px) ไม่งั้นแถบบนสูงเกินไปบนจอแคบ */
 @media (max-width: 560px) {
   .topbar { padding: 10px 12px; gap: 10px; }
-  .brand { font-size: 15px; }
+  .brand { font-size: 18px; line-height: 22px; }
   .stats { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .panel { padding: 16px 12px; }
   .banner { padding: 10px 12px; }
@@ -118,6 +143,9 @@ body {
 .panel { padding: 24px; min-width: 0; }
 .pane { max-width: 860px; }
 
+/* กันเนื้อหาโดนแถบลอยด้านล่างบัง — ตั้งจาก JS เฉพาะตอนอยู่หน้า "ประชุมใหม่" ที่การ์ดอัดสดใช้ได้ */
+body.has-floatbar .panel { padding-bottom: 96px; }
+
 @media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; }
   .sidebar { min-height: 0; border-right: none; border-bottom: 1px solid var(--border); }
@@ -160,14 +188,16 @@ body {
 .job.err { border-color: color-mix(in srgb, var(--rec) 50%, var(--border)); }
 .job.err .js { color: var(--rec); }
 
+/* สีความคืบหน้างาน = ส้มอำพัน (processing) แยกจากสีหลัก (indigo) ที่สงวนไว้กับ
+   ปุ่มหลัก/สถานะ "AI กำลังทำงานให้ผู้ใช้เห็นผล" (เช่น ป้าย ✨ และตัวชี้ streaming) */
 .bar { height: 5px; background: var(--border); border-radius: 999px; margin-top: 7px; overflow: hidden; }
-.bar > div { height: 100%; background: var(--accent); border-radius: 999px; transition: width .35s ease; }
+.bar > div { height: 100%; background: var(--warn); border-radius: 999px; transition: width .35s ease; }
 
 /* งานบอทช่วงอยู่ในห้อง: ยังไม่รู้ว่าจะนานเท่าไร แถบเป็นสัดส่วนจึงไม่มีความหมาย
    ใช้แถบวิ่งบอกว่า "กำลังทำงาน" แล้วให้ข้อความบอกเวลาที่อยู่ในห้องแทน */
 .bar.rec > div {
   width: 40%;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background: linear-gradient(90deg, transparent, var(--warn), transparent);
   animation: bar-slide 1.4s ease-in-out infinite;
 }
 
@@ -182,8 +212,12 @@ body {
 
 /* ---------- forms & cards ---------- */
 
+/* h2 = หัวข้อหน้า/ชื่อการประชุม เป็นข้อความไทยที่ผู้ใช้พิมพ์เอง ยาวไม่จำกัด จึงไม่ใช้ line-height
+   แคบแบบ "app title" — ปล่อยให้สืบทอด 1.65 จาก body เพื่อกันสระ/วรรณยุกต์ซ้อนพังตอนตัดบรรทัด */
 h2 { font-size: 20px; margin: 0 0 18px; }
-h3 { font-size: 15.5px; margin: 0 0 6px; }
+/* หัวข้อย่อย (section header) ตามดีไซน์ระบบ: 18px กึ่งหนา เว้นบรรทัด 1.3 — กว้างกว่าที่สเปกให้
+   (18/22 ก็คือ 1.22) เพราะหัวข้อพวกนี้เป็นภาษาไทยและบางอันยาว ("🎙️ ไมค์เดียว — ไม่ต้องแชร์หน้าจอ") */
+h3 { font-size: 18px; line-height: 1.3; font-weight: 600; margin: 0 0 6px; }
 
 .field-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
 /* min-width:0 สำคัญ — flex item ตั้งต้นเป็น min-width:auto ซึ่งยุบต่ำกว่าความกว้าง
@@ -285,9 +319,58 @@ h3 { font-size: 15.5px; margin: 0 0 6px; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { filter: brightness(1.08); }
 .btn-danger { color: var(--rec); }
-.btn-rec { background: var(--rec); border-color: var(--rec); color: #fff; width: 100%; }
-.btn-rec:hover { filter: brightness(1.08); }
-.btn-stop { width: 100%; }
+
+/* ---------- แถบควบคุมลอยด้านล่าง (floating bottom control bar) ----------
+   pill เดียวลอยกลางจอเหนือขอบล่าง — โชว์ปุ่ม "เริ่มอัด" ตอนยังไม่อัด สลับเป็น
+   "ปิดไมค์ชั่วคราว / หยุดอัดแล้วสรุป" ตอนอัดอยู่ ต้องใช้ได้มือเดียวบนมือถือ
+   จึงลอยไว้ในโซนนิ้วโป้งเอื้อมถึง ไม่ต้องเลื่อนขึ้นไปหาปุ่มบนสุดของการ์ด */
+.floatbar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  max-width: calc(100vw - 24px);
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 20px rgba(16, 24, 40, .18);
+}
+
+/* ปุ่มลอยแบบ pill ตัวหนังสือ+ไอคอน — สูงอย่างน้อย 44px ตามเกณฑ์พื้นที่แตะขั้นต่ำ */
+.fab-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.fab-pill:hover { filter: brightness(0.96); }
+.fab-pill:active { filter: brightness(0.9); }
+.fab-rec, .fab-stop { background: var(--rec-strong); color: #fff; }
+/* ปิดไมค์อยู่ = สีเดียวกับปุ่มอัด/หยุด ให้รู้ทันทีว่าอยู่ในสถานะ "เตือน" */
+.fab-pill.on { background: var(--rec-strong); color: #fff; }
+
+/* จอแคบสุด (เช่น 320px) — "ปิดไมค์" + "หยุดอัดแล้วสรุป" สองปุ่มรวมกันอาจเกิน
+   max-width ของแถบลอย ต้องบีบ padding/ตัวอักษรลงอีกนิดกันล้นแนวนอน */
+@media (max-width: 360px) {
+  .fab-pill { padding: 0 12px; font-size: 13px; min-height: 44px; }
+}
 
 /* ---------- recording ---------- */
 
@@ -302,10 +385,36 @@ h3 { font-size: 15.5px; margin: 0 0 6px; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
 
-.rec-time { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
+.rec-time { font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 22px; font-weight: 600; }
 
-.meter { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; margin-bottom: 4px; }
-.meter-bar { height: 100%; width: 0; background: var(--ok); border-radius: 999px; transition: width .1s linear; }
+/* คลื่นเสียงสด (waveform) — ค่าเริ่มต้นเมื่อเบราว์เซอร์เคลื่อนไหวได้ตามปกติ
+   ขับด้วย AnalyserNode ใน app.js สีทีล = "กำลังฟัง/สด" ตามระบบสี */
+.wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 40px;
+  margin-bottom: 4px;
+}
+
+.wave-bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  height: 8%;
+  background: var(--live);
+  border-radius: 2px 2px 0 0;
+  transition: height .05s linear;
+}
+
+/* มิเตอร์แท่งเดียวแบบเดิม — ใช้เป็น fallback ตอน prefers-reduced-motion เท่านั้น
+   (คลื่นหลายแท่งขยับทุกเฟรมนับเป็นความเคลื่อนไหวที่ควรงดให้ผู้ใช้กลุ่มนี้) */
+.meter { display: none; height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; margin-bottom: 4px; }
+.meter-bar { height: 100%; width: 0; background: var(--live); border-radius: 999px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wave { display: none; }
+  .meter { display: block; }
+}
 
 /* ---------- detail ---------- */
 
@@ -327,7 +436,22 @@ audio { width: 100%; margin-bottom: 20px; }
   gap: 12px; margin-bottom: 10px; padding-top: 4px; flex-wrap: wrap;
 }
 .section-head h3 { margin: 0; }
-.section-head > div { display: flex; gap: 6px; flex-wrap: wrap; }
+.section-head > div { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* ตัวชี้ "กำลังสตรีมข้อความ" — โผล่ข้าง h3 ตอนมีงาน summarize/translate ของการประชุมที่
+   เปิดอยู่กำลังวิ่งจริง (ผูกกับ pollJobs() เดิม ไม่มี transport ใหม่) สีม่วง = "AI กำลังทำงาน" */
+.ai-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.ai-live .cursor { animation: blink 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) { .ai-live .cursor { animation: none; } }
+@keyframes blink { 50% { opacity: 0; } }
 
 .editor {
   width: 100%;
@@ -343,18 +467,35 @@ audio { width: 100%; margin-bottom: 20px; }
   resize: vertical;
 }
 
-/* ---------- rendered markdown ---------- */
+/* ---------- rendered markdown (การ์ดสรุปอัจฉริยะ) ---------- */
 
 .md {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   padding: 4px 20px 16px;
   box-shadow: var(--shadow);
 }
 
-.md h2 { font-size: 17px; margin: 20px 0 8px; }
-.md h3 { font-size: 15px; margin: 16px 0 6px; }
+/* ป้าย ✨ บอกว่าเนื้อหาในการ์ดนี้ AI เขียนให้ (ทั้งสรุปต้นฉบับและฉบับแปล) —
+   ต่อท้าย .md h2/h3 (สร้างจาก JS วาง <span> ไว้บรรทัดแรกก่อนเรนเดอร์ markdown) */
+.ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 14px 0 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* หัวข้อในสรุปเป็นภาษาไทยที่ AI สร้าง ยาวไม่แน่นอนและตัดบรรทัดได้บนจอแคบ —
+   เว้นบรรทัด 1.3 กันสระ/วรรณยุกต์ซ้อนพัง (เทียบกับ 15/17px เดิมที่ไม่ได้กำหนด line-height เลย) */
+.md h2 { font-size: 18px; line-height: 1.3; margin: 20px 0 8px; }
+.md h3 { font-size: 16px; line-height: 1.3; margin: 16px 0 6px; }
 .md ul { margin: 6px 0; padding-left: 22px; }
 .md li { margin: 3px 0; }
 .md p { margin: 8px 0; }
@@ -427,14 +568,18 @@ audio { width: 100%; margin-bottom: 20px; }
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+/* timestamp = ตัวเลข/โคลอนล้วน ไม่มีอักษรไทย จึงใช้ฟอนต์ monospace ตามสเปก metadata
+   (12/16) ได้เต็มที่โดยไม่เสี่ยงเรนเดอร์ไทยผิดฟอนต์เหมือนถ้าไปบังคับ monospace กับ
+   ข้อความไทยปนตัวเลขที่อื่น (เช่น .meta, .list .s) ซึ่งจงใจไม่แตะ */
 .tstart {
   flex: 0 0 auto;
   border: none;
   background: none;
   padding: 0;
   color: var(--muted);
-  font: inherit;
+  font-family: var(--font-mono);
   font-size: 12px;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
@@ -459,6 +604,20 @@ audio { width: 100%; margin-bottom: 20px; }
 /* ---------- ข้อความสด ---------- */
 
 .live-wrap { margin-top: 24px; }
+
+/* ป้าย "กำลังฟัง/สด" ระหว่างพรีวิวข้อความสด — สีทีลตามระบบสี (live/listening) เปลี่ยน
+   เป็นสีเทาเมื่อพรีวิวหยุดทำงานไปแล้ว (ตั้งจาก JS ใน sendLive() ตอน error) */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--live-soft);
+  color: color-mix(in srgb, var(--live) 60%, var(--text));
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.live-badge.stopped { background: var(--surface-2); color: var(--muted); font-weight: 400; }
 
 .live-text {
   border: 1px solid var(--border);
@@ -515,7 +674,7 @@ audio { width: 100%; margin-bottom: 20px; }
 
 .wk-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; }
 .wk.idle .wk-dot { background: var(--ok); }
-.wk.busy .wk-dot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.wk.busy .wk-dot { background: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
 .wk.gone .wk-dot { background: var(--muted); }
 .wk.gone .wk-name { color: var(--muted); text-decoration: line-through; }
 

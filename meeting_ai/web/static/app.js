@@ -191,6 +191,24 @@ function renderJobs() {
   });
 }
 
+/** งาน summarize/translate/process ที่กำลังวิ่งอยู่ของการประชุมที่เปิดอยู่ (ถ้ามี).
+    ใช้ job.id เทียบกับ id การประชุมแทน job.meeting_id เพราะฝั่งเซิร์ฟเวอร์ (jobs.py)
+    ปล่อย meeting_id เป็น None จนกว่างานจะ done ในโหมดไฟล์ — แต่ job id ของ
+    process/summarize คือ mid ตรงๆ และของ translate คือ `${mid}.tr.<lang>` เสมอ
+    (ยืนยันจาก web/jobs.py: _enqueue(mid,...) / submit_summarize / submit_translate) */
+function jobForMeeting(id) {
+  if (!id) return null;
+  return state.jobs.find((j) => (j.status === 'running' || j.status === 'queued')
+    && (j.id === id || j.id.startsWith(`${id}.tr.`))) || null;
+}
+
+/** ป้าย "กำลังสรุปด้วย AI" ข้าง h3 สรุป — ผูกกับ pollJobs() เดิม ไม่มี transport ใหม่ */
+function updateStreamingIndicator() {
+  const badge = $('#d-ai-live');
+  if (!badge) return;
+  badge.hidden = !jobForMeeting(state.current);
+}
+
 function fmtAgo(sec) {
   if (sec === null || sec === undefined) return '';
   if (sec < 60) return `${sec} วิที่แล้ว`;
@@ -447,6 +465,7 @@ async function pollJobs() {
   const before = state.jobs.filter((j) => j.status === 'running' || j.status === 'queued');
   state.jobs = data.jobs || [];
   renderJobs();
+  updateStreamingIndicator();
   // ผ่าน renderWorkers() ตัวเดียวกับ refreshWorkers() เสมอ — การ์ด job_title/job_id ที่นั่นพอแล้ว
   if (data.workers) { state.workers = data.workers; renderWorkers(); }
 
@@ -536,8 +555,13 @@ function showNew() {
   }
 
   // แอดมินปิดฟีเจอร์อัดสดจากเบราว์เซอร์ → ซ่อนการ์ดทั้งใบ (อัปโหลดไฟล์/เชิญบอทยังใช้ได้)
+  // แถบควบคุมลอยด้านล่างอยู่นอกการ์ด จึงต้องซ่อน/โชว์คู่กันเอง พร้อมกับกันที่ให้ .panel
   const recCard = $('#rec-card');
-  if (recCard) recCard.hidden = !liveOn();
+  const recAvailable = liveOn();
+  if (recCard) recCard.hidden = !recAvailable;
+  document.body.classList.toggle('has-floatbar', recAvailable);
+  if ($('#floatbar-idle')) $('#floatbar-idle').hidden = !recAvailable;
+  if ($('#floatbar-live')) $('#floatbar-live').hidden = true;
 
   const diarizeBox = $('#f-diarize');
   if (!state.config.diarize_available) {
@@ -567,6 +591,8 @@ function showNew() {
 
   $('#btn-rec').onclick = startRecording;
   $('#btn-stop').onclick = stopRecording;
+  $('#btn-mute').onclick = toggleMute;
+  buildWaveBars();
   setupSources();
   setupBot();
 }
@@ -696,18 +722,30 @@ const store = {
 
 const devices = { list: [], asked: false };
 
+/* จอแคบ ๆ (ตรงกับ breakpoint มือถือใน style.css) ให้ซ่อนตัวเลือก "แชร์แท็บ" ไปเลย
+   ไม่ใช่แค่ disabled — เดิมเช็คแค่ feature-detect getDisplayMedia ซึ่งพลาดกรณี Chrome
+   เดสก์ท็อปจำลองจอมือถือ (DevTools) หรือ Chrome เต็มตัวบนแท็บเล็ตที่ยังมี API นี้จริง
+   แต่ผู้ใช้จอแคบไม่มีทางแชร์แท็บได้อย่างมีความหมาย จึงต้องเช็ค viewport เพิ่มด้วย (BACKLOG #47) */
+const MOBILE_BREAKPOINT_PX = 560;
+
+function updateTabModeAvailability() {
+  const tab = $('#rec-modes input[value="tab"]');
+  if (!tab) return;
+  const mode = tab.closest('.mode');
+  const supported = !!navigator.mediaDevices?.getDisplayMedia;
+  const narrow = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
+  const hide = !supported || narrow;
+  mode.hidden = hide;
+  tab.disabled = hide;
+  if (hide && tab.checked) $('#rec-modes input[value="room"]').checked = true;
+}
+
 function setupSources() {
   const saved = store.get(REC_MODE_KEY);
   const savedRadio = saved && $(`#rec-modes input[value="${saved}"]`);
   if (savedRadio) savedRadio.checked = true;
 
-  // แชร์แท็บใช้ได้แค่บนเบราว์เซอร์เดสก์ท็อป — บนมือถือไม่มี API นี้เลย
-  if (!navigator.mediaDevices?.getDisplayMedia) {
-    const tab = $('#rec-modes input[value="tab"]');
-    tab.disabled = true;
-    tab.closest('.mode').title = 'เบราว์เซอร์นี้แชร์เสียงแท็บไม่ได้ (มือถือส่วนใหญ่ทำไม่ได้)';
-    if (tab.checked) $('#rec-modes input[value="room"]').checked = true;
-  }
+  updateTabModeAvailability();
 
   $$('#rec-modes input').forEach((r) => {
     r.onchange = () => { store.set(REC_MODE_KEY, r.value); renderSources(); };
@@ -889,7 +927,37 @@ const rec = {
   streams: [], ctx: null, dest: null, mode: 'room', stopping: false,
   liveRecorder: null, liveTimer: null, liveBusy: false, liveText: [],
   timer: null, raf: null, started: 0, peak: 0, level: 0, recording: false,
+  muted: false,
 };
+
+/* คลื่นเสียงสด (waveform) — สร้างแท่งไว้ครั้งเดียวตอนเปิดหน้า "ประชุมใหม่" แล้วอัปเดต
+   ความสูงทุกเฟรมใน tick() ของ startRecording() เท่านั้น (ดู style.css .wave/.wave-bar) */
+const WAVE_BARS = 24;
+
+function buildWaveBars() {
+  const wrap = $('#wave');
+  if (!wrap || wrap.childElementCount === WAVE_BARS) return;
+  wrap.innerHTML = '';
+  for (let i = 0; i < WAVE_BARS; i++) {
+    const bar = document.createElement('span');
+    bar.className = 'wave-bar';
+    wrap.appendChild(bar);
+  }
+}
+
+/** ปิด/เปิดไมค์ระหว่างอัด — ปิดทุกแทร็กเสียงต้นทาง (ไม่ใช่แค่ MediaRecorder) ผลคือ
+    ช่วงที่ปิดไมค์จะถูกอัดเป็นความเงียบจริง ๆ ไม่ใช่แค่ไม่โชว์มิเตอร์ */
+function toggleMute() {
+  if (!rec.recording) return;
+  rec.muted = !rec.muted;
+  rec.streams.forEach((s) => s.getAudioTracks().forEach((t) => { t.enabled = !rec.muted; }));
+  const btn = $('#btn-mute');
+  if (btn) {
+    btn.classList.toggle('on', rec.muted);
+    btn.setAttribute('aria-pressed', String(rec.muted));
+    btn.textContent = rec.muted ? '🔇 เปิดไมค์' : '🎙️ ปิดไมค์';
+  }
+}
 
 function pickMime() {
   for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']) {
@@ -906,6 +974,45 @@ function newRecorder(stream, mime) {
   entry.recorder.ondataavailable = (e) => { if (e.data.size) entry.chunks.push(e.data); };
   entry.recorder.start(1000);
   return entry;
+}
+
+const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+
+/** วนอ่านระดับเสียงจาก analyser ทุกเฟรม — คำนวณ rec.level/rec.peak เสมอ (ใช้หาจังหวะ
+    เงียบสำหรับตัดคลิปถอดสด + เตือนไมค์เงียบ) แล้วเลือกวาดผลแบบใดแบบหนึ่ง:
+    ปกติวาดเป็นคลื่นเสียงหลายแท่ง (.wave) ตาม prefers-reduced-motion ให้ถอยไปใช้
+    มิเตอร์แท่งเดียวแบบเดิม (.meter) ที่ไม่มี transition ทุกเฟรม — แยกออกมาจาก
+    startRecording() เพราะฟังก์ชันนั้นยาวอยู่แล้ว (~130 บรรทัด) ไม่อยากให้ยาวขึ้นอีก */
+function startMeterLoop(analyser) {
+  const buf = new Uint8Array(analyser.fftSize);
+  const waveBars = $$('#wave .wave-bar');
+  const barCount = waveBars.length;
+  const chunk = barCount ? Math.max(1, Math.floor(buf.length / barCount)) : buf.length;
+  const meterBar = $('#meter-bar');
+
+  const tick = () => {
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (const v of buf) { const d = (v - 128) / 128; sum += d * d; }
+    const level = Math.sqrt(sum / buf.length);
+    rec.level = level;            // ตัวตัดคลิปสดใช้ค่านี้หาจังหวะเงียบ
+    rec.peak = Math.max(rec.peak, level);
+
+    if (reducedMotion?.matches || !barCount) {
+      if (meterBar) meterBar.style.width = `${Math.min(100, level * 320)}%`;
+    } else {
+      for (let i = 0; i < barCount; i++) {
+        let s = 0;
+        const start = i * chunk;
+        const end = Math.min(buf.length, start + chunk);
+        for (let j = start; j < end; j++) { const d = (buf[j] - 128) / 128; s += d * d; }
+        const amp = Math.sqrt(s / (end - start));
+        waveBars[i].style.height = `${Math.max(8, Math.min(100, amp * 380))}%`;
+      }
+    }
+    rec.raf = requestAnimationFrame(tick);
+  };
+  tick();
 }
 
 /** ขอสตรีมจากอุปกรณ์อินพุตหนึ่งตัว — ระบุ deviceId ได้ ถ้าไม่ระบุใช้ตัวเริ่มต้นของระบบ */
@@ -1023,41 +1130,40 @@ async function startRecording() {
     ctx.createMediaStreamSource(dest.stream).connect(analyser);
 
     rec.peak = 0;
+    rec.muted = false;
     rec.started = Date.now();
     rec.recording = true;
     $('#rec-idle').hidden = true;
     $('#rec-live').hidden = false;
     $('#rec-warn').hidden = true;
+    $('#floatbar-idle').hidden = true;
+    $('#floatbar-live').hidden = false;
+    const muteBtn = $('#btn-mute');
+    muteBtn.classList.remove('on');
+    muteBtn.setAttribute('aria-pressed', 'false');
+    muteBtn.textContent = '🎙️ ปิดไมค์';
 
     if (wantLive) {
       $('#live-wrap').hidden = false;
       $('#live-text').innerHTML = '<p class="muted">รอข้อความชุดแรก…</p>';
-      $('#live-status').textContent = 'พรีวิว — ข้อความสุดท้ายจะแม่นกว่านี้';
+      const liveStatus = $('#live-status');
+      liveStatus.classList.remove('stopped');
+      liveStatus.textContent = 'พรีวิว — ข้อความสุดท้ายจะแม่นกว่านี้';
       cycleLive(mime);
     }
 
     rec.timer = setInterval(() => {
       const sec = (Date.now() - rec.started) / 1000;
       $('#rec-time').textContent = fmtClock(sec);
-      if (sec > 6 && rec.peak < 0.004) {
+      // ไม่เตือนถ้าผู้ใช้ตั้งใจปิดไมค์เอง (ไม่งั้นจะเข้าใจผิดว่าไมค์เสีย)
+      if (sec > 6 && rec.peak < 0.004 && !rec.muted) {
         const warn = $('#rec-warn');
         warn.hidden = false;
         warn.textContent = SILENT_WARN[rec.mode] || SILENT_WARN.room;
       }
     }, 500);
 
-    const buf = new Uint8Array(analyser.fftSize);
-    const tick = () => {
-      analyser.getByteTimeDomainData(buf);
-      let sum = 0;
-      for (const v of buf) { const d = (v - 128) / 128; sum += d * d; }
-      const level = Math.sqrt(sum / buf.length);
-      rec.level = level;            // ตัวตัดคลิปสดใช้ค่านี้หาจังหวะเงียบ
-      rec.peak = Math.max(rec.peak, level);
-      $('#meter-bar').style.width = `${Math.min(100, level * 320)}%`;
-      rec.raf = requestAnimationFrame(tick);
-    };
-    tick();
+    startMeterLoop(analyser);
   } catch (e) {
     cleanupRecording();
     console.error('startRecording ล้มเหลวที่ขั้น:', step, e);
@@ -1137,7 +1243,8 @@ async function sendLive(blob, ext) {
     }
   } catch (e) {
     const st = $('#live-status');
-    if (st) st.textContent = `พรีวิวสดหยุดไป: ${e.message}`;
+    // หยุดพรีวิวแล้ว = ไม่ใช่สถานะ "สด" อีกต่อไป ถอดสีทีลออกไม่ให้เข้าใจผิด
+    if (st) { st.classList.add('stopped'); st.textContent = `พรีวิวสดหยุดไป: ${e.message}`; }
   } finally {
     rec.liveBusy = false;
   }
@@ -1190,6 +1297,7 @@ async function finishRecording(tracks, seconds, silent) {
 function cleanupRecording() {
   rec.recording = false;
   rec.stopping = false;
+  rec.muted = false;
   clearInterval(rec.timer);
   clearTimeout(rec.liveTimer);
   cancelAnimationFrame(rec.raf);
@@ -1205,25 +1313,37 @@ function cleanupRecording() {
     $('#rec-live').hidden = true;
     $('#rec-time').textContent = '00:00';
     $('#meter-bar').style.width = '0%';
+    $$('#wave .wave-bar').forEach((b) => { b.style.height = '8%'; });
+  }
+  if ($('#floatbar-idle')) {
+    $('#floatbar-idle').hidden = false;
+    $('#floatbar-live').hidden = true;
   }
 }
 
 /* ---------------- pane: รายละเอียด ---------------- */
 
 const SPEAKER_CLASSES = 6;
-const speakerClass = (name, all) => `spk-${(all.indexOf(name) % SPEAKER_CLASSES) + 1}`;
+/** แฮชชื่อผู้พูดเป็นเลขบัคเก็ตสี — คงที่ไม่ว่าจะเรนเดอร์กี่รอบหรือโหลดหน้าใหม่กี่ครั้ง
+    (เดิมใช้ index ในลิสต์ m.speakers ซึ่งขึ้นกับลำดับที่ server ส่งมา เปลี่ยนได้ถ้าลำดับเปลี่ยน) */
+function hashSpeakerName(name) {
+  let h = 0;
+  const s = String(name || '');
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+const speakerClass = (name) => `spk-${(hashSpeakerName(name) % SPEAKER_CLASSES) + 1}`;
 
 function renderTranscript(editing) {
   const m = state.meeting;
   const segs = m.segments_list || [];
-  const all = m.speakers || [];
   if (!segs.length) {
     $('#d-transcript').innerHTML = '<p class="muted">(ไม่มีบทถอดเสียง)</p>';
     return;
   }
   $('#d-transcript').innerHTML = segs.map((s, i) => {
     const spk = s.speaker
-      ? `<span class="tspk ${speakerClass(s.speaker, all)}" ${editing ? 'contenteditable="true" spellcheck="false"' : ''}>${esc(s.speaker)}</span>`
+      ? `<span class="tspk ${speakerClass(s.speaker)}" ${editing ? 'contenteditable="true" spellcheck="false"' : ''}>${esc(s.speaker)}</span>`
       : '';
     return `<div class="tseg" data-i="${i}" data-start="${s.start}">
       <button class="tstart" type="button" title="ฟังตรงนี้">${esc(fmtClock(s.start))}</button>
@@ -1242,7 +1362,7 @@ function renderSpeakers() {
     return;
   }
   el.innerHTML = all.map((s) =>
-    `<button class="chip ${speakerClass(s, all)}" data-speaker="${esc(s)}" title="คลิกเพื่อเปลี่ยนชื่อ">${esc(s)}</button>`
+    `<button class="chip ${speakerClass(s)}" data-speaker="${esc(s)}" title="คลิกเพื่อเปลี่ยนชื่อ">${esc(s)}</button>`
   ).join('');
 }
 
@@ -1252,7 +1372,8 @@ function renderSummaryView() {
   const text = lang === 'orig' ? (m.summary || '') : ((m.translations || {})[lang] || '');
   const view = $('#d-summary');
   if (text) {
-    view.innerHTML = renderMarkdown(text);
+    // ป้าย ✨ เป็น static markup ไม่ได้ผ่าน renderMarkdown เลยไม่กระทบการ escape ของเนื้อหาจริง
+    view.innerHTML = '<span class="ai-badge">✨ สรุปโดย AI</span>' + renderMarkdown(text);
   } else if (lang === 'orig') {
     view.innerHTML = '<p class="muted">ยังไม่มีสรุป — กด “สรุปใหม่ด้วย AI”</p>';
   } else {
@@ -1287,6 +1408,8 @@ async function openMeeting(id) {
   state.meeting = m;
   setHash(`#m/${id}`);
   renderList();
+  // เผื่อมาจากหน้า "ประชุมใหม่" ที่ตั้ง padding กันแถบลอยด้านล่างไว้ — หน้านี้ไม่มีแถบนั้น
+  document.body.classList.remove('has-floatbar');
 
   const panel = $('#panel');
   panel.innerHTML = '';
@@ -1541,6 +1664,7 @@ async function openMeeting(id) {
     } catch (e) { banner(`ลบไม่สำเร็จ: ${e.message}`); }
   };
 
+  updateStreamingIndicator();
   if (!sameMeeting) banner('');
 }
 
@@ -1562,6 +1686,14 @@ $('#list').onclick = (e) => {
 
 window.addEventListener('beforeunload', (e) => {
   if (rec.recording) { e.preventDefault(); e.returnValue = ''; }
+});
+
+// ลงทะเบียนครั้งเดียวตอนโหลดสคริปต์ (ไม่ใช่ทุกครั้งที่ setupSources() รัน) กัน listener
+// พอกพูนทุกรอบที่ผู้ใช้กลับมาหน้า "ประชุมใหม่" — no-op เองถ้าไม่ได้อยู่หน้านั้น
+window.addEventListener('resize', () => {
+  if (!$('#rec-modes')) return;
+  updateTabModeAvailability();
+  renderSources();   // เผื่อ resize บังคับสลับโหมดกลับไป room ต้องอัปเดตคำใบ้/ช่องอุปกรณ์ด้วย
 });
 
 window.addEventListener('hashchange', () => {

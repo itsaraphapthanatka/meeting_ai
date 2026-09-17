@@ -88,6 +88,11 @@ def _bot_host_ok(host: str) -> bool:
     return host in BOT_HOSTS or host.endswith(BOT_HOST_SUFFIX)
 
 
+# ตัวกรอง job id ที่เอาไปตั้งชื่อไฟล์ได้ — นิยามอยู่ชั้น jobs (ที่เดียวกับที่ประกอบ id ขึ้นมา)
+# เพื่อให้ทางเข้าทั้งสองทาง (worker API ที่นี่ และ jobs.claim) ใช้เกณฑ์เดียวกันเสมอ
+_safe_job_id = jobs.safe_job_id
+
+
 def _check_join_url(url: str) -> tuple[bool, str]:
     if not url:
         return False, "ต้องใส่ลิงก์ห้องประชุม"
@@ -1036,7 +1041,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if len(rest) >= 3 and rest[0] == "jobs":
             job_id, action = rest[1], rest[2]
+            # unquote ทีหลัง split path แล้ว `%2F` จึงรอดมาเป็น `/` ในตัว id — ต้องกรองก่อน
+            # เอา id ไปแตะไฟล์ (เช่น action `audio` ที่ประกอบเป็น WEB_DIR/<id>.<ext>)
             job_id = urllib.parse.unquote(job_id)
+            if not _safe_job_id(job_id):
+                return self._error(HTTPStatus.BAD_REQUEST, "job id ไม่ถูกต้อง")
 
             if action == "tracks" and len(rest) == 4 and self.command in ("GET", "HEAD"):
                 path = jobs.track_path(job_id, rest[3])
@@ -1299,6 +1308,11 @@ class Handler(BaseHTTPRequestHandler):
         lang = str(self._body_json().get("lang") or "").strip()
         if not lang:
             return self._error(HTTPStatus.BAD_REQUEST, "ต้องระบุ lang")
+        # lang ไหลไปเป็นส่วนหนึ่งของ job id (`<mid>.tr.<lang>`) และเข้า prompt ของ LLM
+        # จึงรับเฉพาะรหัสใน allow-list ไม่ใช่สตริงอะไรก็ได้จากผู้ใช้
+        if lang not in summarizer.LANGUAGE_NAMES:
+            return self._error(HTTPStatus.BAD_REQUEST,
+                               "lang ต้องเป็นหนึ่งใน " + ", ".join(summarizer.LANGUAGE_NAMES))
         meeting = store.get(mid)
         if meeting is None:
             return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมนี้")
@@ -1471,7 +1485,10 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
 
     print(f"🌐 meeting_ai web  →  {url}")
     print(f"   เก็บข้อมูลแบบ: {backend.mode()}"
-          + ("  (มีระบบล็อกอิน)" if backend.auth_required() else "  (ไม่มีล็อกอิน)"))
+          + ("  (มีระบบล็อกอิน)" if backend.auth_required() else "  (ไม่มีล็อกอิน)"),
+          flush=True)  # flush ก่อน เพราะบรรทัดของที่เก็บไฟล์ออกทาง stderr — เวลา redirect จะได้เรียงถูก
+    # เลือกที่เก็บไฟล์เสียงตั้งแต่ตอนเริ่ม เพื่อให้บรรทัดบอกสถานะ S3/ดิสก์ โผล่ก่อนรับ request แรก
+    backend.storage()
     if host not in ("127.0.0.1", "localhost", "::1") and not backend.auth_required():
         print("⚠️  ผูกกับ interface ภายนอก และไม่มีระบบล็อกอิน — ใครในเครือข่ายก็เปิดได้")
     if not (config.llm_api_key and "your-key" not in config.llm_api_key):

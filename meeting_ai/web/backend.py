@@ -34,9 +34,21 @@ else:
 
 
 def storage():
-    """ที่เก็บไฟล์เสียง — ดิสก์ หรือ S3/R2 ถ้าตั้ง S3_* ไว้."""
+    """ที่เก็บไฟล์เสียง — ดิสก์ หรือ S3/R2
+
+    แยกจากที่เก็บข้อมูลโดยตั้งใจ (cloud DB + ดิสก์ในเครื่อง ก็เป็นการตั้งค่าที่ถูก)
+    แต่ของจริงต้องมีคนสั่ง: โหมด cloud ใช้ S3 เป็นค่าเริ่มต้น ส่วนโหมดไฟล์ต้องตั้ง
+    MEETING_AI_REMOTE_BLOBS=1 เอง — ไม่งั้นแค่มี S3_* ใน .env ก็ต่อบัคเก็ต production
+    ให้เองเงียบ ๆ (BUG-045)
+
+    ส่ง `cloud` (= "ขอโหมด cloud **และ** ต่อ DB ได้") ไม่ใช่ `_want_cloud()` โดยตั้งใจ:
+    ถ้า MEETING_AI_CLOUD=1 แต่ DATABASE_URL หาย/พิมพ์ผิด แปลว่า deployment นั้นตั้งค่า
+    ไม่ครบอยู่แล้ว — เลือกไม่แตะบัคเก็ตของจริงดีกว่า (พังแบบอ่านง่ายกว่าพังแบบเขียนข้อมูล
+    ไปคนละที่) ผลคือฝั่ง serverless จะเห็น error ตอนอัปโหลดแทน ซึ่ง backend.py แจ้งไว้
+    ตั้งแต่ตอน import อยู่แล้วว่าต่อ DB ไม่ได้
+    """
     from . import blobstore
-    return blobstore.get_storage(store.WEB_DIR)
+    return blobstore.get_storage(store.WEB_DIR, allow_remote=cloud)
 
 
 def mode() -> str:
