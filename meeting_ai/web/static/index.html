@@ -43,6 +43,22 @@
 </main>
 
 <!-- ---------- หน้าจอ: เข้าสู่ระบบ / สมัคร (โหมด cloud) ---------- -->
+<!-- ยืนยันก่อนรับลิงก์แชร์ (BACKLOG #16) — /s/<token> ไม่ตั้งคุกกี้ให้เองอีกแล้ว -->
+<template id="tpl-share-confirm">
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <h2>มีคนแชร์การประชุมมาให้</h2>
+      <p class="muted">กด "เปิด" แล้วเบราว์เซอร์นี้จะจำลิงก์แชร์นี้ไว้ 7 วัน
+        และเปิดการประชุมที่แชร์มาให้ทุกครั้งที่เข้าเว็บ — เปิดเฉพาะเมื่อรู้ว่าใครส่งลิงก์นี้มา</p>
+      <p id="sc-error" class="notice" hidden></p>
+      <button id="sc-open" class="btn btn-primary btn-wide" type="button">เปิดการประชุมที่แชร์มา</button>
+      <p class="auth-switch">
+        <button id="sc-cancel" class="linkbtn" type="button">ไม่ใช่ตอนนี้ กลับหน้าหลัก</button>
+      </p>
+    </div>
+  </div>
+</template>
+
 <template id="tpl-auth">
   <div class="auth-wrap">
     <div class="auth-card">

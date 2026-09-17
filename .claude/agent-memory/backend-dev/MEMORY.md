@@ -2,6 +2,11 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BACKLOG #15/#16 (static guard + share cookie)
+- [GET ที่ตั้งคุกกี้ = fixation](cookie-set-by-get-is-fixation.md) — ยืนยันด้วย POST + application/json (415 ถ้าไม่ใช่) และเช็คโทเคนใน URL ก่อน needsAuth()
+- [str.startswith ไม่ใช่การตรวจ containment](prefix-string-path-guard.md) — โฟลเดอร์พี่น้อง static_backup/ หลุด; PoC ด้วยการ patch server.STATIC_DIR
+- [เทสต์เก่าอาจล็อกพฤติกรรมที่เป็นบั๊กไว้](tests-can-encode-the-bug.md) — grep tests/ ก่อนแก้ finding เก่า; ธรรมเนียม import คือ `from _harness import`; test_bug_011 flake ตอนเครื่องโหลดหนัก
+
 ## 2026-09-17 — BUG-048
 - [Worker results are untrusted input](worker-result-is-untrusted-input.md) — `apply_result` = worker POST + the only meeting-create path; spec fields beat body fields, cloud jobs have no `_lang`.
 - Parallel agents work on sibling branches from the same commit: my worktree's `main` was 2 commits behind the owner's checkout and did NOT contain the BUG-011 `_clean_segments` hardening the ticket assumed. `git log --oneline main -3` + read the function before trusting a ticket's "X already does Y".
