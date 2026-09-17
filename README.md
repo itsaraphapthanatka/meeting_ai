@@ -218,6 +218,8 @@ Vercel ไม่มี GPU และ function ยาวสุด 5 นาที 
 # 2) ที่เก็บไฟล์เสียง — สร้าง R2 bucket ที่ Cloudflare แล้วออก API token (Object Read & Write)
 #    ใส่ S3_ENDPOINT / S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY ใน .env
 #    แล้วตั้ง CORS ของ bucket ให้ origin ของเว็บ PUT/GET ได้
+#    โหมด cloud ใช้ S3_* ให้เองอยู่แล้ว ส่วนการรันโหมดไฟล์ในเครื่องจะไม่แตะ bucket
+#    ถึงจะมี S3_* ครบ — ถ้าตั้งใจลองกับ bucket ของตัวเองให้ตั้ง MEETING_AI_REMOTE_BLOBS=1
 
 # 3) ลองในเครื่องก่อน deploy
 ./mai web --cloud                   # จะมีหน้าสมัคร/ล็อกอิน คนแรกเป็นแอดมิน
@@ -229,6 +231,12 @@ vercel deploy --prod
 
 env ที่ต้องตั้งบน Vercel: `MEETING_AI_CLOUD=1`, `REMOTE_WORKER=1`, `WORKER_TOKEN`,
 `DATABASE_URL`, `LLM_API_KEY`, และชุด `S3_*`
+
+> **ที่เก็บไฟล์เสียงไม่เปิดเอง:** จะใช้ S3/R2 ก็ต่อเมื่ออยู่โหมด cloud (`MEETING_AI_CLOUD=1`)
+> หรือตั้ง `MEETING_AI_REMOTE_BLOBS=1` เอง เท่านั้น — รันในเครื่องแบบปกติจะเก็บลงดิสก์
+> แม้ `.env` จะมี `S3_*` ครบ (เคยเผลอออก presigned URL ของ bucket production ตอนเทสมาแล้ว)
+> ทุกครั้งที่เลือก S3 เซิร์ฟเวอร์จะพิมพ์บรรทัดบอก endpoint + ชื่อ bucket ตอนเริ่มทำงาน
+> และถ้ามี `S3_*` ครบแต่ยังไม่เปิด จะบอกว่ากำลังใช้ดิสก์และเปิดยังไง
 
 > เลือก region ของ Vercel ให้ตรงกับ Neon (ค่าเริ่มต้น `iad1` = us-east-1)
 > ไม่งั้นทุก query จะเดินทางข้ามทวีป
