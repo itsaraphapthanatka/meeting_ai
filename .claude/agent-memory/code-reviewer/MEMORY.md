@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-16 — BUG-011 body caps review
+- [ตรวจ diff เพดาน body / 413](http-body-limit-review.md) — deadline ระหว่าง loop ไม่ใช่เพดานเวลา, close_connection ไม่ส่ง Connection: close, chunked ข้ามเพดาน, ฟังก์ชันพี่น้องลืมแก้
 ## 2026-09-16 — BUG-045 blob storage opt-in
 - [Env matrix / .env trap](env-matrix-dotenv-trap.md) — prove env-driven paths with `VAR=`, never `env -u VAR`; `.env` refills it via setdefault.
 ## 2026-09-16 — BUG-044 worker job id / translate lang review

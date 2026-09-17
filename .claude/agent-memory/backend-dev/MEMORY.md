@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-16 — BUG-011 body caps
+- [413 ต้อง lingering drain](http-413-needs-lingering-drain.md) — ตอบ 413 แล้วปิด socket ทันที = client เห็น connection reset ไม่ใช่ status
 ## 2026-09-17 — BUG-055 stale detail cache (file mode)
 - [mtime is not a cache key](file-store-mtime-cache.md) — 300 writes = 26 distinct mtimes here; cache only files settled > 2 s, and the file store is not single-process.
 ## 2026-09-16 — BUG-045 blob storage opt-in

@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-16 — BUG-011 body size caps (2 รอบ: fix แรก + review-round hardening)
+- [raw_request/raw_send_and_collect + กับดักตอนพิสูจน์ไม่ vacuous](bug_011_body_caps.md) — default-param vs global-lookup ตอนแพตช์ค่าคงที่, อย่าคูณลิสต์ด้วยค่าที่แพตช์ให้ใหญ่, ย้อนกลไกทีละจุดไม่ใช่ทั้งฟังก์ชัน, xfail ที่กลับเป็น unexpected-success ต้อง diff โค้ดจริงก่อนแปลงเป็น assert, ไม่ใส่ wall-clock assertion ถาวร
 ## 2026-09-17 — BUG-055 stale detail cache
 - [bug_055_mtime_cache_testing.md](bug_055_mtime_cache_testing.md) — tight real write loops (no sleep) reproduce mtime-tick collisions; `os.utime` to backdate is fine, forcing identical mtimes is not; spy on `_read_json` to prove caching still happens.
 ## 2026-09-16 — BUG-045 blobstore opt-in
