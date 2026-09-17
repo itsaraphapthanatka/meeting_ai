@@ -2,6 +2,11 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-012 invite/first-admin TOCTOU
+- [Atomic claims for read-then-write races](toctou-atomic-claims.md) — claim before create, single statement, `not exists` does not serialize; proving races without Postgres + negative control.
+- Same file: moving an authz decision later makes guards the old early return hid newly reachable — my TOCTOU fix opened an email-enumeration oracle. Probe for it.
+- Another session may commit my worktree mid-task (`git status` clean, HEAD = a wip commit on a new branch): check `git log`/`git branch --show-current` before concluding nothing changed.
+
 ## 2026-09-16 — P0 fix round
 - Cloud-mode test/proof recipe: patch backend.cloud, backend.store, jobs.cloud, jobs.store, server.store (jobs.py freezes bindings at import); set REMOTE_WORKER=1 before import so jobs.start() spawns no thread.
 - jobs.draft(mid) in cloud = spec of ANY job status; check status == 'draft' explicitly before treating it as a draft.

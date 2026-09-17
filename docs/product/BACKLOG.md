@@ -22,7 +22,7 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 | 9 | `summarize()` always outputs Thai; `--lang` / meeting language never reaches the prompt | backend-dev | add `target_lang`, use `LANGUAGE_NAMES` |
 | 10 | No rate limit on `POST /api/auth/login` (scrypt N=2¹⁴ also a CPU lever) | backend-dev + security-engineer | per-IP sliding window, best-effort on serverless |
 | 11 | `_body_json` reads unbounded `Content-Length`; `_clean_segments` caps neither count nor text length | backend-dev | 1 MB body cap; segment caps |
-| 12 | Invite redemption TOCTOU: user created before `redeem_invite`, boolean result discarded | backend-dev | redeem first, 409 on failure |
+| 12 | ✅ Invite redemption TOCTOU: user created before `redeem_invite`, boolean result discarded | backend-dev | **fixed (uncommitted) 2026-09-17** · `claim_invite` / `claim_first_admin` decide in one statement before the user exists · review also closed an email-enumeration oracle the fix itself introduced · **proven on real PostgreSQL 16.15**: 12 concurrent signups on one invite gave 12 accounts before and 1 after; 12 concurrent first-signups gave 12 admins before and 1 after · tests `test_bug_012_invite_toctou` (12) · ticket [BUG-012](../tickets/BUG-012-invite-redemption-toctou.md) · no `db-init` needed |
 | 13 | Translate `lang` unvalidated → enters job id `<mid>.tr.<lang>` and the LLM prompt | backend-dev | restrict to `LANGUAGE_NAMES` |
 | 14 | Worker audio endpoint builds `WEB_DIR / f"{job_id}.{ext}"` without `valid_id` | backend-dev | `server.py:800` |
 | 15 | Static file guard uses `str.startswith` instead of `Path.is_relative_to` | backend-dev | `server.py:1127` |

@@ -2,6 +2,10 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-012 invite TOCTOU review
+- [Early return hides an oracle](early-return-hides-oracle.md) — deleting a guard to fix a race made signup answer "this email exists" to anyone.
+- [pgstore review checks](pgstore-review-checks.md) — schema defaults, single writer, ambiguous intermediate row state, scrypt inside the pooled connection, settings-as-mutex.
+
 ## 2026-09-16 — P0 fix round
 - In this repo, review any new `try/finally` cleanup against every exception path: bot staging `finally` deleted the only copy of meeting audio when shutil.move failed cross-filesystem.
 - `bot._run()` returns _Timeout(rc 124) silently; comments saying 'after docker stop finished' are not invariants.

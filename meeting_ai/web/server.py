@@ -787,25 +787,50 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(HTTPStatus.BAD_REQUEST,
                                f"รหัสผ่านต้องยาวอย่างน้อย {MIN_PASSWORD} ตัวอักษร")
 
+        # first_run/invite_email เป็นแค่ pre-check ไว้เลือกข้อความเท่านั้น การตัดสินสิทธิ์จริง
+        # อยู่ที่ claim_* ข้างล่าง (BUG-012) — อ่านตรงนี้แล้วเชื่อไม่ได้ อีก request แซงได้เสมอ
         first_run = store.count_users() == 0
-        invite_ok, invite_email = (True, None) if first_run else store.invite_email(invite)
-        if not first_run and not invite_ok:
-            # ไม่บอกว่าอีเมลนี้มีบัญชีอยู่แล้วหรือไม่ (กัน enumerate) แต่ต้องไม่ทำให้คนที่มี
-            # บัญชีอยู่แล้วไปตันตายที่การขอรหัสเชิญ
-            return self._error(HTTPStatus.FORBIDDEN,
-                               "ต้องมีรหัสเชิญที่ยังใช้ได้ (ขอจากแอดมินของทีม) "
-                               "— ถ้ามีบัญชีอยู่แล้วให้เข้าสู่ระบบแทน")
-        if invite_email and invite_email != email:
-            return self._error(HTTPStatus.FORBIDDEN,
-                               f"รหัสเชิญนี้ออกให้อีเมล {invite_email} เท่านั้น")
-        if store.has_password(email):
+        invite_ok = False
+        if not first_run:
+            if not invite:
+                # ไม่บอกว่าอีเมลนี้มีบัญชีอยู่แล้วหรือไม่ (กัน enumerate) แต่ต้องไม่ทำให้คนที่มี
+                # บัญชีอยู่แล้วไปตันตายที่การขอรหัสเชิญ
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   "ต้องมีรหัสเชิญที่ยังใช้ได้ (ขอจากแอดมินของทีม) "
+                                   "— ถ้ามีบัญชีอยู่แล้วให้เข้าสู่ระบบแทน")
+            invite_ok, invite_email = store.invite_email(invite)
+            if invite_ok and invite_email and invite_email != email:
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   f"รหัสเชิญนี้ออกให้อีเมล {invite_email} เท่านั้น")
+        # ตอบ "มีบัญชีอยู่แล้ว" ได้เฉพาะคนที่ถือรหัสเชิญที่ใช้ได้จริงเท่านั้น: ของเดิม 403 ตรงรหัสเชิญ
+        # ใช้ไม่ได้บังหน้าบรรทัดนี้ไว้ พอย้ายการตัดสินไปที่ claim_* แล้วเปิดทิ้งไว้จะกลายเป็น oracle
+        # ให้ใครก็ได้ยิงรหัสมั่วๆ + อีเมลเป้าหมายมาถามว่าอีเมลนั้นมีบัญชีในระบบไหม (409 คนละข้อความ)
+        # invite_ok เป็นแค่การเลือกข้อความเหมือนเดิม — invite ที่ใช้ไม่ได้แล้วกลับมาใช้ได้ไม่ได้
+        # จึงไม่มีทางที่ข้ามบรรทัดนี้แล้ว claim สำเร็จ (ไม่มีช่องเขียนทับรหัสผ่านของบัญชีที่มีอยู่)
+        if (first_run or invite_ok) and store.has_password(email):
             return self._error(HTTPStatus.CONFLICT, "อีเมลนี้มีบัญชีอยู่แล้ว — เข้าสู่ระบบเลย")
 
-        # คนแรกของระบบเป็นแอดมิน (ยังไม่มีใครเชิญได้)
+        # จุดตัดสินแบบ atomic — ทุกอย่างข้างบนเป็นแค่ pre-check ไว้เลือกข้อความ (BUG-012)
+        # ของเดิมสร้างผู้ใช้ก่อนแล้วค่อย redeem โดยทิ้งค่าที่คืนมา: ยิงสมัครพร้อมกันด้วยรหัสเชิญ
+        # ใบเดียวได้บัญชีครบทุกราย และสมัครพร้อมกันตอนระบบว่างได้แอดมินสองคน
+        # จองให้ได้ก่อนจึงจะสร้างผู้ใช้ — แพ้ก็ตอบ 409 โดยยังไม่มีอะไรถูกสร้าง
+        if first_run:
+            # คนแรกของระบบเป็นแอดมิน (ยังไม่มีใครเชิญได้) — จองสิทธิ์นี้ได้คนเดียว
+            if not store.claim_first_admin(email):
+                return self._error(HTTPStatus.CONFLICT,
+                                   "ระบบนี้มีผู้ใช้คนแรกไปแล้ว "
+                                   "— ต้องใช้รหัสเชิญจากแอดมินจึงจะสมัครได้")
+        elif not store.claim_invite(invite, email):
+            # ไม่บอกว่ารหัสไม่มีจริง/หมดอายุ/ถูกใช้ไปแล้ว — บอกแค่ว่าใช้ไม่ได้
+            return self._error(HTTPStatus.CONFLICT,
+                               "รหัสเชิญนี้ใช้ไม่ได้แล้ว (ขอรหัสใหม่จากแอดมินของทีม) "
+                               "— ถ้ามีบัญชีอยู่แล้วให้เข้าสู่ระบบแทน")
+
         user = store.ensure_user(email, name=name, is_admin=first_run)
         store.set_password(user["id"], password)
         if not first_run:
-            store.redeem_invite(invite, user["id"])
+            # ผูกว่าใครใช้ใบไหน — ล้มตรงนี้ไม่กระทบสิทธิ์ รหัสถูกจองไปแล้ว
+            store.attach_invite(invite, user["id"])
         user["is_admin"] = first_run or user.get("is_admin", False)
         self._login_response(user)
 

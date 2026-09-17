@@ -186,13 +186,37 @@ def create_invite(created_by: str | None, email: str | None = None, days: int = 
     return code
 
 
-def redeem_invite(code: str, user_id: str) -> bool:
+def claim_invite(code: str, email: str) -> bool:
+    """จองรหัสเชิญให้อีเมลนี้ **ก่อน** สร้างผู้ใช้ — statement เดียว ใครชนะได้คนเดียว (BUG-012).
+
+    ของเดิมเป็น select แล้วค่อยสร้างผู้ใช้แล้วค่อย update: สมัครพร้อมกัน N ครั้งด้วยรหัสเดียว
+    ผ่าน select ได้ทุกราย → 1 รหัสเชิญกลายเป็น N บัญชีในระบบที่ตั้งใจให้สมัครได้เฉพาะคนที่ถูกเชิญ
+    เงื่อนไขทั้งหมด (มีจริง / ยังไม่ถูกจอง / ยังไม่หมดอายุ / อีเมลตรงกับที่ผูกไว้) อยู่ใน where
+    ให้ Postgres ล็อกแถวตัดสินเอง — used_at คือรอยจอง ส่วน used_by ค่อยผูกด้วย attach_invite()
+    """
     with db.connect() as conn:
         row = conn.execute(
             """update meeting_ai.invites
-               set used_by = %s, used_at = now()
-               where code_hash = %s and used_by is null
+               set used_at = now()
+               where code_hash = %s and used_by is null and used_at is null
                  and (expires_at is null or expires_at > now())
+                 and (invites.email is null or invites.email = %s)
+               returning code_hash""",
+            (_hash(code), (email or "").strip().lower()),
+        ).fetchone()
+    return row is not None
+
+
+def attach_invite(code: str, user_id: str) -> bool:
+    """ผูกเจ้าของให้รหัสเชิญที่จองไว้แล้ว — ไว้ตาม audit trail ว่าใครใช้ใบไหน.
+
+    ล้มที่ขั้นนี้ไม่กระทบสิทธิ์: รหัสถูกจองไปแล้วตั้งแต่ claim_invite() ใครอื่นเอาไปใช้ต่อไม่ได้
+    """
+    with db.connect() as conn:
+        row = conn.execute(
+            """update meeting_ai.invites
+               set used_by = %s
+               where code_hash = %s and used_by is null and used_at is not null
                returning code_hash""",
             (user_id, _hash(code)),
         ).fetchone()
@@ -200,15 +224,44 @@ def redeem_invite(code: str, user_id: str) -> bool:
 
 
 def invite_email(code: str) -> tuple[bool, str | None]:
-    """คืน (ใช้ได้ไหม, อีเมลที่ผูกไว้) — ใช้ตรวจก่อนสร้างผู้ใช้."""
+    """คืน (ใช้ได้ไหม, อีเมลที่ผูกไว้) — ใช้เลือกข้อความผิดพลาดเท่านั้น ไม่ใช่การตัดสินสิทธิ์.
+
+    การตัดสินอยู่ที่ claim_invite() — เงื่อนไขตรงกันทุกข้อ (รวม used_at) เพื่อไม่ให้ข้อความหลอกกัน
+    """
     with db.connect() as conn:
         row = conn.execute(
             """select email from meeting_ai.invites
-               where code_hash = %s and used_by is null
+               where code_hash = %s and used_by is null and used_at is null
                  and (expires_at is null or expires_at > now())""",
             (_hash(code),),
         ).fetchone()
     return (row is not None, row[0] if row else None)
+
+
+BOOTSTRAP_KEY = "signup_bootstrap"
+
+
+def claim_first_admin(email: str) -> bool:
+    """จองสิทธิ์ "ผู้ใช้คนแรกของระบบ" ให้อีเมลนี้ — statement เดียว ใครชนะได้คนเดียว (BUG-012).
+
+    count_users() == 0 แล้วค่อยสร้างผู้ใช้เป็นแอดมินมีรูรั่วแบบเดียวกับรหัสเชิญ: สมัครพร้อมกันสองคน
+    ตอนระบบยังว่าง เห็น 0 ทั้งคู่ → ได้ is_admin ทั้งคู่ (แอดมินออกรหัสเชิญต่อได้อีก)
+    เช็ก `not exists (select 1 from users)` ใน where ก็ไม่ช่วย เพราะสอง transaction ที่ insert
+    คนละแถวไม่ชนกันภายใต้ READ COMMITTED — ต้องให้ทั้งคู่ชนกันที่ unique key จริงๆ
+    จึงยืมตาราง settings (primary key = key) เป็นตัวตัดสิน และเก็บอีเมลที่จองไว้เป็น value
+    เพื่อให้คนเดิมสมัครซ้ำได้ถ้าล้มกลางทาง (where settings.value = excluded.value)
+    """
+    with db.connect() as conn:
+        row = conn.execute(
+            """insert into meeting_ai.settings (key, value, updated_at)
+                 values (%s, %s::jsonb, now())
+               on conflict (key) do update
+                 set value = excluded.value, updated_at = now()
+                 where settings.value = excluded.value
+               returning key""",
+            (BOOTSTRAP_KEY, json.dumps((email or "").strip().lower())),
+        ).fetchone()
+    return row is not None
 
 
 # ---------- ตั้งค่าระบบ (แอดมินปรับ) ----------
