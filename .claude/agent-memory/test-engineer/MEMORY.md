@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — real Postgres fixture
+- [Real Postgres fixture for pgstore](real_postgres_fixture.md) — truncate-between-tests recipe, setUpClass runs db.init(), prove-not-vacuous by monkeypatching pgstore fn itself.
 ## 2026-09-17 — BUG-048 worker-result sanitize
 - [BUG-048 harness additions and testing recipe](bug-048-worker-result-sanitize.md) — FakeStore needed create/set_translation/job_done etc; pair FakeStore checks with a real LocalCase GET+export check for "breaks reading later" tickets.
 ## 2026-09-17 — BUG-012 invite/first-admin TOCTOU
