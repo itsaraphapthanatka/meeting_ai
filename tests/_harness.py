@@ -111,6 +111,48 @@ class FakeStore:
     def audio_path(self, meta: dict):
         return None
 
+    def create(self, mid: str, title: str, audio_name: str, source: str, language: str,
+               duration: float, segments: list[dict], summary: str,
+               summary_error: str | None = None, template: str = "general",
+               speakers: list[str] | None = None, owner_id: str | None = None,
+               visibility: str = "private") -> dict:
+        """เทียบเท่า store.create()/pgstore.create() — ใช้ทดสอบ jobs.apply_result() เส้น process/bot
+
+        โดยไม่ต่อ Postgres จริง (BUG-048): ต้องเก็บค่าที่ sanitize.py คัดมาแล้วตรงๆ ไม่ตรวจซ้ำ
+        เหมือนกับ store จริงสองตัว — ถ้า apply_result() ส่ง NaN/Infinity มาที่นี่ (คือบั๊กเดิม)
+        เทสต์จะเห็นค่าที่พังในการประชุมทันที
+        """
+        m = {
+            "id": mid, "title": title, "owner_id": owner_id, "visibility": visibility,
+            "language": language, "duration": round(duration, 1), "segments": len(segments),
+            "audio": audio_name, "source": source, "template": template,
+            "speakers": list(speakers or []), "summary_error": summary_error,
+            "edited": False, "transcript_edited": False,
+            "created": _now(), "updated": _now(),
+            "summary": summary, "segments_list": list(segments), "translations": {},
+        }
+        self.meetings[mid] = m
+        return dict(m)
+
+    def set_translation(self, mid: str, lang: str, text: str) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        translations = dict(m.get("translations") or {})
+        translations[lang] = text
+        m["translations"] = translations
+        m["updated"] = _now()
+        return dict(m)
+
+    def set_summary(self, mid: str, summary: str, error: str | None = None) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        m["summary"] = summary
+        m["summary_error"] = error
+        m["updated"] = _now()
+        return dict(m)
+
     # ---------- งาน ----------
 
     def job_get(self, job_id: str) -> dict | None:
@@ -168,6 +210,25 @@ class FakeStore:
                 continue
             out.append({k: v for k, v in j.items() if k != "spec"})
         return out
+
+    def job_done(self, job_id: str, meeting_id: str | None, step: str,
+                 warning: str | None) -> None:
+        j = self.jobs.get(job_id)
+        if j is None:
+            return
+        j.update(status="done", step=step, progress=1.0, meeting_id=meeting_id, warning=warning)
+
+    def job_fail(self, job_id: str, error: str) -> None:
+        j = self.jobs.get(job_id)
+        if j is None:
+            return
+        j.update(status="error", step="ผิดพลาด", error=error)
+
+    def job_progress(self, job_id: str, step: str, progress: float) -> None:
+        j = self.jobs.get(job_id)
+        if j is None:
+            return
+        j.update(status="running", step=step, progress=max(0.0, min(1.0, progress)))
 
     def job_request_stop(self, job_id: str) -> str:
         j = self.jobs.get(job_id)
@@ -237,15 +298,16 @@ class _HttpCaseMixin:
     """ยิง HTTP เข้า self.httpd (ตั้งใน setUp ของคลาสลูก) ด้วย http.client (ไม่โยน exception ที่ 4xx)."""
 
     def _do(self, method: str, path: str, data: bytes | None = None,
-            cookies: dict[str, str] | None = None, content_type: str | None = None):
+            cookies: dict[str, str] | None = None, content_type: str | None = None,
+            headers: dict[str, str] | None = None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
-            headers = {}
+            hdrs = dict(headers or {})
             if cookies:
-                headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+                hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
             if content_type:
-                headers["Content-Type"] = content_type
-            conn.request(method, path, body=data, headers=headers)
+                hdrs["Content-Type"] = content_type
+            conn.request(method, path, body=data, headers=hdrs)
             resp = conn.getresponse()
             raw = resp.read()
         finally:
@@ -262,9 +324,18 @@ class _HttpCaseMixin:
         return self._do("GET", path, cookies=cookies)
 
     def post_json(self, path: str, body: dict | None = None,
-                  cookies: dict[str, str] | None = None):
+                  cookies: dict[str, str] | None = None,
+                  headers: dict[str, str] | None = None):
         return self._do("POST", path, data=json.dumps(body or {}).encode("utf-8"),
-                        cookies=cookies, content_type="application/json")
+                        cookies=cookies, content_type="application/json", headers=headers)
+
+    def post_worker_json(self, path: str, body: dict | None = None, token: str = ""):
+        """POST เข้า /api/worker/... พร้อม header Bearer — endpoint นี้ไม่ใช้คุกกี้เลย.
+
+        ผู้เรียกต้อง patch config.worker_token ให้ตรงกับ token ก่อน (ดู WorkerAuthMixin
+        ใน test_bug_048_apply_result.py) ไม่งั้น _worker_authed() ปฏิเสธด้วย 403 เสมอ
+        """
+        return self.post_json(path, body, headers={"Authorization": f"Bearer {token}"})
 
     def post_bytes(self, path: str, data: bytes, cookies: dict[str, str] | None = None):
         return self._do("POST", path, data=data, cookies=cookies,

@@ -38,6 +38,8 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 | 39 | `bot.py` raw `subprocess.run` docker calls without timeout (`docker rm -f` in `join_and_record`, `docker stop` in `leave()`, `login()`), and `proc.wait(timeout=120)` raises uncaught `TimeoutExpired` instead of a Thai error | backend-dev | route through `bot._run()`; catch `TimeoutExpired` → `proc.kill()` + message |
 | 42 | Verify production has no `meetings.owner_id is null` rows: `pgstore.access()` grants `owner` to every user for such rows (intended for data migrated from file mode) | owner / devops-engineer | `select count(*) from meeting_ai.meetings where owner_id is null;` |
 
+| 48 | ✅ `apply_result` trusted the worker's `lang`, and passed its `segments` straight into `store.create` with no validation at all | backend-dev | **fixed (uncommitted) 2026-09-17** · new `web/sanitize.py` holds the shared rules; `lang` now comes from the job spec · a worker could write `NaN` and make `GET` and every export return 500 permanently — the same bug BACKLOG #11 closed on the user path, through the other door · tests `test_bug_048_*` (52) · ticket [BUG-048](../tickets/BUG-048-worker-result-trusted-fields.md) |
+
 ## P2 — quality, debt, docs
 | # | Item | Owner | Notes |
 |---|---|---|---|
