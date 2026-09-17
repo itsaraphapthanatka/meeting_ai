@@ -28,6 +28,10 @@ System-level lessons every agent must know. Read before starting; **append a dat
 - `$TMPDIR` is empty in Git Bash on this machine (`"$TMPDIR/x"` → `/x` → permission denied). Use the absolute scratchpad path. Long heredocs (> ~5 KB) get truncated by the Bash tool — write a script file first, then run it.
 - `Path.glob()` on a missing directory does not raise in Python 3.12 but has changed between versions; keep the explicit `try/except OSError`.
 
+## 2026-09-17 — BUG-055 stale detail cache regression tests
+- Filesystem mtime is much coarser than the loop that writes to it: on this Windows/NTFS machine, 300 back-to-back JSON writes to one file produced only 14 distinct mtimes (286/300 collided with the write before). Any code that keys a cache on mtime equality must be tested with a **tight real loop** (100-200 iterations, no `time.sleep`) — the collision reproduces itself from raw loop speed; you do not need to force it.
+- To test "this must be cached once quiet" without waiting out a real quiet period, use `os.utime(path, (old, old))` to backdate a file's mtime — legitimate (real old files have old mtimes) and deterministic. Do NOT use `os.utime` to force two writes to share an *identical* mtime as a shortcut for a same-tick collision: that fakes a backward clock jump, which is a different (accepted-limitation) scenario, not the coarse-quantization race the tight loop already reproduces honestly.
+- To prove a cache is still doing its job (not silently gutted to "always re-read"), `mock.patch.object(module, "_read_json", wraps=module._read_json)` and assert it's not called across N repeated reads of an unchanged, aged-past-threshold file — cheaper and more direct than counting wall-clock time.
 ## 2026-09-16 — BUG-045 review
 - Proving an env-driven code path (`S3_*`, `MEETING_AI_CLOUD`, `STT_*`) with `env -u VAR python …` proves nothing: `config._load_dotenv` runs on almost every import and refills the key from the owner's real `.env` via `setdefault` — including the production R2 bucket and `DATABASE_URL`. Pass `VAR=` (explicit empty) instead, and sanity-check that the output shows the fake value you injected.
 

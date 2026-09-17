@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-055 stale detail cache
+- [bug_055_mtime_cache_testing.md](bug_055_mtime_cache_testing.md) — tight real write loops (no sleep) reproduce mtime-tick collisions; `os.utime` to backdate is fine, forcing identical mtimes is not; spy on `_read_json` to prove caching still happens.
 ## 2026-09-16 — BUG-045 blobstore opt-in
 - [blob-storage-env-leak](blob-storage-env-leak.md) — _harness.py only blanks S3_BUCKET; config.py's setdefault .env load leaks real R2 creds into os.environ for the other S3_* vars unless a test overrides all five itself.
 - [nonvacuous-proof-via-monkeypatch](nonvacuous-proof-via-monkeypatch.md) — prove regression tests catch reintroduced bugs via a throwaway script that mock.patch.objects the function with the old buggy body; no repo file touched, one stand-in per independent guard.

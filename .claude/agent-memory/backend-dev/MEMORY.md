@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-055 stale detail cache (file mode)
+- [mtime is not a cache key](file-store-mtime-cache.md) — 300 writes = 26 distinct mtimes here; cache only files settled > 2 s, and the file store is not single-process.
 ## 2026-09-16 — BUG-045 blob storage opt-in
 - [Blob storage opt-in](blob-storage-opt-in.md) — S3 needs cloud mode or MEETING_AI_REMOTE_BLOBS=1; test with fake S3_* because .env holds production R2 keys.
 ## 2026-09-16 — BUG-044 (path traversal via translate lang + worker audio)
