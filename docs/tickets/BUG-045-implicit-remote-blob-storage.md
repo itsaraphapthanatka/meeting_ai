@@ -8,7 +8,7 @@
 ## เกิดอะไรขึ้นจริง
 api-tester รันเซิร์ฟเวอร์ทดสอบตามสูตรปกติ `./mai web --port 55430 --no-open` (โหมดไฟล์ ไม่มี DB) แล้วเรียก `GET /api/meetings/<mid>/tracks/mixed/upload-url?ext=wav` ได้ **presigned PUT URL ของบัคเก็ต R2 production จริง** กลับมา อายุ 1 ชั่วโมง ทั้งที่ `/api/config` รายงาน `"mode": "files"`
 
-ไม่มีไฟล์ถูกอัปโหลดขึ้นไปจริง (ใช้เส้นทาง POST bytes แทน) แต่ URL ที่เขียนบัคเก็ตได้ถูกพิมพ์ลง log ของเซสชัน — เป็นเหตุผลที่ต้องหมุนกุญแจ R2 ([runbook](../runbooks/rotate-r2-keys.md))
+ไม่มีไฟล์ถูกอัปโหลดขึ้นไปจริง (ใช้เส้นทาง POST bytes แทน) แต่ URL ที่เขียนบัคเก็ตได้ถูกพิมพ์ลง log ของเซสชัน — เป็นเหตุผลที่ต้องหมุนกุญแจ R2 ([runbook](../runbooks/rotate-credentials.md))
 
 ## Root cause
 [meeting_ai/web/backend.py:36-39](../../meeting_ai/web/backend.py#L36) `storage()` เรียก `blobstore.get_storage()` ตรง ๆ และ [blobstore.py:284](../../meeting_ai/web/blobstore.py#L284) เลือก `S3Storage` ทันทีที่เจอ `S3_BUCKET` ในสภาพแวดล้อม **โดยไม่ดู `MEETING_AI_CLOUD` และไม่มีสัญญาณใด ๆ บอกผู้ใช้**
