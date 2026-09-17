@@ -10,3 +10,10 @@ bot/*.py    text eol=lf
 # ของฝั่ง Windows ต้องเป็น CRLF (PowerShell 5.1 กับ cmd อ่านง่ายกว่า)
 *.ps1       text eol=crlf
 *.cmd       text eol=crlf
+
+# ไฟล์บันทึกแบบต่อท้ายอย่างเดียว — หลายสาขาเติมท้ายพร้อมกันเป็นเรื่องปกติ
+# union ให้ git เก็บทั้งสองฝั่งแทนที่จะหยุดให้แก้มือ (ยืนยันแล้วว่าทุกสาขาแก้แบบ +N -0)
+# หมายเหตุ: docs/product/BACKLOG.md **ไม่** อยู่ในกลุ่มนี้ เพราะแถวถูกแก้ทับ
+# (สถานะเปลี่ยนเป็น ✅) union จะได้แถวซ้ำสองอัน ต้องแก้มือตามเดิม
+docs/LEARNINGS.md                 merge=union
+.claude/agent-memory/**/MEMORY.md merge=union
