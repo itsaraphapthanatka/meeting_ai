@@ -1,0 +1,113 @@
+# CI ของ meeting_ai — BACKLOG #23 (docs/tickets/BUG-023-ci.md มีเหตุผลของทุกการตัดสินใจในไฟล์นี้)
+#
+# สามงานคู่ขนาน:
+#   - test (ubuntu-latest)            : compileall + CLI smoke test + ชุดทดสอบ 264 ตัว (ไม่มี Postgres, 7 skip)
+#   - test (windows-latest)           : เหมือนกัน แต่เป็นทาง fcntl -> msvcrt ของ store.py (BACKLOG #56)
+#   - test (ubuntu-latest + postgres) : ชุดทดสอบเดิม + Postgres service container -> 0 skip
+#
+# ทำไมแยกสาม job แทนที่จะรวมเป็นหนึ่ง: สอง OS ต้องรันคู่ขนานเพราะ store.py ใช้ msvcrt บน Windows
+# และ fcntl บน POSIX คนละโค้ดเพจ (ดู PROJECT-CONTEXT.md) — ผ่านแค่ OS เดียวไม่ได้พิสูจน์อะไรเกี่ยวกับ
+# อีก OS เลย ส่วน Postgres service container รันได้เฉพาะ Linux runner (GitHub ไม่รองรับบน Windows
+# runner) จึงแยกเป็น job ที่สามบน ubuntu-latest เท่านั้น ไม่ผูกกับ job แรกด้วย `needs` เพื่อให้ทั้งสาม
+# รันคู่ขนานและได้ผลเร็วที่สุด
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # คอนโซลของ runner ไม่ใช่ cp874 เหมือนเครื่อง owner แต่ output ภาษาไทยของ CLI (emoji รวมด้วย)
+  # ต้องบังคับ utf-8 เสมอ ไม่งั้น UnicodeEncodeError บน windows-latest เช่นกัน (ดู LEARNINGS.md)
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  test:
+    name: "test (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # ทำไม compileall แยกจาก unittest discover: tests/ import แค่ meeting_ai.web.* — api/index.py
+      # และ bot/*.py ไม่เคยถูก import โดยชุดทดสอบเลย นี่คือเช็คเดียวที่จับ syntax error ในสองโฟลเดอร์นั้น
+      - name: Byte-compile meeting_ai, api, bot
+        run: python -m compileall -q meeting_ai api bot
+
+      # ./mai ตรวจการ launcher ฝั่ง POSIX (bash), mai.cmd ตรวจฝั่ง Windows (cmd) — คนละไฟล์คนละบั๊กได้
+      # (mai.cmd มีคอมเมนต์ "keep ASCII-only" เพราะ cmd.exe อ่าน .cmd เป็น OEM codepage)
+      - name: CLI smoke test (POSIX launcher)
+        if: runner.os != 'Windows'
+        run: ./mai --help
+
+      - name: CLI smoke test (Windows launcher)
+        if: runner.os == 'Windows'
+        shell: cmd
+        # ".\" ไม่ใช่ของประดับ: ถ้า runner ตั้ง NoDefaultCurrentDirectoryInExePath=1 (สภาพแวดล้อม
+        # sandbox ของ agent ตั้งไว้จริง) cmd จะไม่ค้นโฟลเดอร์ปัจจุบัน แล้ว `mai.cmd` เปล่าจะหาไม่เจอ
+        run: .\mai.cmd --help
+
+      # ไม่ตั้ง MAI_TEST_DATABASE_URL ในงานนี้ -> 7 เทสต์ที่ต้องมี Postgres จริง skip ตัวเอง
+      # (skipUnless ในตัวไฟล์เทสต์เอง ไม่ใช่การกรองจากภายนอก) ตามที่ยืนยันไว้ในเครื่อง owner
+      - name: Run test suite (264 tests, 7 skipped without Postgres)
+        run: python -m unittest discover -s tests -v
+
+  postgres-integration:
+    name: "test (ubuntu-latest + postgres)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: meeting_ai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # localhost เท่านั้น ไม่มีความลับจริง — ค่าเดียวกันนี้ใช้ได้กับทุก fork โดยไม่ต้องตั้งอะไรเพิ่ม
+      MAI_TEST_DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/meeting_ai_test"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # core อ่าน stdlib ล้วน — psycopg ต้องลงเฉพาะ job นี้ที่จริงเชื่อมต่อ Postgres
+      # (backend.py import pgstore แบบ lazy เฉพาะตอน MEETING_AI_CLOUD จริง จึงไม่จำเป็นใน job แรก)
+      - name: Install Postgres client deps
+        run: pip install -r requirements.txt
+
+      # ตัว test เอง (tests/test_p0_03_jobs_scoped.py, tests/test_bug_048_apply_result.py) เรียก
+      # db.init() ให้เอง (เท่ากับ `./mai db-init`) — ไม่ต้องรัน db-init แยกเป็นสเต็ปก่อนหน้า
+      - name: Run test suite (0 skips expected with Postgres)
+        run: python -m unittest discover -s tests -v
