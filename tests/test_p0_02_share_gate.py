@@ -58,10 +58,13 @@ class TestShareGate(CloudCase):
         status, body, _ = self.get(f"/api/jobs/{self.M1_tr_en}", cookies=cookies)
         self.assertEqual(status, 200)
 
-    def test_share_entry_sets_cookie(self):
+    def test_share_entry_serves_the_page_without_planting_the_cookie(self):
+        """BACKLOG #16 เปลี่ยนสัญญาข้อนี้: เดิมเทสต์นี้ยืนยันว่า GET /s/<token> ตั้งคุกกี้ให้เลย
+        ซึ่งคือช่อง cookie fixation เอง — คุกกี้ย้ายไปตั้งที่ POST /api/auth/share หลังผู้ใช้
+        กดยืนยัน (รายละเอียดและเคสล้มเหลวอยู่ใน tests/test_bug_016_share_cookie_confirm.py)"""
         status, _, headers = self.get(f"/s/{self.shr1}")
         self.assertEqual(status, 200)
-        self.assertIn("mai_share=", headers.get("Set-Cookie", ""))
+        self.assertNotIn("mai_share", headers.get("Set-Cookie", ""))
 
     def test_auth_me_with_share_cookie_has_no_user(self):
         status, body, _ = self.get("/api/auth/me", cookies={"mai_share": self.shr1})

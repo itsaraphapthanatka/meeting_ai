@@ -390,6 +390,40 @@ async function copyText(text) {
 
 /* ---------------- หน้าเข้าสู่ระบบ ---------------- */
 
+/** โทเคนแชร์ที่ "รออยู่ใน URL" — /s/<token> ไม่ตั้งคุกกี้ให้แล้ว ต้องให้ผู้ใช้กดยืนยันเอง
+ *  (BACKLOG #16) ถอดรหัสแบบเดียวกับฝั่งเซิร์ฟเวอร์: unquote แล้วตัด / หัวท้าย */
+function pendingShareToken() {
+  if (!location.pathname.startsWith('/s/')) return '';
+  try {
+    return decodeURIComponent(location.pathname.slice(3)).replace(/^\/+|\/+$/g, '');
+  } catch (e) {
+    return '';   // URL ที่ % ไม่ครบคู่ — ถือว่าไม่มีโทเคน เซิร์ฟเวอร์จะตอบ 404 อยู่แล้ว
+  }
+}
+
+function showShareConfirm(token) {
+  document.body.classList.add('auth-only');
+  const panel = $('#panel');
+  panel.innerHTML = '';
+  panel.append($('#tpl-share-confirm').content.cloneNode(true));
+
+  const err = $('#sc-error');
+  $('#sc-open').onclick = async () => {
+    err.hidden = true;
+    $('#sc-open').disabled = true;
+    try {
+      // POST + Content-Type: application/json คือสิ่งที่เว็บอื่นสั่งเบราว์เซอร์เหยื่อทำแทนไม่ได้
+      await api('/api/auth/share', jsonPost({ token }));
+      location.replace('/');   // โหลดใหม่ให้สถานะสะอาด และไม่เก็บโทเคนไว้ในประวัติ/Referer
+    } catch (e) {
+      $('#sc-open').disabled = false;
+      err.hidden = false;
+      err.textContent = e.message || 'เปิดลิงก์แชร์นี้ไม่ได้';
+    }
+  };
+  $('#sc-cancel').onclick = () => location.replace('/');
+}
+
 function showAuth(mode) {
   // ครั้งแรกของระบบยังไม่มีใคร ต้องสมัครก่อน
   const signup = mode === 'signup' || (mode === undefined && state.firstRun);
@@ -1718,7 +1752,11 @@ async function loadShares(id) {
 }
 
 (async function init() {
+  // ต้องมาก่อน needsAuth(): คนที่เพิ่งเปิดลิงก์แชร์ยังไม่มีคุกกี้อะไรเลย ถ้าไม่เช็คตรงนี้
+  // จะเจอหน้าล็อกอินแทนหน้ายืนยัน (BACKLOG #16)
+  const pendingShare = pendingShareToken();
   await refreshConfig();
+  if (pendingShare) return showShareConfirm(pendingShare);
   if (needsAuth()) { showAuth(); return; }
 
   await refresh();

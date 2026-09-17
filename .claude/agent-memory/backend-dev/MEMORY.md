@@ -2,6 +2,11 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BACKLOG #15/#16 (static guard + share cookie)
+- [GET ที่ตั้งคุกกี้ = fixation](cookie-set-by-get-is-fixation.md) — ยืนยันด้วย POST + application/json (415 ถ้าไม่ใช่) และเช็คโทเคนใน URL ก่อน needsAuth()
+- [str.startswith ไม่ใช่การตรวจ containment](prefix-string-path-guard.md) — โฟลเดอร์พี่น้อง static_backup/ หลุด; PoC ด้วยการ patch server.STATIC_DIR
+- [เทสต์เก่าอาจล็อกพฤติกรรมที่เป็นบั๊กไว้](tests-can-encode-the-bug.md) — grep tests/ ก่อนแก้ finding เก่า; ธรรมเนียม import คือ `from _harness import`; test_bug_011 flake ตอนเครื่องโหลดหนัก
+
 ## 2026-09-17 — BUG-019 silent STT fallback
 - [Config defaults hide user intent](config-defaults-hide-user-intent.md) — `STT_PROVIDER` default `"local"` = ไม่รู้ว่าใครสั่ง ต้องมี `*_set` flag; patch `Config` (class) ไม่ใช่ `config` (instance) เพราะ `stt_key()` เป็น classmethod; worktree ไม่มี `.env`
 ## 2026-09-17 — BUG-048

@@ -63,7 +63,9 @@ SOCKET_TIMEOUT = 30
 
 SESSION_COOKIE = "mai_session"
 # endpoint ที่เข้าได้ก่อนล็อกอิน (ไม่งั้นจะล็อกอินไม่ได้เลย)
-PUBLIC_API = {("config",), ("auth", "me"), ("auth", "login"), ("auth", "signup")}
+# ("auth", "share") = ยืนยันเปิดลิงก์แชร์ ต้องเรียกได้ทั้งที่ยังไม่มีคุกกี้อะไรเลย (BACKLOG #16)
+PUBLIC_API = {("config",), ("auth", "me"), ("auth", "login"), ("auth", "signup"),
+              ("auth", "share")}
 
 _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
 # Content-Length ต้องเป็นเลขล้วนตาม RFC 9110 — int() ยอมรับ "1_0", "+10", " 10 " ซึ่ง
@@ -1089,6 +1091,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"user": self.user, "first_run": first_run,
                                "share": self.share})
 
+        if rest == ["share"] and self.command == "POST":
+            return self._share_accept()
+
         if rest == ["logout"] and self.command == "POST":
             store.drop_session(self._cookie(SESSION_COOKIE))
             body = json.dumps({"ok": True}).encode()
@@ -1637,7 +1642,14 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- static ----------
 
     def _share_entry(self, token: str) -> None:
-        """เปิดลิงก์แชร์: ฝากโทเคนไว้ในคุกกี้แล้วเสิร์ฟหน้าเว็บตัวเดิม (โหมดอ่าน)."""
+        """เปิดลิงก์แชร์: ตรวจว่าโทเคนยังใช้ได้ แล้วเสิร์ฟหน้าเว็บให้ผู้ใช้กดยืนยันเอง.
+
+        **ไม่ตั้งคุกกี้ที่นี่** (BACKLOG #16): ของเดิมแปะ mai_share ให้ตั้งแต่เบราว์เซอร์เปิด URL
+        นี้ — เว็บอื่นพาเหยื่อมาด้วยลิงก์/redirect/window.open ก็ยัดโทเคนของคนอื่นเข้าเบราว์เซอร์
+        เหยื่อได้โดยเหยื่อไม่ได้ตั้งใจ (SameSite=Lax ไม่กัน top-level navigation) จากนั้น
+        /api/auth/me จะรายงาน share ของคนยัดให้ แล้ว app.js ก็เด้งไปเปิดการประชุมนั้นทุกครั้ง
+        ที่โหลดหน้า แม้เหยื่อจะล็อกอินอยู่ การตั้งคุกกี้ย้ายไปที่ POST /api/auth/share
+        """
         token = urllib.parse.unquote(token).strip("/")
         target = None
         if backend.auth_required() and token:
@@ -1649,12 +1661,37 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(HTTPStatus.NOT_FOUND, "ลิงก์แชร์นี้ใช้ไม่ได้แล้ว")
 
         page = (STATIC_DIR / "index.html").read_bytes()
+        self._send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+
+    def _share_cookie_header(self, token: str) -> str:
+        """คุกกี้ mai_share — แอตทริบิวต์ชุดเดิมทุกตัว เปลี่ยนแค่ว่าใครเป็นคนสั่งตั้ง."""
         https = (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
         flags = "HttpOnly; SameSite=Lax; Path=/" + ("; Secure" if https else "")
-        self._send(200, page, "text/html; charset=utf-8", {
-            "Set-Cookie": f"mai_share={urllib.parse.quote(token)}; Max-Age={7 * 86400}; {flags}",
-            "Cache-Control": "no-store",
-        })
+        return f"mai_share={urllib.parse.quote(token)}; Max-Age={7 * 86400}; {flags}"
+
+    def _share_accept(self) -> None:
+        """POST /api/auth/share — จุดเดียวที่ตั้งคุกกี้ mai_share ได้ (BACKLOG #16).
+
+        ต้องเป็น POST ที่ Content-Type: application/json เท่านั้น เพราะฟอร์มข้ามเว็บส่ง
+        Content-Type นี้ไม่ได้ (ฟอร์มได้แค่ urlencoded/plain/multipart) และ fetch ข้ามโดเมน
+        ที่ตั้ง Content-Type เองต้องผ่าน preflight ซึ่งเซิร์ฟเวอร์นี้ไม่ตอบ CORS เลย
+        = เว็บอื่นสั่งให้เบราว์เซอร์เหยื่อยิงคำขอนี้ไม่ได้ ต้องมาจากหน้าเว็บของเราเท่านั้น
+        """
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                               "ต้องส่งเป็น JSON (Content-Type: application/json)")
+        token = str(self._body_json().get("token") or "").strip()
+        try:
+            target = store.share_target(token) if token else None
+        except Exception as e:
+            return self._error(HTTPStatus.SERVICE_UNAVAILABLE, f"ต่อฐานข้อมูลไม่ได้: {e}")
+        if target is None:
+            return self._error(HTTPStatus.NOT_FOUND, "ลิงก์แชร์นี้ใช้ไม่ได้แล้ว")
+        body = json.dumps({"share": target}, ensure_ascii=False).encode("utf-8")
+        self._send(200, body, "application/json; charset=utf-8",
+                   {"Set-Cookie": self._share_cookie_header(token),
+                    "Cache-Control": "no-store"})
 
     def _static(self, path: str) -> None:
         if path in ("/", ""):
@@ -1664,8 +1701,13 @@ class Handler(BaseHTTPRequestHandler):
         else:
             # manifest กับ service worker ต้องอยู่ราก ไม่งั้น scope ของ PWA จะแคบเกินไป
             rel = path.lstrip("/")
-        target = (STATIC_DIR / rel).resolve()
-        if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.is_file():
+        root = STATIC_DIR.resolve()
+        target = (root / rel).resolve()
+        # เทียบเป็นส่วนประกอบของ path ไม่ใช่สตริง (BACKLOG #15): startswith เป็นแค่การเทียบ
+        # คำนำหน้า โฟลเดอร์พี่น้องที่ชื่อขึ้นต้นเหมือนกัน (static_backup/, static-old/ ที่ใครสัก
+        # คนวางไว้ตอน deploy) จึงผ่านด่านนี้ได้ด้วย /static/../static_backup/<ไฟล์>
+        # — พิสูจน์แล้วว่าอ่านไฟล์ในโฟลเดอร์นั้นได้จริง 200 (ดู docs/tickets/BUG-015)
+        if not target.is_relative_to(root) or not target.is_file():
             return self._error(HTTPStatus.NOT_FOUND, "ไม่พบไฟล์")
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
