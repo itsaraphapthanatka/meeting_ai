@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -107,19 +108,93 @@ def providers(caps: dict | None = None) -> dict[str, dict]:
     }
 
 
+_announced: set[str] = set()
+
+
+def _notice(msg: str) -> None:
+    """บอกทาง stderr ว่าเลือกตัวถอดเสียงอะไร — ข้อความเดิมพิมพ์ครั้งเดียวต่อโพรเซส
+
+    แพตเทิร์นเดียวกับ blobstore._notice() (BUG-045): resolve() ถูกเรียกทั้งตอนสตาร์ต CLI และในเธรด
+    ที่กำลังทำงานจริง คอนโซล cp874 เขียนภาษาไทยไม่ได้ ถ้าปล่อย UnicodeEncodeError ขึ้นไปจะกลายเป็น
+    งานพังเพราะบรรทัดเตือน — ยอมเสียอักษรไทยดีกว่า และถ้า stderr ใช้ไม่ได้เลย (serverless) ก็เงียบไป
+    กันซ้ำเพราะ CLI resolve() เองแล้วส่งค่าที่ได้ต่อให้ transcribe() ซึ่ง resolve() ซ้ำอีกรอบ
+    """
+    if msg in _announced:
+        return
+    _announced.add(msg)
+    for text in (msg, msg.encode("ascii", "replace").decode("ascii")):
+        try:
+            print(text, file=sys.stderr, flush=True)
+            return
+        except UnicodeEncodeError:
+            continue
+        except Exception:
+            return
+
+
+def reset_notices() -> None:
+    """ให้เทสเห็นบรรทัดเตือนเดิมได้อีกครั้ง — โค้ดจริงไม่ต้องเรียก."""
+    _announced.clear()
+
+
+def _destination() -> str:
+    """ปลายทางที่ไฟล์เสียงจะถูกส่งไปถ้าใช้ api — คำเตือนต้องบอกชื่อบริการเสมอ ไม่งั้นไม่มีความหมาย."""
+    return f"{api_host() or 'ปลายทางที่ยังไม่ได้ตั้งค่า'} (โมเดล {config.stt_model})"
+
+
 def resolve(name: str | None) -> str:
-    """เลือกตัวที่ใช้ได้จริง — ถ้าที่ขอมาใช้ไม่ได้ ตกไปใช้อีกตัว."""
+    """เลือกตัวถอดเสียงที่ใช้ได้จริง — และประกาศทุกครั้งที่ผลลัพธ์คือเสียงออกนอกเครื่อง
+
+    BUG-019: เดิมถ้าตัวที่ขอใช้ไม่ได้ จะวนหยิบอีกตัวมาให้เงียบ ๆ "ขอ local แล้วเครื่องไม่มี whisper"
+    จึงกลายเป็นการอัปโหลดไฟล์ประชุมทั้งไฟล์ไปหาบุคคลที่สามโดยไม่มีใครสั่งและไม่มีใครรู้
+
+    สองทิศทางไม่เท่ากัน: local -> api = เสียงออกจากเครื่อง (ห้ามตัดสินใจแทนคนที่เลือก local เอง)
+    ส่วน api -> local = เสียงยังอยู่กับเครื่อง (ทำได้ แค่ต้องบอก)
+
+    "ขอ local" มีสองแบบ: มีคนสั่งเอง (--stt local, dropdown ในหน้าเว็บ, STT_PROVIDER=local) กับ
+    ได้ local มาเพราะเป็นค่าเริ่มต้นในโค้ดโดยไม่มีใครตั้งอะไรเลย — แบบหลังคือเส้นทางปกติของ Vercel
+    ที่ไม่มี whisper อยู่แล้ว ถ้าทำให้เป็น error การถอดเสียงบน cloud จะพังทั้งระบบ จึงยังตกไป api ได้
+    แต่ต้องมีบรรทัดบอกปลายทาง ส่วนแบบแรกคือคำสั่ง "ห้ามส่งเสียงออก" ต้องหยุดให้เห็น
+    """
     avail = providers()
-    want = (name or config.stt_provider or LOCAL).strip().lower()
-    if want in avail and avail[want]["available"]:
+    asked = (name or "").strip().lower()
+    # config.stt_provider มีค่า "local" เสมอแม้ไม่มีใครตั้ง จึงต้องดู stt_provider_set ประกอบ
+    want = asked or (config.stt_provider if config.stt_provider_set else "") or LOCAL
+    chosen = bool(asked) or config.stt_provider_set
+
+    if want not in avail:
+        raise RuntimeError(f"ไม่รู้จักตัวถอดเสียง '{want}' — ใช้ได้แค่ {LOCAL} หรือ {API}")
+
+    if avail[want]["available"]:
+        if want == API:
+            _notice(f"⚠️  ถอดเสียงผ่าน API: ไฟล์เสียงจะถูกอัปโหลดไปที่ {_destination()}")
         return want
-    for other, info in avail.items():
-        if info["available"]:
-            return other
-    raise RuntimeError(
-        "ไม่มีตัวถอดเสียงที่ใช้ได้เลย — "
-        + "; ".join(f"{k}: {v['why']}" for k, v in avail.items() if v["why"])
-    )
+
+    other = API if want == LOCAL else LOCAL
+    if not avail[other]["available"]:
+        raise RuntimeError(
+            "ไม่มีตัวถอดเสียงที่ใช้ได้เลย — "
+            + "; ".join(f"{k}: {v['why']}" for k, v in avail.items() if v["why"])
+        )
+
+    if want == API:
+        # ตกกลับเข้าเครื่องตัวเอง ไม่อันตราย แต่ผู้ใช้ขออย่างอื่นไว้ ต้องรู้ว่าทำไมได้ไม่ตรงที่ขอ
+        _notice(f"ℹ️  ใช้ API ถอดเสียงไม่ได้ ({avail[API]['why']}) "
+                "— ถอดด้วย whisper.cpp ในเครื่องแทน เสียงไม่ออกจากเครื่อง")
+        return LOCAL
+
+    if chosen:
+        raise RuntimeError(
+            f"ขอถอดเสียงในเครื่อง ({LOCAL}) แต่ใช้ไม่ได้: {avail[LOCAL]['why']} "
+            f"— จะไม่ส่งไฟล์เสียงออกนอกเครื่องให้เอง ถ้าต้องการให้อัปโหลดไปถอดที่ {_destination()} "
+            f"ต้องสั่งเอง (--stt {API} หรือตั้ง STT_PROVIDER={API})"
+        )
+
+    _notice(f"⚠️  ไม่มีตัวถอดเสียงในเครื่อง ({avail[LOCAL]['why']}) "
+            f"— ไฟล์เสียงจะถูกอัปโหลดไปถอดที่ {_destination()} "
+            f"· ถ้าไม่ต้องการให้เสียงออกจากเครื่อง ตั้ง STT_PROVIDER={LOCAL} "
+            "แล้วติดตั้ง whisper.cpp + ไฟล์โมเดล (งานจะหยุดแทนการอัปโหลด)")
+    return API
 
 
 def label(name: str) -> str:
