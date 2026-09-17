@@ -757,7 +757,7 @@ body.auth-only #stats { display: none; }
    ของเดิมแค่ยุบสองคอลัมน์เป็นหนึ่ง = เอา sidebar (ค้นหา + คิวงาน + เครื่องประมวลผล + รายการ)
    ไปกองทับฟอร์ม "ประชุมใหม่" ทั้งก้อน หน้าเดียวยาวเกิน 3000px และไม่มีลำดับความสำคัญอะไรเลย
    ตอนนี้ body[data-view] เป็นตัวเลือกว่าจะโชว์ region ไหน (ดู setView() ใน app.js) */
-.mobilebar, .m-cta, .m-chip, .seg, .acct { display: none; }
+.mobilebar, .m-cta, .m-chip, .seg, .acct, .m-section { display: none; }
 
 /* กล่องตัวเลือกเพิ่มเติม — ใช้ทั้งสองจอ ต่างกันแค่เปิด/ปิดตั้งต้น (ตั้งจาก JS) */
 .adv { margin: 0 0 16px; }
@@ -942,7 +942,17 @@ body.auth-only #stats { display: none; }
   .m-chip { order: 2; }
   .jobs { order: 4; }
   #workers { order: 5; }
+  .m-section { order: 5; }
   .list { order: 6; }
+
+  .m-section:not([hidden]) {
+    display: block;
+    padding: 4px 16px 2px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .3px;
+  }
 
   /* รายการประชุมเป็นการ์ดเหมือนในดีไซน์ — ของเดิมเป็นแถวเปล่าที่แตะยาก */
   .list { padding: 0 14px 24px; display: flex; flex-direction: column; gap: 10px; }
