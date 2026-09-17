@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-16 — BUG-045 blob storage opt-in
+- [Env matrix / .env trap](env-matrix-dotenv-trap.md) — prove env-driven paths with `VAR=`, never `env -u VAR`; `.env` refills it via setdefault.
 ## 2026-09-16 — BUG-044 worker job id / translate lang review
 - [Regex `$` accepts a trailing newline](regex-dollar-allows-trailing-newline.md) — every id validator here inherits it; test an id with a trailing newline before approving.
 - [Tightening worker id validation strands queued jobs](tightening-worker-id-validation-strands-queued-jobs.md) — /error 400s too, so the reaper re-runs the job forever.

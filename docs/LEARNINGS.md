@@ -28,6 +28,9 @@ System-level lessons every agent must know. Read before starting; **append a dat
 - `$TMPDIR` is empty in Git Bash on this machine (`"$TMPDIR/x"` → `/x` → permission denied). Use the absolute scratchpad path. Long heredocs (> ~5 KB) get truncated by the Bash tool — write a script file first, then run it.
 - `Path.glob()` on a missing directory does not raise in Python 3.12 but has changed between versions; keep the explicit `try/except OSError`.
 
+## 2026-09-16 — BUG-045 review
+- Proving an env-driven code path (`S3_*`, `MEETING_AI_CLOUD`, `STT_*`) with `env -u VAR python …` proves nothing: `config._load_dotenv` runs on almost every import and refills the key from the owner's real `.env` via `setdefault` — including the production R2 bucket and `DATABASE_URL`. Pass `VAR=` (explicit empty) instead, and sanity-check that the output shows the fake value you injected.
+
 ## 2026-09-16 — web-tester run
 - File-mode storage (`recordings/web/`) is ONE directory on disk regardless of `--port`: running black-box testers on different ports at the same time (e.g. api-tester 55430, e2e-tester 55431, web-tester 55432, per the port table above) still means everyone shares the same `index.json` and audio files. A stray `.wav` appearing mid-test is very likely another concurrent agent's upload, not your own leftover — check `ps aux` / `netstat -ano` for other python/web processes before deleting anything there. Only recipe A (`tests/_harness.py`, patched `store.WEB_DIR`/`INDEX_PATH`/`SETTINGS_PATH`) is actually isolated.
 
