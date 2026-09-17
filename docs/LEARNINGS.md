@@ -28,6 +28,22 @@ System-level lessons every agent must know. Read before starting; **append a dat
 - `$TMPDIR` is empty in Git Bash on this machine (`"$TMPDIR/x"` → `/x` → permission denied). Use the absolute scratchpad path. Long heredocs (> ~5 KB) get truncated by the Bash tool — write a script file first, then run it.
 - `Path.glob()` on a missing directory does not raise in Python 3.12 but has changed between versions; keep the explicit `try/except OSError`.
 
+## 2026-09-16 — web-dev design-system pass (mobile-first, `web/static/`)
+- `web/jobs.py`'s in-memory job dict (`_enqueue`) sets `"meeting_id": None` at creation and only
+  fills it in on `done()` — in local/file mode a **running/queued** job for `process`/`summarize`
+  always has `meeting_id === None`, even though the job's own `id` already equals the meeting id
+  for `process`/`summarize` (`_enqueue(mid, …)`), and `f"{mid}.tr.{lang}"` for `translate`
+  (`submit_translate`). Cloud mode (`pgstore`) fills `meeting_id` immediately, so behaviour differs
+  by deployment mode. Anything that needs "is a job running for meeting X" (e.g. a UI streaming
+  indicator) must match on **job id**, not `job.meeting_id`, to work in both modes — verify against
+  `_enqueue`/`submit_summarize`/`submit_translate` before trusting either field.
+- A hex color literally copied from a design spec can fail WCAG AA for filled buttons even though
+  it "is" the brand color: `#FF453A` (soft red) on white text is only ~3.5:1 contrast (needs 4.5:1).
+  Apple's own systemRed light/dark variants have the same problem — vivid reds near max R channel
+  cap out around 3.5-3.6:1 against white/near-white regardless of exact shade. Check contrast with
+  the actual luminance formula before wiring a spec hex straight into a `color: #fff` button
+  background; darkening ~20% toward black (`color-mix(in srgb, red 80%, black)`) usually clears 4.5:1
+  while staying visibly "the same red".
 ## 2026-09-17 — BUG-055 stale detail cache regression tests
 - Filesystem mtime is much coarser than the loop that writes to it: on this Windows/NTFS machine, 300 back-to-back JSON writes to one file produced only 14 distinct mtimes (286/300 collided with the write before). Any code that keys a cache on mtime equality must be tested with a **tight real loop** (100-200 iterations, no `time.sleep`) — the collision reproduces itself from raw loop speed; you do not need to force it.
 - To test "this must be cached once quiet" without waiting out a real quiet period, use `os.utime(path, (old, old))` to backdate a file's mtime — legitimate (real old files have old mtimes) and deterministic. Do NOT use `os.utime` to force two writes to share an *identical* mtime as a shortcut for a same-tick collision: that fakes a backward clock jump, which is a different (accepted-limitation) scenario, not the coarse-quantization race the tight loop already reproduces honestly.
