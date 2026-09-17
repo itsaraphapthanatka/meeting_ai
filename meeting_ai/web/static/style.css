@@ -911,6 +911,9 @@ body.auth-only #stats { display: none; }
   .m-chip {
     display: inline-flex;
     align-items: center;
+    /* .sidebar เป็น flex column ลูกจึงถูกยืดเต็มความกว้างตาม align-items: stretch
+       ค่าเริ่มต้น — inline-flex ไม่ช่วย ต้อง align-self ให้หดเท่าเนื้อหาเหมือนในดีไซน์ */
+    align-self: flex-start;
     gap: 7px;
     margin: 0 14px 12px;
     padding: 7px 13px 7px 11px;
