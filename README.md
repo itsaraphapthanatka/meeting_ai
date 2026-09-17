@@ -218,6 +218,8 @@ Vercel ไม่มี GPU และ function ยาวสุด 5 นาที 
 # 2) ที่เก็บไฟล์เสียง — สร้าง R2 bucket ที่ Cloudflare แล้วออก API token (Object Read & Write)
 #    ใส่ S3_ENDPOINT / S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY ใน .env
 #    แล้วตั้ง CORS ของ bucket ให้ origin ของเว็บ PUT/GET ได้
+#    โหมด cloud ใช้ S3_* ให้เองอยู่แล้ว ส่วนการรันโหมดไฟล์ในเครื่องจะไม่แตะ bucket
+#    ถึงจะมี S3_* ครบ — ถ้าตั้งใจลองกับ bucket ของตัวเองให้ตั้ง MEETING_AI_REMOTE_BLOBS=1
 
 # 3) ลองในเครื่องก่อน deploy
 ./mai web --cloud                   # จะมีหน้าสมัคร/ล็อกอิน คนแรกเป็นแอดมิน
@@ -230,8 +232,25 @@ vercel deploy --prod
 env ที่ต้องตั้งบน Vercel: `MEETING_AI_CLOUD=1`, `REMOTE_WORKER=1`, `WORKER_TOKEN`,
 `DATABASE_URL`, `LLM_API_KEY`, และชุด `S3_*`
 
+> **ที่เก็บไฟล์เสียงไม่เปิดเอง:** จะใช้ S3/R2 ก็ต่อเมื่ออยู่โหมด cloud (`MEETING_AI_CLOUD=1`)
+> หรือตั้ง `MEETING_AI_REMOTE_BLOBS=1` เอง เท่านั้น — รันในเครื่องแบบปกติจะเก็บลงดิสก์
+> แม้ `.env` จะมี `S3_*` ครบ (เคยเผลอออก presigned URL ของ bucket production ตอนเทสมาแล้ว)
+> ทุกครั้งที่เลือก S3 เซิร์ฟเวอร์จะพิมพ์บรรทัดบอก endpoint + ชื่อ bucket ตอนเริ่มทำงาน
+> และถ้ามี `S3_*` ครบแต่ยังไม่เปิด จะบอกว่ากำลังใช้ดิสก์และเปิดยังไง
+
 > เลือก region ของ Vercel ให้ตรงกับ Neon (ค่าเริ่มต้น `iad1` = us-east-1)
 > ไม่งั้นทุก query จะเดินทางข้ามทวีป
+
+การล็อกอิน/สมัครถูกจำกัดสองชั้นต่อ IP: **10 ครั้ง/15 นาที** (ล้างเมื่อล็อกอินสำเร็จ กันคนพิมพ์ผิด
+ถูกล็อก) และ **60 ครั้ง/ชั่วโมง** ที่ไม่ล้างเลย (เพดานจริงของงาน scrypt — ไม่งั้นคนที่มีบัญชีใบเดียว
+สลับ "เดาไม่กี่ครั้ง + ล็อกอินตัวเอง" ไปได้ไม่จำกัด) ตัวนับอยู่ในตาราง `meeting_ai.rate_limits`
+จึงใช้ได้ทั้งบน serverless และเครื่องเดียว — **รัน `./mai db-init` ครั้งเดียวหลังอัปเดต**
+ถ้าตารางยังไม่มี เซิร์ฟเวอร์จะเตือนทาง stderr หนึ่งครั้งและเหลือแต่ตัวนับในหน่วยความจำ
+
+ตั้ง `TRUST_PROXY=1` **เฉพาะเมื่อมี reverse proxy ที่เขียนทับ `X-Forwarded-For` ให้จริง**
+(nginx ที่ตั้ง `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` หรือ Cloudflare)
+ไม่งั้นใครก็ส่งหัวข้อนั้นมาเองเพื่อเลือกถังของตัวเอง ถ้าไม่ตั้ง ทุกคนจะถูกนับรวมเป็น IP ของ proxy
+บน Vercel ไม่ต้องตั้งอะไร (`api/index.py` เปิดให้แล้วและอ่าน `x-vercel-forwarded-for` ที่ปลอมไม่ได้)
 
 CORS ของ R2 bucket (แก้ origin เป็นโดเมนจริงของคุณ):
 ```json

@@ -6,12 +6,13 @@
 """
 
 import os
+import secrets
 import unittest
 from contextlib import contextmanager
 from unittest import mock
 
 from _harness import CloudCase, jobs, new_mid
-from meeting_ai.web import pgstore
+from meeting_ai.web import db, pgstore
 
 
 class TestJobsScopedCloud(CloudCase):
@@ -178,13 +179,99 @@ class TestPgstoreJobActiveSqlShape(unittest.TestCase):
         self.assertIn("::text is null", sql)
 
 
-@unittest.skipUnless(os.environ.get("MAI_TEST_DATABASE_URL"),
-                     "ต้องมี Postgres ทดสอบจริงใน MAI_TEST_DATABASE_URL")
-class TestPgstoreJobActiveAgainstRealDb(unittest.TestCase):
-    """ยังไม่ implement — ต้องมี Postgres ทดสอบจริงถึงจะรันได้ ปกติจะ skip ในสภาพแวดล้อมนี้."""
+_REAL_DB_URL = os.environ.get("MAI_TEST_DATABASE_URL")
 
-    def test_placeholder(self):
-        self.skipTest("ยังไม่มี fixture ต่อ Postgres จริงในสภาพแวดล้อมนี้")
+
+@unittest.skipUnless(_REAL_DB_URL, "ต้องมี Postgres ทดสอบจริงใน MAI_TEST_DATABASE_URL")
+class TestPgstoreJobActiveAgainstRealDb(unittest.TestCase):
+    """ต่อ Postgres จริง (schema.sql เดียวกับที่ `./mai db-init` ใช้) แล้วยิง pgstore.job_active()
+
+    ตรงๆ ไม่ผ่านชั้น HTTP — TestJobsScopedCloud (ด้านบน) พิสูจน์แค่ว่า server.py เรียก
+    job_active(**scope) ถูกพารามิเตอร์ ส่วน TestPgstoreJobActiveSqlShape พิสูจน์แค่รูป SQL
+    ด้วย connection ปลอม ทั้งคู่ไม่เคยรัน SQL จริงกับ Postgres จริงเลยสักครั้ง คลาสนี้ปิดช่องว่างนั้น
+
+    วิธีแยกข้อมูลระหว่างเทสต์ — เลือก "truncate ทุกตารางใน setUp" แทนอีกสองทาง:
+    - schema แยกต่อเทสต์: ทุก query ใน pgstore.py เขียน "meeting_ai." ตรงๆ ไม่พึ่ง search_path
+      (ดูคอมเมนต์หัว schema.sql — เหตุผลคือ Neon pooler โหมด transaction ไม่การันตี SET
+      ระดับ session) จะรันคู่ขนานหลาย schema ต้องเขียน SQL ของ pgstore.py ใหม่ ไม่ใช่แค่ config
+    - ครอบทุกเทสต์ในทรานแซกชันเดียวแล้ว rollback: ทุกฟังก์ชันใน pgstore.py เปิด
+      connection ใหม่จาก pool เอง (db.connect() เป็น autocommit) จะบังคับให้ใช้ connection
+      เดียวกันซ้ำต้องแพตช์ db.connect() เอง ซึ่งเสี่ยงบดบังบั๊กเรื่อง autocommit/pooler จริงๆ
+      ที่ทีมเจอมาแล้ว (ดู web/db.py docstring เรื่อง prepare_threshold)
+    ฐานนี้เป็นฐานทิ้งของชุดทดสอบนี้อย่างเดียว (ไม่ใช่ของใช้ร่วมกับคนอื่น) truncate ทุกตาราง
+    ก่อนแต่ละเทสต์จึงตรงไปตรงมาที่สุดและไม่เสี่ยงบดบังอะไร
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # ต้องตั้ง DATABASE_URL ตอนรันเทสต์ ไม่ใช่ตอน import — _harness.py (ซึ่งไฟล์นี้ import
+        # ด้วย) ตั้ง DATABASE_URL="" ไว้ตอน import module ระดับโพรเซส (ดู docstring ของมัน)
+        # db.url()/_connect_kwargs() อ่าน os.environ สดทุกครั้งที่เรียก ไม่ได้ cache ตอน import
+        # ของโมดูล db.py เอง จึงตั้งค่าตรงนี้แล้วมีผลจริงได้
+        os.environ["DATABASE_URL"] = _REAL_DB_URL
+        db.close()  # เผื่อมีพูลเก่าค้างจาก DATABASE_URL อื่นในโพรเซสเดียวกัน (พูลเป็น global ของโมดูล)
+        tables = db.init()  # เท่ากับที่ `./mai db-init` ทำ — ยืนยันว่า schema.sql รันกับ Postgres จริงได้จริง
+        for name in ("users", "meetings", "jobs"):
+            assert name in tables, f"schema.sql ไม่ได้สร้างตาราง {name}"
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        db.close()
+
+    def setUp(self) -> None:
+        with db.connect() as conn:
+            conn.execute(
+                "truncate table meeting_ai.jobs, meeting_ai.shares, meeting_ai.sessions, "
+                "meeting_ai.meetings, meeting_ai.users restart identity cascade"
+            )
+        tag = secrets.token_hex(4)
+        self.user_a = pgstore.ensure_user(f"tenant-a-{tag}@example.com", "Tenant A")
+        self.user_b = pgstore.ensure_user(f"tenant-b-{tag}@example.com", "Tenant B")
+        self.admin = pgstore.ensure_user(f"admin-{tag}@example.com", "Admin", is_admin=True)
+
+        self.meeting_a = pgstore.create(
+            pgstore.new_id(), "Meeting A (tenant A)", None, "upload", "th", 0, [], "",
+            owner_id=self.user_a["id"],
+        )
+        self.meeting_b = pgstore.create(
+            pgstore.new_id(), "Meeting B (tenant B)", None, "upload", "th", 0, [], "",
+            owner_id=self.user_b["id"],
+        )
+
+        self.job_a = pgstore.new_id()
+        pgstore.job_upsert(self.job_a, "process", "A secret", {"owner_id": self.user_a["id"]},
+                           status="running", meeting_id=self.meeting_a["id"])
+        self.job_b = pgstore.new_id()
+        pgstore.job_upsert(self.job_b, "process", "B secret", {"owner_id": self.user_b["id"]},
+                           status="queued", meeting_id=self.meeting_b["id"])
+
+    def test_admin_sees_every_job_system_wide(self):
+        # _job_scope() ของแอดมินส่ง owner_id=None, meeting_id=None (ไม่กรองอะไรเลย)
+        result = pgstore.job_active()
+        self.assertEqual({j["id"] for j in result}, {self.job_a, self.job_b})
+
+    def test_user_sees_only_own_job(self):
+        result = pgstore.job_active(owner_id=self.user_a["id"])
+        self.assertEqual({j["id"] for j in result}, {self.job_a})
+        self.assertEqual(result[0]["title"], "A secret")
+
+    def test_tenant_b_job_never_appears_for_tenant_a(self):
+        result = pgstore.job_active(owner_id=self.user_a["id"])
+        self.assertNotIn(self.job_b, {j["id"] for j in result})
+        self.assertNotIn("B secret", {j["title"] for j in result})
+
+    def test_share_only_visitor_sees_only_shared_meetings_job(self):
+        # ผู้เข้าทาง /s/<token> ไม่มี user_id (self.user_id is None) — _job_scope() จึงส่ง
+        # meeting_id ของการประชุมที่แชร์แทน owner_id (ดู PROJECT-CONTEXT.md บรรทัด _job_scope)
+        result = pgstore.job_active(meeting_id=self.meeting_a["id"])
+        self.assertEqual({j["id"] for j in result}, {self.job_a})
+
+    def test_done_jobs_are_not_active_regardless_of_scope(self):
+        finished = pgstore.new_id()
+        pgstore.job_upsert(finished, "process", "finished job", {"owner_id": self.user_a["id"]},
+                           status="done", meeting_id=self.meeting_a["id"])
+        result = pgstore.job_active(owner_id=self.user_a["id"])
+        self.assertNotIn(finished, {j["id"] for j in result})
 
 
 if __name__ == "__main__":

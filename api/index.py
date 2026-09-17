@@ -28,6 +28,13 @@ from meeting_ai.web.server import Handler  # noqa: E402
 class handler(Handler):
     """Vercel มองหาชื่อนี้."""
 
+    # ที่นี่มี edge ของ Vercel คั่นเสมอ และมันเขียนทับ x-forwarded-for ให้เอง — จึงใช้หา
+    # ที่อยู่ผู้เรียกสำหรับ rate limit ได้ ส่วน x-vercel-forwarded-for เป็นหัวข้อที่ Vercel
+    # ตั้งเองและปลอมไม่ได้ **เฉพาะที่นี่** จึงประกาศไว้ที่คลาสนี้ ไม่ใช่ที่ Handler กลาง
+    # (nginx/Cloudflare ส่งหัวข้อที่ไม่รู้จักผ่านไปตรงๆ คนยิงจะเลือกถังของตัวเองได้)
+    trust_proxy = True
+    forwarded_headers = ("X-Vercel-Forwarded-For", "X-Forwarded-For")
+
     def _host_ok(self) -> bool:
         # บน Vercel โดเมนเป็นของ deployment เอง (*.vercel.app หรือโดเมนที่ผูกไว้)
         # การกัน DNS rebinding แบบเทียบ host ใช้ไม่ได้ที่นี่ — Vercel จัดการ routing ให้แล้ว
