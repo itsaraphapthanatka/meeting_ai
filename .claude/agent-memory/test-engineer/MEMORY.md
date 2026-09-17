@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-059 CI flaky harness (readiness probe + raw_send_and_collect(expect=))
+- [Readiness probe + expect/settle recipe, and the Windows multiprocessing "spawn storm" surprise](bug_059_ci_flaky_harness_readiness.md) — _start_server() had no readiness wait; measure real latency under load before picking a deadline, never guess.
 ## 2026-09-17 — real Postgres fixture
 - [Real Postgres fixture for pgstore](real_postgres_fixture.md) — truncate-between-tests recipe, setUpClass runs db.init(), prove-not-vacuous by monkeypatching pgstore fn itself.
 ## 2026-09-17 — BUG-048 worker-result sanitize

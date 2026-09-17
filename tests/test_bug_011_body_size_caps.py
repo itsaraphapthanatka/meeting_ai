@@ -405,14 +405,28 @@ class TestBug011RequestSmugglingSingleResponse(LocalCase):
     `HTTP/1.1 ` ในสิ่งที่เซิร์ฟเวอร์ตอบกลับมาบนคอนเนกชันเดียวกัน — ทุกกรณีข้างล่างต้องได้ค่า 1
     (ไม่ใช่ 2) มิฉะนั้นคำขอที่แนบมา (`_nested_get`) จะถูกตีความเป็นคำขอที่สองแล้วมี response
     เพิ่มมาโดยไม่มีใครขอ = ผู้ใช้คนถัดไปบนคอนเนกชันเดิม (ถ้ามี proxy คั่นอยู่) จะได้ response นั้นไป
+
+    เพดานเวลา/ค่า `expect` ข้างล่าง (แก้ 2026-09-17 — CI flake บน windows-latest ขณะ CPU ถูก
+    แย่งเต็มทุกคอร์): เดิม `raw_send_and_collect()` ใช้ timeout สั้น (1.0-1.5s) เป็นทั้ง socket
+    timeout และเพดานรวมในตัวเดียว บน runner ที่ CPU ไม่ว่าง เซิร์ฟเวอร์อาจตอบช้ากว่านั้นแม้จะ
+    ทำงานถูกต้องทุกอย่าง ทำให้เทสต์เห็น `blob` ว่างเปล่าและ fail ด้วยเหตุผลที่ไม่เกี่ยวกับโค้ด
+    ที่ทดสอบเลย ตอนนี้ทุกเทสต์ในคลาสนี้ระบุ `expect=` ชัดเจน (จำนวน response ที่ถูกต้อง) พร้อม
+    เพดานรวมใจกว้าง (`RAW_COLLECT_TIMEOUT`) — ฟังก์ชันจะรอจนกว่าจะเห็นครบ `expect` responses
+    (ไม่ใช่รอเวลาคงที่) แล้วรอต่ออีก `RAW_COLLECT_SETTLE` วินาทีเพื่อยืนยันว่าไม่มี response ที่
+    เกินมา (ข้อนี้สำคัญที่สุด: ถ้าไม่มี settle เทสต์ "ต้องมีแค่ 1" จะผ่านแบบไม่มีความหมาย เพราะ
+    หยุดอ่านทันทีที่เจอ response แรกโดยไม่เคยให้เวลาเซิร์ฟเวอร์ตีความ byte ที่เหลือเป็นคำขอที่สอง)
     """
+
+    RAW_COLLECT_TIMEOUT = 20.0
+    RAW_COLLECT_SETTLE = 1.5
 
     def test_bug_011_smuggling_chunked_with_nested_request_yields_one_response(self):
         req = _raw_bytes(
             "POST", "/api/settings",
             [("Content-Type", "application/json"), ("Transfer-Encoding", "chunked")],
             _nested_get(self.port))
-        blob = self.raw_send_and_collect(req)
+        blob = self.raw_send_and_collect(
+            req, timeout=self.RAW_COLLECT_TIMEOUT, expect=1, settle=self.RAW_COLLECT_SETTLE)
         self.assertEqual(blob.count(b"HTTP/1.1 "), 1, blob[:400])
 
     def test_bug_011_smuggling_content_length_shorter_than_body_yields_one_response(self):
@@ -420,7 +434,8 @@ class TestBug011RequestSmugglingSingleResponse(LocalCase):
             "POST", "/api/settings",
             [("Content-Type", "application/json"), ("Content-Length", "2")],
             b"{}" + _nested_get(self.port))
-        blob = self.raw_send_and_collect(req)
+        blob = self.raw_send_and_collect(
+            req, timeout=self.RAW_COLLECT_TIMEOUT, expect=1, settle=self.RAW_COLLECT_SETTLE)
         self.assertEqual(blob.count(b"HTTP/1.1 "), 1, blob[:400])
 
     def test_bug_011_smuggling_duplicate_content_length_yields_one_response(self):
@@ -429,7 +444,8 @@ class TestBug011RequestSmugglingSingleResponse(LocalCase):
             [("Content-Type", "application/json"), ("Content-Length", "2"),
              ("Content-Length", "100")],
             b"{}" + _nested_get(self.port))
-        blob = self.raw_send_and_collect(req)
+        blob = self.raw_send_and_collect(
+            req, timeout=self.RAW_COLLECT_TIMEOUT, expect=1, settle=self.RAW_COLLECT_SETTLE)
         self.assertEqual(blob.count(b"HTTP/1.1 "), 1, blob[:400])
 
     def test_bug_011_smuggling_404_with_body_yields_one_response(self):
@@ -437,7 +453,8 @@ class TestBug011RequestSmugglingSingleResponse(LocalCase):
             "POST", "/api/no-such-endpoint",
             [("Content-Type", "application/json"), ("Content-Length", "2")],
             b"{}" + _nested_get(self.port))
-        blob = self.raw_send_and_collect(req)
+        blob = self.raw_send_and_collect(
+            req, timeout=self.RAW_COLLECT_TIMEOUT, expect=1, settle=self.RAW_COLLECT_SETTLE)
         self.assertEqual(blob.count(b"HTTP/1.1 "), 1, blob[:400])
 
     def test_bug_011_keepalive_still_yields_two_responses_for_two_plain_gets(self):
@@ -445,9 +462,15 @@ class TestBug011RequestSmugglingSingleResponse(LocalCase):
 
         ข้างบนผ่านหมดแบบไม่มีความหมาย) คำขอ GET ธรรมดา 2 อันไม่มี body บนคอนเนกชันเดียวยังต้อง
         ได้ 2 responses จริง — keep-alive ใช้งานได้ตามปกติสำหรับคำขอที่ไม่มี body
+
+        `expect=2`: รอจนกว่าจะเห็นครบ 2 responses จริง (ไม่ใช่รอ 1.0 วินาทีคงที่แบบเดิม ซึ่งเคย
+        วัดได้ 0 ไบต์ล้วนๆ บน CI ที่ CPU ถูกแย่งเต็ม — ดู docs/tickets/BUG-059-ci-flaky-body-caps-harness.md
+        สำหรับตัวเลขก่อน/หลังแก้) แล้วรอ settle ต่อเพื่อยืนยันว่าไม่มี response ที่ 3 โผล่มา
+        (เผื่อกรณี server ตีความคำขอที่ 2 ผิดจนแตกเป็นสองคำตอบ)
         """
         one = _raw_bytes("GET", "/api/config", [("Host", f"127.0.0.1:{self.port}")])
-        blob = self.raw_send_and_collect(one + one, timeout=1.0)
+        blob = self.raw_send_and_collect(
+            one + one, timeout=self.RAW_COLLECT_TIMEOUT, expect=2, settle=self.RAW_COLLECT_SETTLE)
         self.assertEqual(blob.count(b"HTTP/1.1 "), 2, blob[:600])
 
 
@@ -457,6 +480,16 @@ class TestBug011ConnectionCloseOn413(LocalCase):
     `Connection: close` จริงในคำตอบ 413 ไม่งั้น client/proxy เก็บคอนเนกชันไว้ใช้ต่อแล้วคำขอถัดไป
     ไปตายที่ socket ที่กำลังจะถูกปิด อีกส่วนที่ต้องพิสูจน์คู่กัน: การปิดคอนเนกชันนี้ต้องเป็นการปิด
     ที่ตั้งใจ ไม่ใช่เซิร์ฟเวอร์พังทั้งตัว — เปิดคอนเนกชันใหม่ทันทีหลังจากนั้นต้องยังใช้งานได้ปกติ
+
+    เพดานเวลาข้างล่าง (แก้ 2026-09-17 — CI flake): `raw_send_and_collect(req)` เดิมใช้
+    timeout=1.5s เป็นเพดานรวม บน CI ที่ CPU ถูกแย่งเต็มทุกคอร์ เธรด `serve_forever` อาจยังไม่ได้
+    CPU มาตอบภายในเวลานั้น ทำให้ได้ `blob` ว่างเปล่า (`assertTrue(blob.startswith(...))` ตายที่
+    บรรทัดนั้นเลย ไม่ใช่ที่ `self.get(...)` ด้านล่าง) `_HttpCaseMixin._wait_until_ready()` (เพิ่ม
+    ใน `_start_server()`) ดูดซับต้นทุน cold-start ไว้ใน `setUp()` แล้วก่อนถึงบรรทัดนี้ ส่วน
+    `timeout=` ที่ยกให้ใจกว้างขึ้นตรงนี้ป้องกันกรณีเซิร์ฟเวอร์ "ตอบช้าแต่ยังตอบ" ระหว่างคำขอจริง
+    ของเทสต์เอง (คนละจุดกับ cold start ตอน setUp) — วัดจริงแล้วว่า **ไม่ใช่บั๊กจริงของ
+    server.py** (ดู docs/tickets/BUG-059-ci-flaky-body-caps-harness.md หัวข้อ 3
+    "คำตอบของคำถาม 'ตอบช้า หรือ ไม่ตอบเลย'")
     """
 
     def test_bug_011_413_has_connection_close_header_and_server_stays_healthy(self):
@@ -465,7 +498,7 @@ class TestBug011ConnectionCloseOn413(LocalCase):
             "POST", "/api/meetings",
             [("Content-Type", "application/json"), ("Content-Length", str(len(big)))],
             big)
-        blob = self.raw_send_and_collect(req)
+        blob = self.raw_send_and_collect(req, timeout=20.0, expect=1, settle=0.5)
         self.assertTrue(blob.startswith(b"HTTP/1.1 413"), blob[:200])
         self.assertIn(b"Connection: close", blob)
 

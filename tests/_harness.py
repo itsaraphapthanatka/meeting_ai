@@ -653,26 +653,56 @@ class _HttpCaseMixin:
         status = int(text.split(" ")[1]) if text.startswith("HTTP/") else -3
         return status, text, time.monotonic() - t0
 
-    def raw_send_and_collect(self, data: bytes, timeout: float = 1.5) -> bytes:
+    def raw_send_and_collect(self, data: bytes, timeout: float = 1.5,
+                             expect: int | None = None, settle: float = 0.3) -> bytes:
         """ส่ง raw bytes ก้อนเดียว (คุมทั้งคำขอเอง รวม header/แนวการเข้ารหัส body) เข้า socket
 
-        เดียวกัน แล้วอ่านทุกอย่างที่ตอบกลับมาจนกว่าคอนเนกชันจะปิด (EOF) หรือหมดเวลา — ต่างจาก
-        `raw_request` ที่หยุดอ่านทันทีที่เจอ header block แรก ตัวนี้ตั้งใจอ่าน **ทุก response**
-        บนคอนเนกชันเดียว ใช้นับจำนวน `HTTP/1.1 ` ทั้งหมด (BUG-011 request smuggling / keep-alive
-        regression) คืน raw bytes ทั้งก้อน (ไม่ decode ให้ เพราะเทสต์พวกนี้สนใจ byte count ตรงๆ)
+        เดียวกัน แล้วอ่านทุกอย่างที่ตอบกลับมาจนกว่าคอนเนกชันจะปิด (EOF) หรือหมดเวลารวม —
+        ต่างจาก `raw_request` ที่หยุดอ่านทันทีที่เจอ header block แรก ตัวนี้ตั้งใจอ่าน
+        **ทุก response** บนคอนเนกชันเดียว ใช้นับจำนวน `HTTP/1.1 ` ทั้งหมด (BUG-011 request
+        smuggling / keep-alive regression) คืน raw bytes ทั้งก้อน (ไม่ decode ให้ เพราะเทสต์
+        พวกนี้สนใจ byte count ตรงๆ)
+
+        `timeout` คือเพดานเวลารวมของทั้งฟังก์ชัน (ไม่ใช่ recv() เดี่ยว) — บน CI ที่ CPU ถูก
+        แย่งหนัก serve_forever อาจใช้เวลานานกว่าจะได้ CPU มาตอบ ฟังก์ชันนี้จึง recv() แบบ
+        สั้นๆ วนซ้ำจนกว่าจะครบ deadline แทนที่จะยอมแพ้ทันทีที่ recv() รอบแรกหมดเวลา (บั๊กเดิม:
+        `timeout=1.0/1.5` เป็นทั้ง socket timeout และเพดานรวมในตัวเดียว — ภายใต้ CPU ที่ถูกแย่ง
+        เต็ม 10 คอร์ วัดจริงว่าเซิร์ฟเวอร์ตอบ 0 ไบต์ภายใน 1 วินาที ทำให้เทสต์ที่คาด 2 responses
+        เห็น blob ว่างเปล่า — ไม่ใช่บั๊กของ server.py แต่เป็นความเปราะของฮาร์เนสเอง)
+
+        `expect` (ถ้าระบุ) คือจำนวน response ที่ต้องการให้ครบก่อนหยุดรออ่านเพิ่ม — เมื่อครบแล้ว
+        ฟังก์ชันจะรอ **ต่ออีก `settle` วินาที** ก่อนปิด socket แทนที่จะคืนค่าทันที
+
+        กับดักสำคัญที่สุด (อย่าพลาด): ถ้าหยุดอ่านทันทีที่นับ `HTTP/1.1 ` ครบ `expect` โดยไม่รอ
+        `settle` ต่อ เทสต์ "ต้องมีแค่ 1 response เท่านั้น" (request smuggling / keep-alive
+        desync) จะผ่านแบบไม่มีความหมาย — มันไม่เคยให้เวลาเซิร์ฟเวอร์ตีความ byte ที่เหลือ (คำขอ
+        ที่แอบแนบมา) เป็นคำขอที่สองเลย `settle` คือสิ่งที่พิสูจน์ "ไม่มีอันที่สองตามมาจริงๆ"
+        ไม่ใช่แค่ "ยังไม่มีตอนที่เรามองครั้งแรก"
         """
-        s = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
+        deadline = time.monotonic() + timeout
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=min(5.0, timeout))
         chunks: list[bytes] = []
         try:
             s.sendall(data)
-            try:
-                while True:
+            settle_until: float | None = None
+            while True:
+                now = time.monotonic()
+                if now >= deadline:
+                    break
+                if settle_until is not None and now >= settle_until:
+                    break
+                per_recv = settle_until if settle_until is not None else deadline
+                s.settimeout(max(0.05, min(per_recv - now, 0.5)))
+                try:
                     b = s.recv(65536)
-                    if not b:
-                        break
-                    chunks.append(b)
-            except OSError:
-                pass  # timeout หรือคอนเนกชันหลุด — ถือว่าอ่านจบเท่าที่ได้
+                except OSError:
+                    continue  # recv() รอบนี้หมดเวลา/ชั่วคราว — เช็ค deadline/settle รอบถัดไป
+                if not b:
+                    break  # เซิร์ฟเวอร์ปิดคอนเนกชันจริง (EOF) ไม่ใช่แค่เงียบ
+                chunks.append(b)
+                if expect is not None and settle_until is None:
+                    if b"".join(chunks).count(b"HTTP/1.1 ") >= expect:
+                        settle_until = time.monotonic() + settle
         finally:
             s.close()
         return b"".join(chunks)
@@ -690,6 +720,57 @@ class _HttpCaseMixin:
                 self.httpd.server_close()
 
         self.addCleanup(_stop)
+        self._wait_until_ready()
+
+    def _wait_until_ready(self, deadline: float = 180.0) -> None:
+        """วนยิง GET /api/config จริงจนกว่าจะได้คำตอบ 200 หรือหมดเวลาใจกว้าง (default 180s).
+
+        เหตุผล: `server.Server(...)` bind()+listen() เสร็จในตัว constructor แล้ว คอนเนกชัน
+        ใหม่จึงเข้า backlog ของ OS ได้ทันทีตั้งแต่ `thread.start()` คืนค่า — แต่ยังไม่มีใครตอบ
+        จนกว่าเธรด `serve_forever` จะได้ CPU มา accept()/dispatch จริง บน CI ที่ CPU ถูกแย่ง
+        เต็มทุกคอร์ ช่วงว่างนี้วัดได้เกิน 20 วินาที (เกินเพดาน timeout ของ `_do`) ทำให้คำขอ
+        แรกสุดของเทสต์ค้าง/ได้ 0 ไบต์อย่างเข้าใจผิดว่าเป็นบั๊กของ server.py — probe นี้ดูดซับ
+        ต้นทุน "cold start ตอน CPU ไม่ว่าง" ไว้ใน setUp (ที่ยังไม่มี assertion ใดๆ) แทน
+
+        ทำไม 180s (วัดจริง 2026-09-17 ด้วยสคริปต์โหลด `n = cpu_count()*2` ที่ผู้ว่าจ้างให้ใช้ บน
+        เครื่องนี้ 10 คอร์): การสปอว์นโปรเซสกิน CPU 20 ตัวพร้อมกันด้วย `multiprocessing.Process`
+        บน Windows ("spawn" ไม่ใช่ "fork" — รี-อิมพอร์ต interpreter ทั้งชุดต่อโปรเซส) ทำให้ OS
+        เข้าสู่ช่วง "storm" ที่เธรดของเราแทบไม่ได้ CPU เลย **ความยาวของ storm ผันผวนมาก** —
+        วัดได้ตั้งแต่ ~89 วินาที (หนึ่งรอบ, เครื่องว่างก่อนเริ่ม) ถึง >240 วินาที (สองเทสต์ติดกัน
+        ชนเพดานเดิม 120s รวมกัน 244.8s ในอีกรอบ) เมื่อพ้นช่วง storm แล้วเซิร์ฟเวอร์ตอบปกติทันที
+        (~0.3-0.4 วินาที) แม้ 20 โปรเซสนั้นจะยังรันอยู่เต็มกำลังก็ตาม — ไม่ใช่การอดอาหารตลอดไป
+        เป็นคอขวดช่วงสปอว์นโปรเซสเท่านั้น แต่ความยาวของมันคาดเดาไม่ได้แม่นยำบนเครื่องนี้
+        (น่าจะเกี่ยวกับ antivirus/disk cache ตอนโหลด interpreter image ซ้ำ 20 รอบพร้อมกัน ไม่ใช่
+        คุณสมบัติทั่วไปของ CPU contention เฉยๆ) 180s คือค่าที่เผื่อ margin เหนือกรณีเลวร้ายที่วัด
+        ได้จริงบนเครื่องนี้ ไม่ใช่เดา — แต่ก็ไม่ใช่การรับประกัน 100% ถ้า storm ยาวกว่านี้ (ดู
+        docs/tickets/BUG-059-ci-flaky-body-caps-harness.md หัวข้อ "ความเสี่ยงที่เหลือ") บน CI จริง
+        (runner เดี่ยวของ GitHub ไม่มีใครมาแย่ง CPU ขนาดนี้พร้อมกัน) เพดานนี้แทบไม่เคยถูกใช้เกิน
+        เสี้ยววินาทีแรกเลย
+        """
+        t0 = time.monotonic()
+        delay = 0.02
+        last_err: BaseException | None = None
+        while time.monotonic() - t0 < deadline:
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=1.0)
+                try:
+                    conn.request("GET", "/api/config")
+                    resp = conn.getresponse()
+                    resp.read()
+                    if resp.status == 200:
+                        return
+                    last_err = AssertionError(f"unexpected status {resp.status}")
+                finally:
+                    conn.close()
+            except OSError as e:
+                last_err = e
+            time.sleep(delay)
+            delay = min(delay * 1.5, 0.5)
+        self.fail(
+            f"test server on 127.0.0.1:{self.port} ไม่ตอบ GET /api/config ภายใน "
+            f"{deadline:.0f} วินาที (last_err={last_err!r}) — เธรด serve_forever อาจถูก CPU "
+            "แย่งจนไม่ได้ทำงานเลย ไม่ใช่แค่เทสต์เปราะ"
+        )
 
 
 class CloudCase(_HttpCaseMixin, unittest.TestCase):
