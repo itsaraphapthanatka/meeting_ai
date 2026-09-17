@@ -365,7 +365,21 @@
 
     <div id="d-speakers" class="chips"></div>
 
-    <audio id="d-audio" controls preload="metadata"></audio>
+    <!-- ตัวเล่นเสียงของเราเอง — <audio> ยังเป็นเครื่องยนต์ (รองรับ Range/redirect ไป R2 เอง)
+         แค่ไม่โชว์คอนโทรลของเบราว์เซอร์ ถ้าดึงไฟล์มาวาด waveform ไม่ได้ (CORS/ไฟล์ใหญ่)
+         แท่งจะเป็นความสูงเท่ากันหมดแต่ยังเลื่อนหาตำแหน่งได้ตามปกติ -->
+    <div id="player" class="player" hidden>
+      <button id="p-play" class="p-play" type="button" aria-label="เล่น">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path id="p-icon" d="M8 5.5v13l11-6.5-11-6.5Z" fill="currentColor"/>
+        </svg>
+      </button>
+      <div id="p-wave" class="p-wave" role="slider" tabindex="0"
+           aria-label="ตำแหน่งในไฟล์เสียง" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+      <span id="p-time" class="p-time">0:00</span>
+    </div>
+    <p id="p-error" class="hint" hidden></p>
+    <audio id="d-audio" preload="metadata"></audio>
 
     <!-- จอแคบ: สรุปกับบทถอดเสียงยาวมากทั้งคู่ วางต่อกันแล้วต้องเลื่อนผ่านสรุปทั้งอันกว่าจะถึง
          บทถอดเสียง — แยกเป็นแท็บ (ดู setupDetailTabs ใน app.js) จอกว้างยังเห็นทั้งสองส่วนต่อกัน -->
