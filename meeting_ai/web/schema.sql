@@ -67,12 +67,18 @@ create table if not exists meeting_ai.meetings (
     translations      jsonb not null default '{}'::jsonb,
     -- key ของไฟล์เสียงในที่เก็บ (ดิสก์ในเครื่อง หรือ blob บน cloud)
     audio_key         text,
+    -- ความดังต่อช่วงสำหรับวาด waveform (array ของ 0-100) — worker คำนวณให้ตอนประมวลผล
+    -- null = ประชุมเก่าก่อนมีฟีเจอร์นี้ หรือคำนวณไม่สำเร็จ หน้าเว็บถอยไปวาดแท่งเท่ากัน
+    peaks             jsonb,
     -- title + สรุป + บทถอดเสียง รวมไว้ให้ค้นด้วย ILIKE ได้ทีเดียว
     -- (ภาษาไทยไม่มีช่องว่างระหว่างคำ full-text search จะพลาดมากกว่า substring)
     search_text       text not null default '',
     created_at        timestamptz not null default now(),
     updated_at        timestamptz not null default now()
 );
+
+-- ฐานที่สร้างก่อนมี waveform (BACKLOG #60)
+alter table meeting_ai.meetings add column if not exists peaks jsonb;
 
 create index if not exists meetings_owner_idx on meeting_ai.meetings (owner_id, created_at desc);
 create index if not exists meetings_created_idx on meeting_ai.meetings (created_at desc);

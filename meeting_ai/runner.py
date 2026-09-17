@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import array
 import json
+import math
 import subprocess
+import sys
 import threading
 import tempfile
 import traceback
@@ -247,6 +250,9 @@ def _transcribe_all(spec: dict, paths: dict, names: list[str],
         "summary_error": summary_error,
         "warning": warning,
         "playback": str(playback) if playback else None,
+        # คำนวณตรงนี้เพราะ worker มีทั้ง ffmpeg และไฟล์อยู่ในเครื่องแล้ว — เบราว์เซอร์ทำเองไม่ไหว
+        # กับประชุมยาว (ดู BACKLOG #60) ล้มก็แค่ไม่มี waveform หน้าเว็บยังเล่นเสียงได้ตามปกติ
+        "peaks": audio_peaks(playback) if playback else None,
         "stt": used_provider,
     }
 
@@ -255,6 +261,48 @@ def _mmss(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+PEAK_BUCKETS = 64   # เท่ากับจำนวนแท่งที่หน้าเว็บวาด (static/app.js)
+
+
+def audio_peaks(path: Path, buckets: int = PEAK_BUCKETS) -> list[int] | None:
+    """ความดังเฉลี่ย (RMS) ของไฟล์เสียงแบ่งเป็น buckets ช่วง ค่า 0-100 — None ถ้าอ่านไม่ได้.
+
+    ให้ ffmpeg คลายเป็น PCM โมโน 1 kHz แล้วคำนวณในนี้: ประชุมหนึ่งชั่วโมงเหลือ 7.2 MB
+    (3600 x 1000 x 2 ไบต์) เทียบกับการคลายเต็มอัตราซึ่งกินหลักร้อย MB ถึง GB
+    — นี่คือเหตุผลที่คำนวณฝั่ง worker แทนที่จะให้เบราว์เซอร์ถอดเอง (BACKLOG #60)
+
+    1 kHz ยังละเอียดเกินพอ: แท่งหนึ่งของประชุมหนึ่งชั่วโมงกินเวลา 56 วินาที = 56,000 ตัวอย่าง
+    """
+    proc = subprocess.run(
+        [config.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-i", str(path),
+         "-ac", "1", "-ar", "1000", "-f", "s16le", "-"],
+        capture_output=True)
+    raw = proc.stdout or b""
+    if proc.returncode != 0 or len(raw) < 2:
+        return None
+
+    samples = array.array("h")
+    samples.frombytes(raw[:len(raw) - (len(raw) % 2)])
+    if sys.byteorder != "little":
+        samples.byteswap()   # -f s16le เป็น little-endian เสมอ ไม่ว่าเครื่องจะเป็นอะไร
+    if not samples:
+        return None
+
+    per = max(1, len(samples) // buckets)
+    rms = []
+    for i in range(buckets):
+        chunk = samples[i * per:(i + 1) * per] if i < buckets - 1 else samples[i * per:]
+        if not chunk:
+            rms.append(0.0)
+            continue
+        rms.append(math.sqrt(sum(float(v) * v for v in chunk) / len(chunk)))
+
+    top = max(rms)
+    if top <= 0:
+        return None      # เงียบทั้งไฟล์ — แท่งเท่ากันหมดอยู่ดี ไม่ต้องเก็บ
+    return [int(round(v / top * 100)) for v in rms]
 
 
 SILENT_DB = -55.0   # ต่ำกว่านี้ถือว่าเงียบ (ห้องประชุมที่มีคนพูดอยู่ราว -30 ถึง -15 dB)

@@ -376,25 +376,27 @@ def create(
     speakers: list[str] | None = None,
     owner_id: str | None = None,
     visibility: str = "private",
+    peaks: list[int] | None = None,
 ) -> dict:
     with db.connect() as conn:
         conn.execute(
             f"""insert into meeting_ai.meetings
                   (id, owner_id, title, visibility, language, duration, segment_count,
                    source, template, speakers, summary, summary_error, segments,
-                   translations, audio_key, search_text)
-                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'{{}}'::jsonb,%s,%s)
+                   translations, audio_key, search_text, peaks)
+                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'{{}}'::jsonb,%s,%s,%s)
                 on conflict (id) do update set
                   title = excluded.title, language = excluded.language,
                   duration = excluded.duration, segment_count = excluded.segment_count,
                   speakers = excluded.speakers, summary = excluded.summary,
                   summary_error = excluded.summary_error, segments = excluded.segments,
                   audio_key = excluded.audio_key, search_text = excluded.search_text,
-                  updated_at = now()""",
+                  peaks = excluded.peaks, updated_at = now()""",
             (mid, owner_id, title, visibility, language, duration, len(segments),
              source, template, speakers or [], summary, summary_error,
              json.dumps(segments, ensure_ascii=False), audio_name,
-             _search_text(title, summary, segments)),
+             _search_text(title, summary, segments),
+             json.dumps(peaks) if peaks else None),
         )
     return get(mid)
 
@@ -402,7 +404,7 @@ def create(
 def get(mid: str) -> dict | None:
     with db.connect() as conn:
         row = conn.execute(
-            f"""select {_META_COLS}, summary, segments, translations
+            f"""select {_META_COLS}, summary, segments, translations, peaks
                 from meeting_ai.meetings where id = %s""",
             (mid,),
         ).fetchone()
@@ -412,6 +414,7 @@ def get(mid: str) -> dict | None:
     out["summary"] = row[16] or ""
     out["segments_list"] = row[17] or []
     out["translations"] = row[18] or {}
+    out["peaks"] = row[19] or None
     out["transcript"] = timestamped({"segments": out["segments_list"]})
     return out
 

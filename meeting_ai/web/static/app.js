@@ -625,6 +625,179 @@ function applyHash() {
   else showNew();
 }
 
+/* ---------- ตัวเล่นเสียงพร้อม waveform ---------- */
+
+const PEAK_BARS = 64;
+const PEAK_CACHE = 'mai_peaks_';
+/* เพดานความยาวที่ยอมถอดในเบราว์เซอร์: decodeAudioData คลายไฟล์ทั้งไฟล์ลงแรมเป็น float32
+   เท่ากับ วินาที × sampleRate × 4 ไบต์ × จำนวนช่อง — เราบังคับผ่าน OfflineAudioContext ที่
+   8 kHz โมโนได้ราว 32 KB/วินาที (บางเบราว์เซอร์ยังคงจำนวนช่องเดิม จึงเผื่อเป็นสองเท่า)
+   20 นาที ≈ 77 MB ซึ่งมือถือยังไหว ยาวกว่านั้นไม่ถอด ปล่อยให้เป็นแท่งสูงเท่ากัน
+   ทางที่ถูกจริงคือให้ worker คำนวณตอนประมวลผลแล้วเก็บไว้กับการประชุม — ดู BACKLOG */
+const PEAK_MAX_SECONDS = 20 * 60;
+
+/* ยืด/ย่อชุดค่าให้พอดีกับจำนวนแท่ง — ฝั่ง worker ส่งมา 64 ค่าเท่ากับที่วาด แต่ถ้าวันหนึ่ง
+   ฝั่งใดฝั่งหนึ่งเปลี่ยนจำนวน กราฟต้องไม่เพี้ยนหรือขาดหาย */
+function resamplePeaks(src, n) {
+  if (!src || !src.length) return null;
+  if (src.length === n) return src;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const from = Math.floor(i * src.length / n);
+    const to = Math.max(from + 1, Math.floor((i + 1) * src.length / n));
+    let max = 0;
+    for (let j = from; j < to && j < src.length; j++) max = Math.max(max, src[j] || 0);
+    out.push(max);
+  }
+  return out;
+}
+
+function drawPeaks(bars, peaks) {
+  bars.forEach((b, i) => { b.style.height = `${Math.max(6, peaks[i] || 0)}%`; });
+}
+
+async function loadPeaks(mid, duration) {
+  try {
+    const hit = localStorage.getItem(PEAK_CACHE + mid);
+    if (hit) return JSON.parse(hit);
+  } catch (e) { /* โหมดส่วนตัว หรือปิด storage ไว้ — ไม่ใช่เรื่องคอขาดบาดตาย */ }
+
+  if (!duration || duration > PEAK_MAX_SECONDS) return null;
+  const Ctx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!Ctx) return null;
+
+  try {
+    // บน cloud endpoint นี้ 302 ไป R2 ซึ่งอาจไม่ตอบ CORS — ถ้า fetch ล้มก็ปล่อยให้ตกลง catch
+    const res = await fetch(`/api/meetings/${mid}/audio`);
+    if (!res.ok) return null;
+    const raw = await res.arrayBuffer();
+    // ขอ 8 kHz เพื่อให้ถอดออกมาเล็กที่สุด — ค่าที่ได้ใช้วาดกราฟ ไม่ได้ใช้ฟัง
+    const ctx = new Ctx(1, 1, 8000);
+    const buf = await ctx.decodeAudioData(raw);
+    const data = buf.getChannelData(0);
+    const per = Math.floor(data.length / PEAK_BARS) || 1;
+    const peaks = [];
+    let max = 0;
+    for (let i = 0; i < PEAK_BARS; i++) {
+      let sum = 0;
+      const from = i * per;
+      const to = Math.min(data.length, from + per);
+      for (let j = from; j < to; j++) sum += data[j] * data[j];
+      const rms = Math.sqrt(sum / Math.max(1, to - from));   // RMS อ่านง่ายกว่าค่าสูงสุด
+      peaks.push(rms);
+      if (rms > max) max = rms;
+    }
+    const scaled = peaks.map((v) => Math.round((max ? v / max : 0) * 100));
+    try { localStorage.setItem(PEAK_CACHE + mid, JSON.stringify(scaled)); } catch (e) { /* เต็มก็ช่าง */ }
+    return scaled;
+  } catch (e) {
+    return null;   // CORS, โคเดกที่ถอดไม่ได้, แรมไม่พอ — ตัวเล่นยังใช้ได้ แค่แท่งเท่ากันหมด
+  }
+}
+
+const ICON_PLAY = 'M8 5.5v13l11-6.5-11-6.5Z';
+const ICON_PAUSE = 'M7 5h3.5v14H7zM13.5 5H17v14h-3.5z';
+
+function setupPlayer(mid) {
+  const player = $('#player');
+  if (!player) return;
+  const audio = $('#d-audio');
+  const wave = $('#p-wave');
+  const playBtn = $('#p-play');
+  const timeEl = $('#p-time');
+  const errEl = $('#p-error');
+
+  player.hidden = false;
+  errEl.hidden = true;
+
+  wave.innerHTML = '';
+  const bars = [];
+  for (let i = 0; i < PEAK_BARS; i++) {
+    const b = document.createElement('span');
+    b.className = 'p-bar';
+    b.style.height = '34%';
+    wave.appendChild(b);
+    bars.push(b);
+  }
+
+  // duration ของ <audio> เชื่อไม่ได้เสมอ (สตรีม webm/ogg บางไฟล์คืน Infinity) —
+  // ถอยไปใช้ค่าที่บันทึกไว้กับการประชุมซึ่งมาจากตอนประมวลผล
+  const total = () => (Number.isFinite(audio.duration) && audio.duration > 0)
+    ? audio.duration
+    : ((state.meeting && state.meeting.duration) || 0);
+
+  const paint = () => {
+    const dur = total();
+    const frac = dur ? Math.min(1, Math.max(0, audio.currentTime / dur)) : 0;
+    const upto = Math.round(frac * PEAK_BARS);
+    for (let i = 0; i < bars.length; i++) bars[i].classList.toggle('on', i < upto);
+    timeEl.textContent = `${fmtClock(audio.currentTime)} / ${fmtClock(dur)}`;
+    wave.setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+    wave.setAttribute('aria-valuetext', `${fmtClock(audio.currentTime)} จาก ${fmtClock(dur)}`);
+  };
+
+  const setIcon = () => {
+    $('#p-icon').setAttribute('d', audio.paused ? ICON_PLAY : ICON_PAUSE);
+    playBtn.setAttribute('aria-label', audio.paused ? 'เล่น' : 'หยุดชั่วคราว');
+    player.classList.toggle('playing', !audio.paused);
+  };
+
+  playBtn.onclick = () => {
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
+  };
+  audio.addEventListener('play', setIcon);
+  audio.addEventListener('pause', setIcon);
+  audio.addEventListener('timeupdate', paint);
+  audio.addEventListener('loadedmetadata', paint);
+  audio.addEventListener('error', () => {
+    player.hidden = true;
+    errEl.hidden = false;
+    errEl.textContent = 'ไม่มีไฟล์เสียงของการประชุมนี้';
+  });
+
+  const seekTo = (clientX) => {
+    const r = wave.getBoundingClientRect();
+    if (!r.width) return;
+    const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+    const dur = total();
+    if (dur) { audio.currentTime = frac * dur; paint(); }
+  };
+  let dragging = false;
+  wave.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    try { wave.setPointerCapture(e.pointerId); } catch (err) { /* ไม่รองรับก็ลากได้อยู่ดี */ }
+    seekTo(e.clientX);
+  });
+  wave.addEventListener('pointermove', (e) => { if (dragging) seekTo(e.clientX); });
+  wave.addEventListener('pointerup', () => { dragging = false; });
+  wave.addEventListener('pointercancel', () => { dragging = false; });
+  wave.addEventListener('keydown', (e) => {
+    const dur = total();
+    if (e.key === 'ArrowRight') audio.currentTime = Math.min(dur, audio.currentTime + 5);
+    else if (e.key === 'ArrowLeft') audio.currentTime = Math.max(0, audio.currentTime - 5);
+    else if (e.key === ' ' || e.key === 'Enter') playBtn.click();
+    else return;
+    e.preventDefault();
+    paint();
+  });
+
+  setIcon();
+  paint();
+
+  // ทางหลัก: worker คำนวณให้ตอนประมวลผลแล้ว (BACKLOG #60) — ได้ทุกความยาว ไม่ต้องโหลดไฟล์ซ้ำ
+  const served = resamplePeaks((state.meeting && state.meeting.peaks) || null, PEAK_BARS);
+  if (served) {
+    drawPeaks(bars, served);
+    return;
+  }
+  // ทางสำรอง: ประชุมเก่าที่บันทึกไว้ก่อนมีฟีเจอร์นี้ — ถอดในเบราว์เซอร์ถ้าไฟล์สั้นพอ
+  loadPeaks(mid, (state.meeting && state.meeting.duration) || 0).then((peaks) => {
+    // ผู้ใช้อาจเปิดการประชุมอื่นไปแล้วระหว่างรอถอดไฟล์ — อย่าวาดทับของใหม่
+    if (peaks && state.current === mid) drawPeaks(bars, peaks);
+  });
+}
+
 /* action sheet ของหน้ารายละเอียด — ไม่สร้างปุ่มชุดใหม่ แต่ให้ CSS ย้าย .detail-actions
    (ปุ่มดาวน์โหลด/แชร์/ความเป็นส่วนตัว/ลบ ชุดเดิม) ลงมาเป็นแผ่นล่างจอตอน body.sheet-open
    ถ้าทำปุ่มใหม่ซ้อน จะมีสองชุดที่ต้องซิงก์สถานะ hidden/disabled กันเองตลอดไป */
@@ -1708,6 +1881,7 @@ async function openMeeting(id) {
     } catch (e2) { banner(`เปลี่ยนชื่อผู้พูดไม่สำเร็จ: ${e2.message}`); }
   };
 
+  setupPlayer(id);
   setupDetailTabs();
   // ปุ่มในแผ่นเป็นปุ่มเดิมของ .detail-actions — กดแล้วต้องปิดแผ่นเอง ไม่งั้นม่านค้างทับหน้า
   $('.detail-actions').addEventListener('click', () => {

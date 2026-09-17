@@ -376,6 +376,7 @@ def apply_result(job_id: str, result: dict) -> None:
             template=d.get("template") or "general",
             speakers=sanitize.speakers(result.get("speakers")),
             owner_id=d.get("owner_id"),
+            peaks=sanitize.peaks(result.get("peaks")),
         )
         if not cloud:
             with _cv:
