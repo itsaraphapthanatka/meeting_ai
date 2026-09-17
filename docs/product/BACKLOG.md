@@ -38,6 +38,9 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 | 39 | `bot.py` raw `subprocess.run` docker calls without timeout (`docker rm -f` in `join_and_record`, `docker stop` in `leave()`, `login()`), and `proc.wait(timeout=120)` raises uncaught `TimeoutExpired` instead of a Thai error | backend-dev | route through `bot._run()`; catch `TimeoutExpired` → `proc.kill()` + message |
 | 42 | Verify production has no `meetings.owner_id is null` rows: `pgstore.access()` grants `owner` to every user for such rows (intended for data migrated from file mode) | owner / devops-engineer | `select count(*) from meeting_ai.meetings where owner_id is null;` |
 
+| 55 | ✅ `store.load_detail()` cached on file mtime while four of the five detail-write paths never invalidated it — in file mode an edit could be invisible to the very next read ("I saved it and it didn't save"), intermittently | backend-dev | **fixed (uncommitted) 2026-09-17** · measured: 300 consecutive writes produce 14 distinct mtimes and 286 of them repeat the previous one, so ~95% of rapid writes were invisible to that cache · found by running the suite on #2 and #5 merged together, which neither branch's own suite does · ticket [BUG-055](../tickets/BUG-055-stale-detail-cache.md) |
+| 56 | **Lost update on `index.json` across processes.** Every file-store function does read-modify-write under a `threading.RLock`, which only guards one process. `mai web` and a CLI run share `recordings/web/`, so if both edit different meetings at once the later writer overwrites the whole file and the other edit is **gone from disk** — more severe than #55 and harder to notice | backend-dev | needs a real file lock (`msvcrt.locking` / `fcntl.flock`) or an append-log; found while fixing #55, deliberately not folded into it |
+
 ## P2 — quality, debt, docs
 | # | Item | Owner | Notes |
 |---|---|---|---|

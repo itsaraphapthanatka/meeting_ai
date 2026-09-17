@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,11 @@ SETTINGS_PATH = WEB_DIR / "settings.json"
 _lock = threading.RLock()
 # แคชรายละเอียดตาม mtime — ค้นหาต้องอ่านทุกไฟล์ ไม่อยากอ่านซ้ำทุกครั้ง
 _detail_cache: dict[str, tuple[float, dict]] = {}
+# BUG-055: mtime หยาบกว่าจังหวะเขียนของเรา (บน Windows นาฬิกาไฟล์ขยับทุก ~15 ms, FAT ทุก 2 s)
+# สองการเขียนใน tick เดียวกันจึงได้ mtime เท่ากัน แล้วแคชค้างเป็นของเก่า = "แก้แล้วไม่เซฟ"
+# กติกา: แคชได้เฉพาะไฟล์ที่นิ่งมานานกว่าความละเอียดของ timestamp แล้ว — การเขียนครั้งต่อไป
+# (โพรเซสไหนก็ตาม เพราะ CLI กับ mai web ใช้โฟลเดอร์เดียวกันได้) จะได้ mtime ใหม่เสมอ
+_CACHE_MIN_AGE = 2.0
 
 _ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 SNIPPET_PAD = 70
@@ -87,17 +93,32 @@ def _save_index(meetings: list[dict]) -> None:
     _write_json(INDEX_PATH, {"version": 1, "meetings": meetings})
 
 
+def _write_detail(mid: str, detail: dict) -> None:
+    """ทางเดียวที่เขียนไฟล์ detail — ล้างแคชในตัวเสมอ (BUG-055).
+
+    เขียนแล้วทิ้งแคชแทนที่จะยัดค่าที่เพิ่งเขียนลงไป เพราะไฟล์ที่ mtime เป็น "เดี๋ยวนี้"
+    คือไฟล์ที่โพรเซสอื่นอาจเขียนทับใน tick เดียวกันได้ — การอ่านครั้งถัดไปต้องไปดูดิสก์
+    """
+    _write_json(_detail_path(mid), detail)
+    _detail_cache.pop(mid, None)
+
+
 def load_detail(mid: str) -> dict:
     path = _detail_path(mid)
     try:
         mtime = path.stat().st_mtime
     except OSError:
+        _detail_cache.pop(mid, None)
         return {}
     cached = _detail_cache.get(mid)
     if cached and cached[0] == mtime:
         return cached[1]
     detail = _read_json(path, {})
-    _detail_cache[mid] = (mtime, detail)
+    if time.time() - mtime >= _CACHE_MIN_AGE:
+        _detail_cache[mid] = (mtime, detail)
+    else:
+        # เพิ่งถูกแก้ — mtime ยังชนกับการเขียนครั้งถัดไปได้ ห้ามแคช
+        _detail_cache.pop(mid, None)
     return detail
 
 
@@ -161,7 +182,7 @@ def create(
     }
     detail = {"id": mid, "segments": segments, "summary": summary, "translations": {}}
     with _lock:
-        _write_json(_detail_path(mid), detail)
+        _write_detail(mid, detail)
         meetings = _load_index()
         meetings = [m for m in meetings if m.get("id") != mid]
         meetings.insert(0, meta)
@@ -194,7 +215,7 @@ def set_translation(mid: str, lang: str, text: str) -> dict | None:
         translations = dict(detail.get("translations") or {})
         translations[lang] = text
         detail["translations"] = translations
-        _write_json(_detail_path(mid), detail)
+        _write_detail(mid, detail)
         meta["updated"] = datetime.now().isoformat(timespec="seconds")
         _save_index(meetings)
     return get(mid)
@@ -209,7 +230,7 @@ def set_segments(mid: str, segments: list[dict]) -> dict | None:
             return None
         detail = dict(load_detail(mid))
         detail["segments"] = segments
-        _write_json(_detail_path(mid), detail)
+        _write_detail(mid, detail)
         meta["segments"] = len(segments)
         meta["speakers"] = sorted({s["speaker"] for s in segments if s.get("speaker")})
         meta["transcript_edited"] = True
@@ -227,7 +248,7 @@ def set_summary(mid: str, summary: str, error: str | None = None) -> dict | None
             return None
         detail = dict(load_detail(mid))
         detail["summary"] = summary
-        _write_json(_detail_path(mid), detail)
+        _write_detail(mid, detail)
         meta["summary_error"] = error
         meta["updated"] = datetime.now().isoformat(timespec="seconds")
         _save_index(meetings)
@@ -244,7 +265,7 @@ def update(mid: str, title: str | None = None, summary: str | None = None) -> di
         if summary is not None:
             detail = dict(load_detail(mid))
             detail["summary"] = summary
-            _write_json(_detail_path(mid), detail)
+            _write_detail(mid, detail)
             meta["edited"] = True
             meta["summary_error"] = None  # คนเขียนสรุปเองแล้ว ไม่ต้องเตือนค้างไว้
         if title is not None:

@@ -2,6 +2,9 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-055 stale detail cache (file mode)
+- [mtime is not a cache key](file-store-mtime-cache.md) — 300 writes = 26 distinct mtimes here; cache only files settled > 2 s, and the file store is not single-process.
+
 ## 2026-09-16 — P0 fix round
 - Cloud-mode test/proof recipe: patch backend.cloud, backend.store, jobs.cloud, jobs.store, server.store (jobs.py freezes bindings at import); set REMOTE_WORKER=1 before import so jobs.start() spawns no thread.
 - jobs.draft(mid) in cloud = spec of ANY job status; check status == 'draft' explicitly before treating it as a draft.
