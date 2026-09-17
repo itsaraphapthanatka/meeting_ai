@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+- [File store concurrency (BUG-056)](file-store-concurrency.md) — msvcrt ใช้ `LK_NBLCK` ไม่ใช่ `LOCK_NBLCK`; ผู้อ่านทำให้ `os.replace` ล้ม 83% บน Windows; เทสชุดเดิมไม่แตะเส้นทางเขียนของ store
+
 ## 2026-09-16 — P0 fix round
 - Cloud-mode test/proof recipe: patch backend.cloud, backend.store, jobs.cloud, jobs.store, server.store (jobs.py freezes bindings at import); set REMOTE_WORKER=1 before import so jobs.start() spawns no thread.
 - jobs.draft(mid) in cloud = spec of ANY job status; check status == 'draft' explicitly before treating it as a draft.

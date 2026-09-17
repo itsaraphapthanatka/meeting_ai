@@ -8,16 +8,36 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import secrets
+import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ..config import config
+
+try:                      # Windows
+    import msvcrt
+except ImportError:       # pragma: no cover - ขึ้นกับระบบปฏิบัติการ
+    msvcrt = None         # type: ignore[assignment]
+try:                      # POSIX
+    import fcntl
+except ImportError:       # pragma: no cover - ขึ้นกับระบบปฏิบัติการ
+    fcntl = None          # type: ignore[assignment]
+
+# เลือกกลไกล็อกครั้งเดียวตอน import — ถ้าไม่มีเลย ห้ามไปวนรอล็อกที่ไม่มีวันได้ (ดู _file_lock)
+if msvcrt is not None and hasattr(msvcrt, "LK_NBLCK"):
+    _LOCK_KIND = "msvcrt"
+elif fcntl is not None and hasattr(fcntl, "flock"):
+    _LOCK_KIND = "fcntl"
+else:                     # pragma: no cover - ไม่มีทั้งสองโมดูล
+    _LOCK_KIND = ""
 
 WEB_DIR = config.root / "recordings" / "web"
 INDEX_PATH = WEB_DIR / "index.json"
@@ -33,6 +53,112 @@ SNIPPET_PAD = 70
 
 def _ensure_dir() -> None:
     WEB_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------- ล็อกข้ามโพรเซส (BUG-056) ----------
+# _lock กันได้แค่เธรดในโพรเซสเดียวกัน แต่ผู้ใช้เปิด mai web ค้างไว้แล้วรัน mai process/mai bot
+# ในเทอร์มินัลอีกอันได้ตลอด สองโพรเซสอ่าน index.json ชุดเดียวกันแล้วเขียนทับกัน = งานที่บันทึก
+# สำเร็จไปแล้วหายถาวร (ไฟล์ไม่เคยฉีก เพราะ _write_json เป็น atomic — ที่หายคือช่วง "อ่านแล้วยังไม่เขียน")
+LOCK_NAME = ".store.lock"
+LOCK_TIMEOUT = 10.0       # วินาที — เขตวิกฤตจริงกินเวลาระดับ ms ถ้าถึง 10 วิแปลว่ามีอะไรผิดปกติ
+REPLACE_TIMEOUT = 2.0     # วินาที — เพดานการลองใหม่ของ os.replace (ดู _write_json)
+_lock_depth = 0           # รองรับการเรียกซ้อน: จับล็อกไฟล์จริงเฉพาะชั้นนอกสุด
+
+
+def _warn(msg: str) -> None:
+    # ภาษาอังกฤษล้วน: คอนโซลของเจ้าของเครื่องเป็น cp874 ข้อความ debug ภาษาไทยทำให้ล่มซ้ำซ้อน
+    print(f"meeting_ai.store: {msg}", file=sys.stderr)
+
+
+def _store_lock_path() -> Path:
+    """คำนวณตอนเรียก ไม่ใช่ตอน import — เทสแพตช์ WEB_DIR ทีหลัง
+
+    ถ้าผูกค่าไว้ตอน import เหมือน INDEX_PATH ไฟล์ล็อกของเทสจะไปโผล่ใน recordings/web ตัวจริง
+    """
+    return WEB_DIR / LOCK_NAME
+
+
+def _try_lock(fd: int) -> bool:
+    """จองล็อกแบบไม่รอ — คืน False เมื่อโพรเซสอื่นถืออยู่ (OSError คือ 'ไม่ว่าง' ไม่ใช่ความผิดพลาด)."""
+    try:
+        if _LOCK_KIND == "msvcrt":
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(fd: int) -> None:
+    try:
+        if _LOCK_KIND == "msvcrt":
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass                                   # ปิด fd ต่อไป ระบบปฏิบัติการปล่อยล็อกให้เองอยู่แล้ว
+
+
+@contextlib.contextmanager
+def _file_lock():
+    """ล็อกทั้ง store ข้ามโพรเซส ครอบทั้งช่วง read-modify-write.
+
+    **ต้องเรียกใต้ `_lock` เสมอ — ใช้ผ่าน `_guard()` เท่านั้น** ตัวนับ `_lock_depth`
+    ปลอดภัยได้เพราะมีเธรดเดียวเข้ามาถึงตรงนี้ได้ในแต่ละครั้ง
+    ถ้าเจ้าของล็อกตาย ระบบปฏิบัติการปล่อยล็อกให้เองตอนปิด handle จึงไม่มี stale lock
+    ให้ต้องเก็บกวาด (และเราไม่ลบไฟล์ล็อกทิ้ง เพราะลบไฟล์ที่โพรเซสอื่นถือ handle อยู่คือ race ใหม่)
+    รอเกิน LOCK_TIMEOUT แล้วยังไม่ได้ = เขียนต่อโดยไม่มีล็อก (พฤติกรรมเดิมก่อนแก้บั๊กนี้)
+    ดีกว่าโยน exception ทิ้งงานของผู้ใช้ทั้งก้อน เช่นบทถอดเสียงที่เพิ่งถอดมาสี่สิบนาที
+    """
+    global _lock_depth
+    if _lock_depth:                            # ซ้อนอยู่แล้ว — ถือล็อกเดิมต่อ
+        _lock_depth += 1
+        try:
+            yield
+        finally:
+            _lock_depth -= 1
+        return
+
+    fd = None
+    if _LOCK_KIND:
+        try:
+            _ensure_dir()
+            fd = os.open(_store_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            _warn(f"cannot open store lock ({exc}); writing without it")
+            fd = None
+    if fd is not None:
+        deadline = time.monotonic() + LOCK_TIMEOUT
+        delay = 0.001
+        while not _try_lock(fd):
+            if time.monotonic() >= deadline:
+                _warn(f"store lock busy for {LOCK_TIMEOUT}s; writing without it")
+                os.close(fd)
+                fd = None
+                break
+            time.sleep(delay)
+            delay = min(delay * 2, 0.05)
+
+    # ระหว่างที่รอ โพรเซสอื่นอาจเขียน detail ไปแล้ว — ของในแคชคือของก่อนเข้าเขตล็อก ทิ้งให้หมด
+    _detail_cache.clear()
+    _lock_depth += 1
+    try:
+        yield
+    finally:
+        _lock_depth -= 1
+        # ออกจากเขตล็อกแล้วทิ้งอีกรอบ: ค่าที่เราเพิ่งเขียนอาจถูกแคชไว้ก่อนเขียน
+        _detail_cache.clear()
+        if fd is not None:
+            _unlock(fd)
+            os.close(fd)
+
+
+@contextlib.contextmanager
+def _guard():
+    """ล็อกทั้งสองชั้นตามลำดับเดิมเสมอ (เธรดก่อน แล้วค่อยไฟล์) — call site จับสลับลำดับไม่ได้."""
+    with _lock, _file_lock():
+        yield
 
 
 def new_id() -> str:
@@ -56,11 +182,29 @@ def _read_json(path: Path, default: Any) -> Any:
 
 
 def _write_json(path: Path, data: Any) -> None:
-    """เขียนแบบ atomic — ไฟล์ index พังยากขึ้นเวลาโดนขัดจังหวะ."""
+    """เขียนแบบ atomic — ไฟล์ index พังยากขึ้นเวลาโดนขัดจังหวะ.
+
+    ชื่อ tmp ต้องมี pid (BUG-056): เดิมทุกโพรเซสใช้ index.json.tmp ชื่อเดียวกัน
+    บน Windows โพรเซสหนึ่งเปิดเขียนขณะอีกโพรเซส os.replace ไฟล์เดียวกัน = PermissionError ทะลุถึงผู้ใช้
+    """
     _ensure_dir()
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    # บน Windows ถ้ามีโพรเซสอื่น "เปิดอ่าน" ไฟล์ปลายทางค้างอยู่ os.replace จะล้มเป็น PermissionError
+    # (วัดจริง: ผู้อ่านสองโพรเซสยิงต่อเนื่องทำให้ replace ล้ม 83%) และนั่นคือหน้าเว็บที่เปิดค้างไว้
+    # กับ mai process ที่เพิ่งถอดเสียงเสร็จพอดี ผู้อ่านถือไฟล์แค่ไม่กี่ไมโครวินาที จึงลองใหม่ถี่ ๆ
+    # ในกรอบสั้น ๆ ดีกว่าโยน 500 แล้วทิ้งงานที่ถอดเสียงมาทั้งชั่วโมง
+    deadline = time.monotonic() + REPLACE_TIMEOUT
+    delay = 0.001
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:      # เฉพาะ sharing violation — ENOSPC ฯลฯ ต้องเด้งทันที ไม่ต้องรอ
+            if time.monotonic() >= deadline:
+                raise      # ปล่อยไฟล์ .tmp ค้างไว้ตั้งใจ — ข้างในคือข้อมูลใหม่ที่ยังกู้ด้วยมือได้
+            time.sleep(delay)
+            delay = min(delay * 2, 0.02)
 
 
 # ---------- ตั้งค่าระบบ (แอดมินปรับ) — มี API เดียวกับ pgstore ----------
@@ -71,7 +215,7 @@ def get_setting(key: str, default: Any = None) -> Any:
 
 
 def set_setting(key: str, value: Any) -> None:
-    with _lock:
+    with _guard():
         data = _read_json(SETTINGS_PATH, {})
         data[key] = value
         _write_json(SETTINGS_PATH, data)
@@ -160,7 +304,7 @@ def create(
         "speakers": speakers or [],
     }
     detail = {"id": mid, "segments": segments, "summary": summary, "translations": {}}
-    with _lock:
+    with _guard():
         _write_json(_detail_path(mid), detail)
         meetings = _load_index()
         meetings = [m for m in meetings if m.get("id") != mid]
@@ -185,7 +329,7 @@ def get(mid: str) -> dict | None:
 
 
 def set_translation(mid: str, lang: str, text: str) -> dict | None:
-    with _lock:
+    with _guard():
         meetings = _load_index()
         meta = next((m for m in meetings if m.get("id") == mid), None)
         if meta is None:
@@ -202,7 +346,7 @@ def set_translation(mid: str, lang: str, text: str) -> dict | None:
 
 def set_segments(mid: str, segments: list[dict]) -> dict | None:
     """เขียนบทถอดเสียงที่ผู้ใช้แก้เอง (แก้คำผิดของ whisper / เปลี่ยนชื่อผู้พูด)."""
-    with _lock:
+    with _guard():
         meetings = _load_index()
         meta = next((m for m in meetings if m.get("id") == mid), None)
         if meta is None:
@@ -220,7 +364,7 @@ def set_segments(mid: str, segments: list[dict]) -> dict | None:
 
 def set_summary(mid: str, summary: str, error: str | None = None) -> dict | None:
     """เขียนสรุปที่ได้จาก AI (ใช้ตอนสรุปใหม่) — ไม่ตั้ง flag edited เพราะไม่ใช่คนแก้."""
-    with _lock:
+    with _guard():
         meetings = _load_index()
         meta = next((m for m in meetings if m.get("id") == mid), None)
         if meta is None:
@@ -236,7 +380,7 @@ def set_summary(mid: str, summary: str, error: str | None = None) -> dict | None
 
 def update(mid: str, title: str | None = None, summary: str | None = None) -> dict | None:
     """แก้ชื่อเรื่อง/สรุป (ผู้ใช้เกลาสรุปกับ action items เองได้)."""
-    with _lock:
+    with _guard():
         meetings = _load_index()
         meta = next((m for m in meetings if m.get("id") == mid), None)
         if meta is None:
@@ -255,7 +399,7 @@ def update(mid: str, title: str | None = None, summary: str | None = None) -> di
 
 
 def delete(mid: str) -> bool:
-    with _lock:
+    with _guard():
         meetings = _load_index()
         meta = next((m for m in meetings if m.get("id") == mid), None)
         if meta is None:

@@ -38,6 +38,9 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 | 39 | `bot.py` raw `subprocess.run` docker calls without timeout (`docker rm -f` in `join_and_record`, `docker stop` in `leave()`, `login()`), and `proc.wait(timeout=120)` raises uncaught `TimeoutExpired` instead of a Thai error | backend-dev | route through `bot._run()`; catch `TimeoutExpired` → `proc.kill()` + message |
 | 42 | Verify production has no `meetings.owner_id is null` rows: `pgstore.access()` grants `owner` to every user for such rows (intended for data migrated from file mode) | owner / devops-engineer | `select count(*) from meeting_ai.meetings where owner_id is null;` |
 
+| 56 | ✅ **Lost update in the file store across processes.** Read-modify-write guarded only by a `threading.RLock`, so `mai web` and a CLI run could each write the whole index back and destroy the other's record | backend-dev | **fixed (uncommitted) 2026-09-17** · cross-process lock (`msvcrt` / `fcntl`) around the whole read-modify-write · measured: Windows lost 152/500, **Linux lost up to 250/320 (78%)**, both 0 after · also fixed a Windows `os.replace` PermissionError that hit 83% of writes when a reader had the file open · tests `test_bug_056_*` (14) · ticket [BUG-056](../tickets/BUG-056-file-store-lost-update.md) |
+| 57 | The 64-test suite never touched the file store's **write** path — a constant that does not exist made `store.create` raise on every call and the suite still passed 64/64 | test-engineer | ✅ closed as part of #56: `FileStoreWritePathTests` plus a test that reproduces the broken-constant mistake and requires the suite to go red |
+
 ## P2 — quality, debt, docs
 | # | Item | Owner | Notes |
 |---|---|---|---|
