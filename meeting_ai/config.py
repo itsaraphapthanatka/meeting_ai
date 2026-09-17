@@ -50,6 +50,10 @@ class Config:
 
     # ตัวถอดเสียงที่ใช้เป็นค่าเริ่มต้น: local (whisper.cpp) หรือ api (OpenAI-compatible)
     stt_provider: str = _get("STT_PROVIDER", "local").strip().lower()
+    # มีคนตั้ง STT_PROVIDER ไว้เองจริง ๆ หรือได้ "local" มาเพราะค่าเริ่มต้นข้างบนเฉย ๆ
+    # BUG-019: stt.resolve() ต้องแยกสองเคสนี้ให้ออก — "ขอ local เอง" แล้วไม่มี whisper ต้องหยุด
+    # ไม่ใช่เงียบ ๆ อัปโหลดเสียงประชุมไป API ส่วน "ไม่มีใครตั้งอะไรเลย" (เช่นบน Vercel) ยังไป API ได้
+    stt_provider_set: bool = bool(_get("STT_PROVIDER", "").strip())
     stt_model: str = _get("STT_MODEL", "whisper-1")
     # ว่างไว้ = ใช้ค่าเดียวกับ LLM (endpoint แบบ LiteLLM มักให้ทั้งสองอย่างด้วยคีย์เดียว)
     stt_base_url_raw: str = _get("STT_BASE_URL", "")

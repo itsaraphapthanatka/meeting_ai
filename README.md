@@ -289,6 +289,12 @@ STT_API_KEY=sk-...
 ค่านี้มีผลทั้งหน้าเว็บ/worker และ CLI (`mai process`, `mai transcribe`, `mai record --process`, `mai bot`)
 อยากสลับเฉพาะครั้งนั้นให้ใส่ `--stt local` หรือ `--stt api` — ลำดับความสำคัญ: `--stt` > `STT_PROVIDER` > `local`
 
+**เลือก `local` ไว้แล้วใช้ไม่ได้ = หยุด ไม่ใช่ส่งขึ้น API ให้เอง** (BUG-019) ถ้าสั่ง `--stt local` หรือตั้ง
+`STT_PROVIDER=local` ไว้ แล้วเครื่องหา `whisper-cli`/ไฟล์โมเดลไม่เจอ งานจะ error พร้อมบอกว่าขาดอะไร —
+ไฟล์เสียงจะไม่ถูกอัปโหลดไปไหนจนกว่าจะสั่ง `--stt api` / `STT_PROVIDER=api` เอง
+ถ้า**ไม่ได้ตั้ง `STT_PROVIDER` เลย** (เช่นบน Vercel ที่ไม่มี whisper อยู่แล้ว) ยังตกไปใช้ API ให้เหมือนเดิม
+แต่จะมีบรรทัดเตือนใน log บอกว่าเสียงกำลังถูกส่งไปที่ host ไหน
+
 ใช้ได้กับอะไรก็ได้ที่พูดสเปก `/audio/transcriptions` — OpenAI, Groq, LiteLLM proxy
 
 **ไฟล์ใหญ่จัดการให้เอง:** เกิน 24 MB จะบีบเป็น opus 24kbps ก่อน ถ้ายังใหญ่เกินก็ตัดเป็นท่อนละ

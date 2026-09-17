@@ -5,6 +5,8 @@ One line per lesson; newest first. No secrets, no personal data.
 ## 2026-09-17 — BACKLOG #20 (worker --once / heartbeat)
 - [heartbeat ไม่ใช่ตัวตัดสินการ reap](worker-liveness-vs-job-reaping.md) — reaper ดู `jobs.updated_at` และรันแค่ใน `jobs.claim()`; กับดักการเขียนเทสต์ที่ขับ `worker.run()` จริง; `test_bug_011` แกว่งเมื่อรันชุดเทสต์พร้อมกันหลาย session
 
+## 2026-09-17 — BUG-019 silent STT fallback
+- [Config defaults hide user intent](config-defaults-hide-user-intent.md) — `STT_PROVIDER` default `"local"` = ไม่รู้ว่าใครสั่ง ต้องมี `*_set` flag; patch `Config` (class) ไม่ใช่ `config` (instance) เพราะ `stt_key()` เป็น classmethod; worktree ไม่มี `.env`
 ## 2026-09-17 — BUG-048
 - [Worker results are untrusted input](worker-result-is-untrusted-input.md) — `apply_result` = worker POST + the only meeting-create path; spec fields beat body fields, cloud jobs have no `_lang`.
 - Parallel agents work on sibling branches from the same commit: my worktree's `main` was 2 commits behind the owner's checkout and did NOT contain the BUG-011 `_clean_segments` hardening the ticket assumed. `git log --oneline main -3` + read the function before trusting a ticket's "X already does Y".
