@@ -2,6 +2,10 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-012 invite/first-admin TOCTOU
+- [Atomic claims for read-then-write races](toctou-atomic-claims.md) — claim before create, single statement, `not exists` does not serialize; proving races without Postgres + negative control.
+- Same file: moving an authz decision later makes guards the old early return hid newly reachable — my TOCTOU fix opened an email-enumeration oracle. Probe for it.
+- Another session may commit my worktree mid-task (`git status` clean, HEAD = a wip commit on a new branch): check `git log`/`git branch --show-current` before concluding nothing changed.
 - [File store concurrency (BUG-056)](file-store-concurrency.md) — msvcrt ใช้ `LK_NBLCK` ไม่ใช่ `LOCK_NBLCK`; ผู้อ่านทำให้ `os.replace` ล้ม 83% บน Windows; เทสชุดเดิมไม่แตะเส้นทางเขียนของ store
 ## 2026-09-17 — auth rate limit (BUG-010)
 - [กับดัก 4 ข้อของ rate limiter](rate-limit-design-traps.md) — สำเร็จแล้วล้างโควตา / เชื่อหัวข้อ proxy ผิดตัว / regex แปลง IP + IPv6 /128 / แคชทิ้งคีย์ที่เพิ่งนับ

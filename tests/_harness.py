@@ -29,8 +29,10 @@ os.environ["S3_SECRET_ACCESS_KEY"] = ""
 os.environ["S3_REGION"] = ""
 os.environ["MEETING_AI_REMOTE_BLOBS"] = ""
 
+import hashlib  # noqa: E402
 import http.client  # noqa: E402
 import json  # noqa: E402
+import secrets  # noqa: E402
 import shutil  # noqa: E402
 import socket  # noqa: E402
 import tempfile  # noqa: E402
@@ -46,7 +48,7 @@ from meeting_ai.web import store as filestore  # noqa: E402
 
 __all__ = [
     "backend", "blobstore", "jobs", "server", "filestore",
-    "FakeStore", "CloudCase", "LocalCase", "new_mid",
+    "FakeStore", "CloudCase", "LocalCase", "AuthCase", "new_mid",
 ]
 
 
@@ -68,6 +70,8 @@ class FakeStore:
     แค่พฤติกรรมที่ปลายทาง (ผลลัพธ์ของแต่ละเมธอด) ให้ตรงพอจะทดสอบชั้น server.py ได้
     """
 
+    BOOTSTRAP_KEY = "signup_bootstrap"  # ต้องตรงกับ pgstore.BOOTSTRAP_KEY (ดู pgstore.py:241)
+
     def __init__(self) -> None:
         self.sessions: dict[str, dict] = {}          # token -> user dict
         self.shares: dict[str, dict] = {}             # token -> {"meeting_id", "can_edit"}
@@ -80,11 +84,32 @@ class FakeStore:
         self.valid_id = filestore.valid_id
         self.new_id = filestore.new_id
 
-        # ---- auth / rate limit (BUG-010) ----
-        self.users: dict[str, dict] = {}               # email -> {"id","email","name","is_admin","password"}
-        self.invites: dict[str, dict] = {}              # code -> {"email"}
-        self.rate_limits: dict[str, list] = {}          # key -> [expires_at (monotonic), hits] เลียน pgstore.rate_limits
-        self.verify_password_calls: list[str] = []      # บันทึกทุกครั้งที่ "คำนวณ hash" (พิสูจน์ว่าไม่ถูกเรียกหลังบล็อก)
+        # ---- auth / signup / invite / rate limit (BUG-010 + BUG-012 รวมกัน) ----
+        # ทั้งสองตั๋วแก้คนละจุดของ auth pipeline เดียวกัน: BUG-010 เติม rate limit หน้า
+        # _login()/_signup() ส่วน BUG-012 เปลี่ยนจุดตัดสินสิทธิ์ของ _signup() จาก "สร้างผู้ใช้
+        # ก่อนแล้วค่อย redeem" (มีช่องแข่ง) เป็น claim_invite/claim_first_admin แบบ atomic
+        # ก่อนเสมอ (pgstore.py:238-313) — ทรงข้อมูลที่นี่จึงต้องตรงกับ pgstore.py จริง (BUG-012
+        # เป็นฝ่ายกำหนด เพราะ signup flow จริงเรียก ensure_user/set_password/has_password ผ่าน
+        # server.py._signup() เทียบ pgstore.py:81-138): self.users คีย์ด้วยอีเมลตัวพิมพ์เล็ก
+        # เก็บ "password_hash" (ไม่ใช่ "password" ตรงๆ) BUG-010 ไม่แคร์ทรงภายในนี้ แค่ต้องมี
+        # verify_password_calls นับจำนวนครั้งจริงที่ verify_password ถูกเรียก เพื่อพิสูจน์ว่า
+        # ไม่มีการคำนวณ hash หลังถูกบล็อก (ดูตั๋ว BUG-010 ข้อพิสูจน์ D)
+        self.users: dict[str, dict] = {}          # email (lower) -> {"id","email","name","is_admin","password_hash"}
+        self.invites: dict[str, dict] = {}         # code -> {"email","used_at","used_by","expired"}
+        self.rate_limits: dict[str, list] = {}     # key -> [expires_at (monotonic), hits] เลียน pgstore.rate_limits
+        self.verify_password_calls: list[str] = [] # บันทึกทุกครั้งที่ "คำนวณ hash" (พิสูจน์ว่าไม่ถูกเรียกหลังบล็อก)
+        # ล็อกแยกต่อ "ตาราง" จำลอง — ล็อกเฉพาะช่วง statement เดียวกันในแต่ละเมธอด ไม่ครอบ
+        # หลายเมธอดต่อกัน มิฉะนั้น fake นี้จะบังคับ atomicity ให้ทั้ง flow ของ _signup เอง
+        # ทำให้เทสต์ concurrency ผ่านโดยไม่ได้พิสูจน์ว่า production code ใช้ผลลัพธ์ของ
+        # claim_invite/claim_first_admin ถูกต้อง (ข้อสังเกตของ backend-dev ตอนรีวิว)
+        self._invite_lock = threading.Lock()
+        self._admin_lock = threading.Lock()
+        self._user_lock = threading.Lock()
+        # จุดซิงก์ที่เทสต์ concurrency ตั้งได้ (threading.Barrier ขนาด N เธรด) — ใช้แทน sleep
+        # เพื่อบังคับให้ทุกเธรดผ่าน pre-check (count_users/invite_email) มาถึงจุดนี้พร้อมกัน
+        # ก่อนแยกไปที่ claim_invite/claim_first_admin จริง (ดู has_password ข้างล่าง) แบบ
+        # deterministic — ไม่ต้องเดาเวลา sleep ที่อาจ flaky ตามความเร็วเครื่อง
+        self.sync_barrier: threading.Barrier | None = None
 
     # ---------- ผู้ใช้ / แชร์ ----------
 
@@ -95,7 +120,14 @@ class FakeStore:
         return self.shares.get(token)
 
     def count_users(self) -> int:
-        return max(len(self.sessions), 1)
+        """จำนวนบัญชีจริง (self.users) — ตัดสิน first_run ใน _signup (BUG-012).
+
+        ไม่ใช่ len(self.sessions) อีกต่อไป: session เป็นแค่ตั๋วล็อกอิน ไม่ใช่บัญชี และเทสต์
+        signup ต้องเริ่มจากระบบว่างจริง (0) ได้ — add_user() ข้างล่างจึงลงทะเบียนผู้ใช้ใน
+        self.users ให้ด้วยพร้อมกัน กัน CloudCase (ซึ่ง seed ผู้ใช้ผ่าน add_user) กลายเป็น
+        "first_run เสมอ" โดยไม่ตั้งใจ.
+        """
+        return len(self.users)
 
     # ---------- การประชุม ----------
 
@@ -227,74 +259,38 @@ class FakeStore:
         m["translations"] = translations
         return dict(m)
 
-    def verify_password(self, email: str, password: str) -> dict | None:
-        """เทสต์ BUG-011 เท่านั้นสนใจว่า body ผ่านเพดานหรือไม่ ไม่สนใจล็อกอินจริง — ไม่มี
-        รหัสผ่านจริงเก็บใน FakeStore เลยตอบ None (อีเมล/รหัสผ่านผิด) เสมอ."""
-        return None
-
     def set_visibility(self, mid: str, visibility: str) -> dict | None:
         m = self.meetings.get(mid)
         if m is None:
             return None
         m["visibility"] = visibility
         return dict(m)
-    # ---------- auth (BUG-010) — เลียน pgstore เท่าที่ _login/_signup เรียกใช้ ----------
-    # ไม่มี scrypt จริงที่นี่ (ปลอมนี้ไม่ต้องช้าเท่าของจริง) — verify_password_calls ต่างหาก
-    # คือสิ่งที่พิสูจน์ว่า "ไม่มีการคำนวณ hash หลังถูกบล็อก" (ดูตั๋ว ข้อพิสูจน์ D)
 
-    def ensure_user(self, email: str, name: str | None = None, is_admin: bool = False) -> dict:
-        email = email.strip().lower()
-        u = self.users.get(email)
-        if u is None:
-            u = {"id": f"uid-{len(self.users) + 1}", "email": email, "name": name,
-                 "is_admin": is_admin, "password": None}
-            self.users[email] = u
-        elif is_admin:
-            u["is_admin"] = True
-        return {k: v for k, v in u.items() if k != "password"}
-
-    def set_password(self, user_id: str, password: str) -> None:
-        for u in self.users.values():
-            if u["id"] == user_id:
-                u["password"] = password
-                return
+    # ---------- auth (BUG-010) — เลียน pgstore เท่าที่ _login เรียกใช้ ----------
+    # ไม่มี scrypt จริงที่นี่ (ปลอมนี้ไม่ต้องช้าเท่าของจริง — sha256 ธรรมดาพอ) —
+    # verify_password_calls ต่างหากคือสิ่งที่พิสูจน์ว่า "ไม่มีการคำนวณ hash หลังถูกบล็อก"
+    # (ดูตั๋ว ข้อพิสูจน์ D) ทรง users/password_hash เดียวกับที่ ensure_user/set_password
+    # (ส่วน BUG-012 ข้างล่าง) ใช้ — ไฟล์นี้มี "จุดเขียนรหัสผ่าน" เดียว (set_password + add_account)
+    # และ "จุดอ่านรหัสผ่าน" เดียว (verify_password) ไม่ให้มีสองทรงชนกันเหมือนก่อนรวม PR
 
     def verify_password(self, email: str, password: str) -> dict | None:
         self.verify_password_calls.append(email)
-        u = self.users.get(email.strip().lower())
-        if u is None or u.get("password") is None or u["password"] != password:
+        u = self.users.get((email or "").strip().lower())
+        if u is None or not u.get("password_hash"):
+            return None
+        if u["password_hash"] != hashlib.sha256(password.encode("utf-8")).hexdigest():
             return None
         return {"id": u["id"], "email": u["email"], "name": u.get("name"),
                 "is_admin": u.get("is_admin", False)}
-
-    def has_password(self, email: str) -> bool:
-        u = self.users.get(email.strip().lower())
-        return bool(u and u.get("password") is not None)
-
-    def create_session(self, user_id: str, user_agent: str | None = None) -> str:
-        token = f"sess-{user_id}-{len(self.sessions) + 1}"
-        u = next((v for v in self.users.values() if v["id"] == user_id), None)
-        self.sessions[token] = {"id": user_id, "email": u["email"] if u else None,
-                                 "name": u.get("name") if u else None,
-                                 "is_admin": u.get("is_admin", False) if u else False}
-        return token
 
     def drop_session(self, token: str) -> None:
         self.sessions.pop(token, None)
 
     def create_invite(self, created_by: str | None, email: str | None = None) -> str:
         code = f"inv-{len(self.invites) + 1}"
-        self.invites[code] = {"email": email}
+        self.invites[code] = {"email": (email.strip().lower() if email else None),
+                              "used_at": False, "used_by": None, "expired": False}
         return code
-
-    def invite_email(self, code: str) -> tuple:
-        inv = self.invites.get(code)
-        if inv is None:
-            return False, None
-        return True, inv.get("email")
-
-    def redeem_invite(self, code: str, user_id: str) -> bool:
-        return self.invites.pop(code, None) is not None
 
     # ---------- rate limit ชั้น "Postgres" จำลอง (BUG-010) ----------
     # fixed window เหมือน pgstore.rate_hit เป๊ะ (ดู pgstore.py) แต่เก็บในหน่วยความจำของ
@@ -320,15 +316,140 @@ class FakeStore:
 
     def add_account(self, email: str, password: str, user_id: str | None = None,
                      is_admin: bool = False, name: str | None = None) -> str:
-        """สร้างบัญชีที่ตั้งรหัสผ่านไว้แล้ว (สำหรับเทส login) — ไม่ผ่าน scrypt จริง."""
+        """สร้างบัญชีที่ตั้งรหัสผ่านไว้แล้ว (สำหรับเทส login) — ไม่ผ่าน scrypt จริง แต่เก็บเป็น
+        password_hash แบบเดียวกับ set_password (ทรงเดียวกันทั้งไฟล์ — ไม่งั้น verify_password
+        จะไม่มีวันเจอ)."""
         email = email.strip().lower()
         uid = user_id or f"uid-{len(self.users) + 1}"
-        self.users[email] = {"id": uid, "email": email, "name": name,
-                              "is_admin": is_admin, "password": password}
+        self.users[email] = {"id": uid, "email": email, "name": name, "is_admin": is_admin,
+                              "password_hash": hashlib.sha256(password.encode("utf-8")).hexdigest()}
         return uid
 
     def add_user(self, token: str, user_id: str, email: str, is_admin: bool = False) -> None:
         self.sessions[token] = {"id": user_id, "email": email, "name": None, "is_admin": is_admin}
+        # เทสต์เดิม (CloudCase) seed ผู้ใช้ผ่านทางนี้ — ลงทะเบียนใน self.users ด้วยพร้อมกัน
+        # ไม่งั้น count_users() จะเห็น 0 ทั้งที่มีคน login อยู่ 3 คน (ดู docstring count_users)
+        # password_hash เป็นค่าปลอมที่ไม่ตรงกับ sha256 ของรหัสผ่านจริงใดๆ (ตั้งใจ — บัญชีที่ seed
+        # ผ่านทางนี้ใช้ล็อกอินด้วยรหัสผ่านจริงไม่ได้ ต้องผ่าน add_account/set_password เท่านั้น)
+        self.users[email.strip().lower()] = {
+            "id": user_id, "email": email, "name": None, "is_admin": is_admin,
+            "password_hash": "seeded-for-test",
+        }
+
+    def add_invite(self, code: str, email: str | None = None, expired: bool = False,
+                   used_by: str | None = None) -> None:
+        """เตรียมรหัสเชิญให้เทสต์ — email=None แปลว่าใช้กับอีเมลไหนก็ได้.
+
+        used_by ตั้งไว้ล่วงหน้าได้เพื่อจำลอง "ถูกใช้ไปแล้ว" (used_at ก็ถูกตั้งตามไปด้วย
+        เหมือน pgstore จริงที่ used_by ไม่มีทางเป็นจริงได้ถ้า used_at ยังว่าง)
+        """
+        self.invites[code] = {
+            "email": (email.strip().lower() if email else None),
+            "used_at": bool(used_by), "used_by": used_by, "expired": expired,
+        }
+
+    # ---------- signup / invite atomic (BUG-012) ----------
+    # ทั้งเจ็ดเมธอดข้างล่างจำลอง pgstore.py ตัวจริงทีละ "statement เดียว" ตาม docstring ของแต่ละ
+    # ฟังก์ชันต้นทาง (pgstore.py:77-260) — ล็อกเฉพาะช่วงเดียวกับที่ pgstore ให้ Postgres ล็อกแถวเอง
+    # เท่านั้น (ไม่ใช่ครอบทั้ง _signup) ไม่งั้นการแข่งกันจะไม่มีทางเกิดในเทสต์เลย
+
+    def invite_email(self, code: str) -> tuple[bool, str | None]:
+        """pre-check เท่านั้น (ตรง pgstore.invite_email) — ไม่ใช่จุดตัดสินสิทธิ์ ไม่ต้องล็อก."""
+        inv = self.invites.get(code)
+        if inv is None or inv["used_by"] is not None or inv["used_at"] or inv["expired"]:
+            return (False, None)
+        return (True, inv["email"])
+
+    def has_password(self, email: str) -> bool:
+        """pre-check ธรรมดา (ตรง pgstore.has_password) — แต่เป็นจุดที่ _signup เรียกเสมอ
+        ไม่ว่า first_run หรือไม่ (ดู server.py:804) และเรียก **หลัง** pre-check อื่นทั้งหมด
+        **ก่อน** เข้าสู่ claim_invite/claim_first_admin จริง — จึงเป็นจุดที่แม่นที่สุดในการ
+        บังคับให้ N เธรดมาถึงพร้อมกันก่อนแยกไปแข่งกันที่จุดตัดสิน (แทน sleep เพื่อไม่ flaky).
+        """
+        if self.sync_barrier is not None:
+            try:
+                self.sync_barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+        email = (email or "").strip().lower()
+        u = self.users.get(email)
+        return bool(u and u.get("password_hash"))
+
+    def claim_invite(self, code: str, email: str) -> bool:
+        """ตรง pgstore.claim_invite — `update ... where ... returning` แบบ statement เดียว.
+
+        ล็อกครอบแค่การอ่าน+เขียนแถวนี้เท่านั้น (ไม่ครอบ ensure_user/set_password ที่ตามมา
+        ใน server.py) ตามที่ backend-dev ขอ — มิฉะนั้นเทสต์จะผ่านเพราะ fake เองบังคับ
+        atomicity ให้ทั้ง flow ไม่ใช่เพราะ production code ใช้ผลลัพธ์ถูกต้อง
+        """
+        email = (email or "").strip().lower()
+        with self._invite_lock:
+            inv = self.invites.get(code)
+            if inv is None:
+                return False
+            if inv["used_by"] is not None or inv["used_at"] or inv["expired"]:
+                return False
+            if inv["email"] is not None and inv["email"] != email:
+                return False
+            inv["used_at"] = True
+            return True
+
+    def attach_invite(self, code: str, user_id: str) -> bool:
+        """ตรง pgstore.attach_invite — ผูกเจ้าของหลังจองสำเร็จ (เรียกหลัง ensure_user จริง)."""
+        with self._invite_lock:
+            inv = self.invites.get(code)
+            if inv is None or inv["used_by"] is not None or not inv["used_at"]:
+                return False
+            inv["used_by"] = user_id
+            return True
+
+    def claim_first_admin(self, email: str) -> bool:
+        """ตรง pgstore.claim_first_admin — คีย์ settings[BOOTSTRAP_KEY] จองได้คนเดียว
+        (อีเมลเดิมจองซ้ำได้ = idempotent ตาม docstring ต้นทาง, อีเมลอื่นชนแล้วแพ้).
+        """
+        email = (email or "").strip().lower()
+        with self._admin_lock:
+            current = self.settings.get(self.BOOTSTRAP_KEY)
+            if current is not None and current != email:
+                return False
+            self.settings[self.BOOTSTRAP_KEY] = email
+            return True
+
+    def ensure_user(self, email: str, name: str | None = None, is_admin: bool = False) -> dict:
+        """ตรง pgstore.ensure_user — upsert on conflict(email) แบบ statement เดียว."""
+        email = (email or "").strip().lower()
+        with self._user_lock:
+            existing = self.users.get(email)
+            if existing is None:
+                existing = {
+                    "id": f"u-{secrets.token_hex(6)}", "email": email,
+                    "name": name, "is_admin": is_admin, "password_hash": None,
+                }
+                self.users[email] = existing
+            elif name is not None:
+                existing["name"] = name
+            return {k: v for k, v in existing.items() if k != "password_hash"}
+
+    def set_password(self, user_id: str, password: str) -> None:
+        """ตรง pgstore.set_password — เก็บแค่ hash (sha256 พอสำหรับ fake) ไม่เก็บรหัสผ่านจริง."""
+        with self._user_lock:
+            for u in self.users.values():
+                if u["id"] == user_id:
+                    u["password_hash"] = hashlib.sha256(password.encode("utf-8")).hexdigest()
+                    return
+
+    def create_session(self, user_id: str, user_agent: str | None = None) -> str:
+        """ตรง pgstore.create_session — _signup/_login เรียกต่อทันทีหลังสมัคร/ล็อกอินสำเร็จ
+        เพื่อออกคุกกี้ (server.py:760, _login_response) — ไม่มีเมธอดนี้ _signup จะ 500 ทันที
+        แม้จุดตัดสิน BUG-012 จะผ่านแล้วก็ตาม
+        """
+        token = f"tok-{secrets.token_hex(16)}"
+        user = next((u for u in self.users.values() if u["id"] == user_id), None)
+        if user is not None:
+            self.sessions[token] = {k: v for k, v in user.items() if k != "password_hash"}
+        else:
+            self.sessions[token] = {"id": user_id, "email": None, "name": None, "is_admin": False}
+        return token
 
     def add_meeting(self, mid: str, owner_id: str | None, title: str = "Meeting",
                      visibility: str = "private", **extra) -> None:
@@ -588,6 +709,47 @@ class CloudCase(_HttpCaseMixin, unittest.TestCase):
             "spec": {"id": self.M1_tr_en, "title": "Meeting 1", "owner_id": None,
                      "meeting": self.M1, "lang": "en"},
         }
+
+
+class AuthCase(_HttpCaseMixin, unittest.TestCase):
+    """โหมด cloud สำหรับเทสต์ signup/invite (BUG-012) — ต่างจาก CloudCase ตรงที่ **ไม่** เรียก
+    _seed(): ระบบเริ่มว่างเปล่าจริง (count_users() == 0) เพื่อควบคุม first_run และปล่อยให้
+    แต่ละเทสต์สร้างผู้ใช้/รหัสเชิญของตัวเองผ่าน self.signup()/self.store.add_invite() —
+    จำเป็นสำหรับเทสต์ concurrency ที่ต้องรู้แน่ชัดว่าระบบว่างกี่คนก่อนยิงพร้อมกัน
+    """
+
+    def setUp(self) -> None:
+        self.store = FakeStore()
+        self._tmp = tempfile.mkdtemp(prefix="mai-auth-test-")
+        self.store.WEB_DIR = Path(self._tmp)
+        self.addCleanup(lambda: shutil.rmtree(self._tmp, ignore_errors=True))
+
+        patches = [
+            mock.patch.object(backend, "cloud", True),
+            mock.patch.object(backend, "store", self.store),
+            mock.patch.object(jobs, "cloud", True),
+            mock.patch.object(jobs, "store", self.store),
+            mock.patch.object(server, "store", self.store),
+            mock.patch.object(server.Handler, "log_message", lambda *a, **k: None),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+        blobstore.reset()
+        self.addCleanup(blobstore.reset)
+
+        self._start_server()
+
+    def signup(self, email: str, password: str = "Passw0rd!23", invite: str = "",
+              name: str | None = None):
+        """POST /api/auth/signup — คืน (status, body, headers) เหมือน self.post_json อื่นๆ."""
+        body: dict = {"email": email, "password": password}
+        if invite:
+            body["invite"] = invite
+        if name is not None:
+            body["name"] = name
+        return self.post_json("/api/auth/signup", body)
 
 
 class LocalCase(_HttpCaseMixin, unittest.TestCase):

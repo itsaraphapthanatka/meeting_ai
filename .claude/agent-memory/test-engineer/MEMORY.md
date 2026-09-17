@@ -2,6 +2,11 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-012 invite/first-admin TOCTOU
+- [Deterministic race reproduction without sleeps](bug-012-toctou-fake-store-sync.md) — Barrier hook in the store's unconditional last pre-check method (`has_password`), not `time.sleep`.
+- [Per-statement locks in FakeStore atomic methods](fake-store-atomicity-per-statement.md) — one lock per method body only, or concurrency tests pass for the wrong reason.
+- `tests/_harness.py::FakeStore.count_users()` now counts `self.users` (real accounts), not `len(self.sessions)`; `add_user()` (used by CloudCase seeding) populates both so old tests keep first_run=False.
+- Added `tests/_harness.py::AuthCase` — cloud-mode case that skips `CloudCase._seed()` so tests control `count_users()==0` exactly, needed for first-admin race tests.
 ## 2026-09-17 — BUG-056 file store lost update
 - [Subprocess regression pattern for cross-process lock bugs](memory_bug056_subprocess_regression.md) — real Popen children + file barrier, not threads; verify non-vacuousness by nulling the guard.
 ## 2026-09-17 — BUG-010 login rate limit (2 rounds)

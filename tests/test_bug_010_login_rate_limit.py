@@ -169,12 +169,17 @@ class TestForwardedFor(RateLimitBase):
 class TestSignupRateLimit(RateLimitBase):
     def test_bug_010_signup_is_rate_limited_in_its_own_bucket(self):
         # invite ผิดพลาดพอที่จะไม่ทำให้ signup สำเร็จ (สำเร็จจะเรียก _rate_ok และล้างตัวนับ) แต่
-        # rate limit ต้องถูกเช็คก่อนตรวจ invite เสมอ — เห็นผลเป็น 403 ซ้ำๆ จนกว่าจะถึงเพดาน
+        # rate limit ต้องถูกเช็คก่อนตรวจ invite เสมอ — เห็นผลเป็นสถานะเดิมซ้ำๆ จนกว่าจะถึงเพดาน
+        #
+        # สถานะที่คาดคือ 409 ไม่ใช่ 403: BUG-012 ย้ายการตัดสินสิทธิ์ไปที่ claim_invite() แบบ
+        # atomic แล้วให้รหัสเชิญที่ไม่มีจริง/หมดอายุ/ถูกใช้แล้ว ตอบ 409 ด้วยข้อความเดียวกัน
+        # ทั้งสามกรณี (กันใช้ความต่างของข้อความไปเดาว่าอีเมลไหนมีบัญชีอยู่)
+        # เทสต์นี้เขียนก่อน BUG-012 จึงเคย assert 403 — ส่วนที่พิสูจน์ rate limit ไม่เปลี่ยน
         body = {"email": "newperson@example.com", "password": "a-long-enough-pw",
                 "invite": "not-a-real-invite-code"}
 
         statuses = self._spam(SIGNUP, body, LIMIT)
-        self.assertEqual(statuses, [403] * LIMIT)
+        self.assertEqual(statuses, [409] * LIMIT)
 
         status, resp_body, headers = self.post_json(SIGNUP, body)
         self.assertEqual(status, 429)

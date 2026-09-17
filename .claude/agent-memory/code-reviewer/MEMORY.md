@@ -2,6 +2,9 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-012 invite TOCTOU review
+- [Early return hides an oracle](early-return-hides-oracle.md) — deleting a guard to fix a race made signup answer "this email exists" to anyone.
+- [pgstore review checks](pgstore-review-checks.md) — schema defaults, single writer, ambiguous intermediate row state, scrypt inside the pooled connection, settings-as-mutex.
 ## 2026-09-16 — BUG-011 body caps review
 - [ตรวจ diff เพดาน body / 413](http-body-limit-review.md) — deadline ระหว่าง loop ไม่ใช่เพดานเวลา, close_connection ไม่ส่ง Connection: close, chunked ข้ามเพดาน, ฟังก์ชันพี่น้องลืมแก้
 ## 2026-09-16 — BUG-045 blob storage opt-in
