@@ -218,6 +218,25 @@ class TestPeaksAgainstRealDb(unittest.TestCase):
         self._create([9, 9, 9])
         self.assertEqual(self.pgstore.get(self.mid)["peaks"], [9, 9, 9])
 
+    def test_get_and_create_survive_a_database_without_the_column(self):
+        """เจอจริงบน production 2026-09-18: deploy โค้ดใหม่แล้วแต่ยังไม่ได้รัน db-init
+
+        `select ... peaks` ทำให้ **เปิดการประชุมไม่ได้ทั้งระบบ** ทั้งที่ waveform เป็นของเสริม
+        บน Vercel การ deploy โค้ดกับการ migrate เป็นคนละขั้นตอน โค้ดขึ้นก่อน schema เสมอ
+        """
+        with self.pgdb.connect() as conn:
+            conn.execute("alter table meeting_ai.meetings drop column if exists peaks")
+        self.pgstore.reset_peaks_cache()
+        try:
+            self._create([1, 2, 3])          # ส่ง peaks มาแต่ฐานรับไม่ได้ — ต้องไม่ระเบิด
+            got = self.pgstore.get(self.mid)
+            self.assertIsNotNone(got, "เปิดการประชุมไม่ได้เมื่อฐานยังไม่มีคอลัมน์")
+            self.assertIsNone(got["peaks"])
+            self.assertEqual(got["title"], "ทดสอบ peaks")
+            self.assertEqual(len(got["segments_list"]), 1)
+        finally:
+            self.pgdb.init()                 # คืนคอลัมน์ให้เทสต์ตัวอื่น + ล้างแคชให้เอง
+
     def test_column_exists_after_init(self):
         # db.init() รัน schema.sql ซึ่งมีทั้ง create table และ alter table add column if not exists
         with self.pgdb.connect() as conn:
