@@ -145,3 +145,17 @@ create table if not exists meeting_ai.settings (
     value       jsonb not null,
     updated_at  timestamptz not null default now()
 );
+
+-- ---------- จำกัดอัตราคำขอ (ตัวนับกลางของเส้นสาธารณะที่ราคาแพง) ----------
+
+-- ล็อกอิน/สมัคร ยิงได้โดยไม่ต้องมี session และเรียก scrypt (~16 MB + CPU ต่อครั้ง)
+-- ตัวนับต้องอยู่ในฐานข้อมูล เพราะบน Vercel แต่ละ request ไปคนละ instance
+-- ตัวนับในหน่วยความจำจึงไม่ได้กันอะไรเลยที่นั่น (ดู docs/tickets/BUG-010)
+-- key = "<scope>:<ip>" เช่น login:203.0.113.4 — หนึ่งแถวต่อ IP ต่อ scope หมดอายุแล้วนับใหม่
+create table if not exists meeting_ai.rate_limits (
+    key         text primary key,
+    hits        integer not null default 0,
+    expires_at  timestamptz not null default now()
+);
+
+create index if not exists rate_limits_expires_idx on meeting_ai.rate_limits (expires_at);

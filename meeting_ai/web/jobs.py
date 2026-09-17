@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 import socket
 import tempfile
 import threading
@@ -36,6 +37,28 @@ _cv = threading.Condition(threading.RLock())
 _live_lock = threading.Lock()
 _worker: threading.Thread | None = None
 _worker_lock = threading.Lock()
+
+
+# ส่วนท้ายของ job id (หลังจุดแรก) — อนุญาตแค่ตัวอักษร/ตัวเลข/จุด/ขีด
+_JOB_SUFFIX_RE = re.compile(r"[A-Za-z0-9._-]*")
+
+# หยิบงานเดิมซ้ำได้กี่ครั้งก่อนถือว่าไม่มีวันสำเร็จ — กันงานที่ worker ทำไม่จบ (เช่น id เป็นพิษ
+# จากก่อนแพตช์ BUG-044 ที่รายงานผลกลับไม่ได้) วนเข้า jobs_reap -> claim -> เรียก LLM ใหม่ไม่รู้จบ
+MAX_ATTEMPTS = 5
+
+
+def safe_job_id(job_id: str) -> bool:
+    """job id ที่เอาไปประกอบเป็นชื่อไฟล์ได้อย่างปลอดภัย (BUG-044).
+
+    ระบบสร้าง id แค่สองแบบ: `<meeting id>` และ `<meeting id>.tr.<lang>` ฐานจึงต้องผ่าน
+    valid_id เสมอ ส่วนท้ายอนุญาตเฉพาะ [A-Za-z0-9._-] = ล็อกรูปของทั้ง id ไว้ทีเดียว
+    จึงกันทั้งตัวคั่น path (`/` ทุกระบบ, `\\` บน Windows) และ NUL/อักขระควบคุมที่ผ่าน
+    Path() ไปได้แล้วไประเบิดเป็น 500 ตอน open() — เช็คแค่ `Path(job_id).name != job_id`
+    ไม่พอด้วยเหตุผลหลัง (และบน POSIX `\\` ก็ไม่ใช่ตัวคั่น จึงไม่ถูกกันเลย)
+    เคยมีช่องให้เขียนไฟล์นอก WEB_DIR ผ่าน `.../jobs/<id>/audio` ที่ id มี `%2F..%2F`
+    """
+    base, _, suffix = (job_id or "").partition(".")
+    return store.valid_id(base) and bool(_JOB_SUFFIX_RE.fullmatch(suffix))
 
 
 def _now() -> str:
@@ -420,6 +443,17 @@ def claim(worker: str | None = None, kinds: list[str] | None = None) -> dict | N
             job = store.job_claim(worker, kinds)
             if job is None:
                 return None
+            # งานที่ id ประกอบเป็นชื่อไฟล์ไม่ได้ (ข้อมูลเก่าก่อนแพตช์ BUG-044) ต้องจบตรงนี้:
+            # ปล่อยไปแล้ว worker รายงาน progress/result/error กลับไม่ได้เลย (server ตอบ 400)
+            # งานจะค้าง running -> jobs_reap คืนคิว -> claim ใหม่ทุก 30 นาทีไม่รู้จบ
+            # และเรียก LLM ด้วยสรุปการประชุมเดิมซ้ำทุกรอบ
+            if not safe_job_id(job["id"]):
+                fail(job["id"], "id ของงานนี้ไม่ปลอดภัย จึงประมวลผลต่อไม่ได้ — ยกเลิกงาน")
+                continue
+            if (job.get("_attempts") or 0) > MAX_ATTEMPTS:
+                fail(job["id"], f"งานนี้ถูกหยิบไปทำซ้ำเกิน {MAX_ATTEMPTS} ครั้งแล้วยังไม่สำเร็จ "
+                                "— หยุดไว้ก่อน กดสั่งใหม่ได้ถ้าต้องการลองอีกครั้ง")
+                continue
             spec = build_spec(job["id"])
             if spec is None:
                 fail(job["id"], "ข้อมูลของงานนี้หายไปก่อนจะได้ประมวลผล")
@@ -432,6 +466,9 @@ def claim(worker: str | None = None, kinds: list[str] | None = None) -> dict | N
     with _cv:
         while _pending:
             job_id = _pending.popleft()
+            if not safe_job_id(job_id):        # เหตุผลเดียวกับฝั่ง cloud ด้านบน
+                fail(job_id, "id ของงานนี้ไม่ปลอดภัย จึงประมวลผลต่อไม่ได้ — ยกเลิกงาน")
+                continue
             spec = build_spec(job_id)
             if spec is not None and kinds is not None and spec["kind"] not in kinds:
                 # เครื่องนี้ทำงานชนิดนี้ไม่ได้ — พักไว้แล้วมองงานถัดไป

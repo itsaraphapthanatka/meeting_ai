@@ -2,13 +2,16 @@
 <html lang="th">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover: ให้เนื้อหาเลยเข้าไปถึงขอบจอ iPhone ที่มี notch/home indicator
+     แถบควบคุมลอยด้านล่างใช้ env(safe-area-inset-bottom) เว้นระยะจาก home indicator เอง -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>meeting_ai — บันทึกและสรุปการประชุม</title>
 <!-- ฝัง favicon เป็น data URI ไปเลย เบราว์เซอร์จะได้ไม่ยิงหา /favicon.ico แล้วได้ 404 -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%99%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#2563eb">
+<meta name="theme-color" content="#5856d6">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#5e5ce6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="meeting_ai">
 <link rel="apple-touch-icon" href="/static/icon.svg">
@@ -184,7 +187,6 @@
           <label><input id="c-live" type="checkbox" checked> แสดงข้อความสดระหว่างประชุม</label>
         </div>
         <div id="rec-idle">
-          <button id="btn-rec" class="btn btn-rec" type="button">เริ่มอัด</button>
           <p id="rec-hint" class="hint"></p>
         </div>
         <div id="rec-live" hidden>
@@ -192,9 +194,11 @@
             <span class="dot"></span>
             <span id="rec-time" class="rec-time">00:00</span>
           </div>
+          <!-- คลื่นเสียงสด (.wave) ขับด้วย AnalyserNode — .meter เป็น fallback ตอน
+               prefers-reduced-motion เท่านั้น (สลับกันด้วย CSS ไม่ใช่ JS ดู style.css) -->
+          <div id="wave" class="wave" aria-hidden="true"></div>
           <div class="meter"><div id="meter-bar" class="meter-bar"></div></div>
           <p id="rec-warn" class="warn" hidden></p>
-          <button id="btn-stop" class="btn btn-stop" type="button">หยุดอัดแล้วสรุป</button>
         </div>
       </div>
 
@@ -235,10 +239,20 @@
       </div>
     </div>
 
+    <!-- แถบควบคุมลอยด้านล่าง (floating bottom control bar) — position:fixed ใน CSS
+         จึงวางไว้นอก .cards ก็ได้ สลับเนื้อหาไปตามสถานะเดียวกับ #rec-idle/#rec-live -->
+    <div id="floatbar-idle" class="floatbar">
+      <button id="btn-rec" class="fab-pill fab-rec" type="button">⏺ เริ่มอัด</button>
+    </div>
+    <div id="floatbar-live" class="floatbar" hidden>
+      <button id="btn-mute" class="fab-pill" type="button" aria-pressed="false">🎙️ ปิดไมค์</button>
+      <button id="btn-stop" class="fab-pill fab-stop" type="button">⏹ หยุดอัดแล้วสรุป</button>
+    </div>
+
     <div id="live-wrap" class="live-wrap" hidden>
       <div class="section-head">
         <h3>📝 ข้อความสด</h3>
-        <span id="live-status" class="muted"></span>
+        <span id="live-status" class="live-badge"></span>
       </div>
       <div id="live-text" class="live-text"></div>
     </div>
@@ -284,7 +298,10 @@
     <audio id="d-audio" controls preload="metadata"></audio>
 
     <div class="section-head">
-      <h3>สรุป</h3>
+      <div>
+        <h3>สรุป</h3>
+        <span id="d-ai-live" class="ai-live" hidden>กำลังสรุปด้วย AI<span class="cursor">▍</span></span>
+      </div>
       <div>
         <select id="d-lang" class="mini-select" title="ภาษาของสรุป"></select>
         <button id="d-translate" class="btn btn-sm" type="button">แปล</button>

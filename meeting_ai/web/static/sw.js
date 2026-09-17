@@ -1,7 +1,9 @@
 /* service worker — แคชเฉพาะเปลือกแอปให้เปิดจากมือถือได้เร็ว
    ข้อมูลประชุมและเสียง "ห้ามแคช" เพราะเป็นเนื้อหาส่วนตัวและเปลี่ยนตลอด */
 
-const SHELL = 'mai-shell-v1';
+// v2: ธีม/สไตล์เปลี่ยนทั้งชุด (2026-09-16) — ต้องตั้งชื่อแคชใหม่ ไม่งั้นผู้ใช้เก่าที่เคย
+// ติดตั้ง PWA ไว้แล้วจะยังเห็น style.css รุ่นก่อนหน้าที่แคชค้างอยู่ตลอดไป
+const SHELL = 'mai-shell-v2';
 const SHELL_FILES = ['/', '/static/app.js', '/static/style.css', '/static/icon.svg'];
 
 self.addEventListener('install', (e) => {
