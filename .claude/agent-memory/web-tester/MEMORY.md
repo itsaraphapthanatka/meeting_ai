@@ -1,0 +1,4 @@
+- [No browser tool attached to this agent](no_browser_tool_available.md) — role file says "browser pane" but tool list is Bash/Read/Write/Grep/Glob only; check each session
+- [recordings/web/ is shared across concurrent agent ports](shared_recordings_dir_concurrent_agents.md) — check ps/netstat before blaming/cleaning stray files in file-mode storage
+- [Front-end has no build step](no_build_step_frontend.md) — no package.json/eslint/tsconfig; report lint/typecheck/build as N/A, not FAIL
+- [Git Bash mangles UTF-8 in curl -d literals](git_bash_utf8_body.md) — use printf + --data-binary @file for Thai test bodies, don't misreport as a server bug

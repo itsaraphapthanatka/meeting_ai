@@ -27,7 +27,7 @@ _lock = threading.RLock()
 # แคชรายละเอียดตาม mtime — ค้นหาต้องอ่านทุกไฟล์ ไม่อยากอ่านซ้ำทุกครั้ง
 _detail_cache: dict[str, tuple[float, dict]] = {}
 
-_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
+_ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}")
 SNIPPET_PAD = 70
 
 
@@ -40,8 +40,12 @@ def new_id() -> str:
 
 
 def valid_id(mid: str) -> bool:
-    """กัน path traversal — id ต้องตรงรูปแบบที่เราสร้างเท่านั้น."""
-    return bool(_ID_RE.match(mid or ""))
+    """กัน path traversal — id ต้องตรงรูปแบบที่เราสร้างเท่านั้น.
+
+    fullmatch ไม่ใช่ match: `$` ของ re ยอมให้มีตัวขึ้นบรรทัดใหม่ปิดท้ายได้
+    "<id>" กับ "<id>ขึ้นบรรทัดใหม่" จึงเคยผ่านทั้งคู่ ทั้งที่ชื่อไฟล์ไม่เหมือนกัน
+    """
+    return bool(_ID_RE.fullmatch(mid or ""))
 
 
 def _detail_path(mid: str) -> Path:

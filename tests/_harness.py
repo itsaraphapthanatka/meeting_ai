@@ -201,6 +201,24 @@ class FakeStore:
     def set_setting(self, key: str, value) -> None:
         self.settings[key] = value
 
+    def job_done(self, job_id: str, meeting_id: str, step: str, warning: str | None = None) -> None:
+        j = self.jobs.get(job_id)
+        if j is None:
+            return
+        j["status"] = "done"
+        j["step"] = step
+        j["meeting_id"] = meeting_id
+        j["warning"] = warning
+
+    def set_translation(self, mid: str, lang: str, text: str) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        translations = dict(m.get("translations") or {})
+        translations[lang] = text
+        m["translations"] = translations
+        return dict(m)
+
     # ---------- helper สร้างข้อมูลตั้งต้นให้เทสต์ ----------
 
     def add_user(self, token: str, user_id: str, email: str, is_admin: bool = False) -> None:
@@ -247,7 +265,8 @@ class _HttpCaseMixin:
     """ยิง HTTP เข้า self.httpd (ตั้งใน setUp ของคลาสลูก) ด้วย http.client (ไม่โยน exception ที่ 4xx)."""
 
     def _do(self, method: str, path: str, data: bytes | None = None,
-            cookies: dict[str, str] | None = None, content_type: str | None = None):
+            cookies: dict[str, str] | None = None, content_type: str | None = None,
+            extra_headers: dict[str, str] | None = None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
             headers = {}
@@ -255,6 +274,8 @@ class _HttpCaseMixin:
                 headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
             if content_type:
                 headers["Content-Type"] = content_type
+            if extra_headers:
+                headers.update(extra_headers)  # เช่น Authorization: Bearer ... สำหรับ worker API
             conn.request(method, path, body=data, headers=headers)
             resp = conn.getresponse()
             raw = resp.read()
@@ -268,17 +289,21 @@ class _HttpCaseMixin:
                 body = raw
         return resp.status, body, dict(resp.getheaders())
 
-    def get(self, path: str, cookies: dict[str, str] | None = None):
-        return self._do("GET", path, cookies=cookies)
+    def get(self, path: str, cookies: dict[str, str] | None = None,
+            extra_headers: dict[str, str] | None = None):
+        return self._do("GET", path, cookies=cookies, extra_headers=extra_headers)
 
     def post_json(self, path: str, body: dict | None = None,
-                  cookies: dict[str, str] | None = None):
+                  cookies: dict[str, str] | None = None,
+                  extra_headers: dict[str, str] | None = None):
         return self._do("POST", path, data=json.dumps(body or {}).encode("utf-8"),
-                        cookies=cookies, content_type="application/json")
+                        cookies=cookies, content_type="application/json",
+                        extra_headers=extra_headers)
 
-    def post_bytes(self, path: str, data: bytes, cookies: dict[str, str] | None = None):
+    def post_bytes(self, path: str, data: bytes, cookies: dict[str, str] | None = None,
+                   extra_headers: dict[str, str] | None = None):
         return self._do("POST", path, data=data, cookies=cookies,
-                        content_type="application/octet-stream")
+                        content_type="application/octet-stream", extra_headers=extra_headers)
 
     def delete(self, path: str, cookies: dict[str, str] | None = None):
         return self._do("DELETE", path, cookies=cookies)
