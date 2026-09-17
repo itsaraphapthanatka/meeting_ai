@@ -280,6 +280,9 @@ function renderWorkers() {
 
 function renderList() {
   const el = $('#list');
+  // หัวข้อ "ล่าสุด" (จอแคบ) ไม่ควรลอยอยู่เหนือข้อความว่าง ๆ ว่ายังไม่มีการประชุม
+  const recent = $('#m-recent');
+  if (recent) recent.hidden = !state.meetings.length;
   if (!state.meetings.length) {
     el.innerHTML = `<li class="empty">${state.query ? 'ไม่พบการประชุมที่ตรงกับคำค้น' : 'ยังไม่มีการประชุม — กด “+ ประชุมใหม่”'}</li>`;
     return;
