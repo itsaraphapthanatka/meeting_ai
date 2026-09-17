@@ -2,6 +2,9 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-048
+- [Worker results are untrusted input](worker-result-is-untrusted-input.md) — `apply_result` = worker POST + the only meeting-create path; spec fields beat body fields, cloud jobs have no `_lang`.
+- Parallel agents work on sibling branches from the same commit: my worktree's `main` was 2 commits behind the owner's checkout and did NOT contain the BUG-011 `_clean_segments` hardening the ticket assumed. `git log --oneline main -3` + read the function before trusting a ticket's "X already does Y".
 ## 2026-09-17 — BUG-012 invite/first-admin TOCTOU
 - [Atomic claims for read-then-write races](toctou-atomic-claims.md) — claim before create, single statement, `not exists` does not serialize; proving races without Postgres + negative control.
 - Same file: moving an authz decision later makes guards the old early return hid newly reachable — my TOCTOU fix opened an email-enumeration oracle. Probe for it.

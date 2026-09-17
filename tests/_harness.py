@@ -161,6 +161,48 @@ class FakeStore:
     def audio_path(self, meta: dict):
         return None
 
+    def create(self, mid: str, title: str, audio_name: str, source: str, language: str,
+               duration: float, segments: list[dict], summary: str,
+               summary_error: str | None = None, template: str = "general",
+               speakers: list[str] | None = None, owner_id: str | None = None,
+               visibility: str = "private") -> dict:
+        """เทียบเท่า store.create()/pgstore.create() — ใช้ทดสอบ jobs.apply_result() เส้น process/bot
+
+        โดยไม่ต่อ Postgres จริง (BUG-048): ต้องเก็บค่าที่ sanitize.py คัดมาแล้วตรงๆ ไม่ตรวจซ้ำ
+        เหมือนกับ store จริงสองตัว — ถ้า apply_result() ส่ง NaN/Infinity มาที่นี่ (คือบั๊กเดิม)
+        เทสต์จะเห็นค่าที่พังในการประชุมทันที
+        """
+        m = {
+            "id": mid, "title": title, "owner_id": owner_id, "visibility": visibility,
+            "language": language, "duration": round(duration, 1), "segments": len(segments),
+            "audio": audio_name, "source": source, "template": template,
+            "speakers": list(speakers or []), "summary_error": summary_error,
+            "edited": False, "transcript_edited": False,
+            "created": _now(), "updated": _now(),
+            "summary": summary, "segments_list": list(segments), "translations": {},
+        }
+        self.meetings[mid] = m
+        return dict(m)
+
+    def set_translation(self, mid: str, lang: str, text: str) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        translations = dict(m.get("translations") or {})
+        translations[lang] = text
+        m["translations"] = translations
+        m["updated"] = _now()
+        return dict(m)
+
+    def set_summary(self, mid: str, summary: str, error: str | None = None) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        m["summary"] = summary
+        m["summary_error"] = error
+        m["updated"] = _now()
+        return dict(m)
+
     # ---------- งาน ----------
 
     def job_get(self, job_id: str) -> dict | None:
@@ -219,6 +261,25 @@ class FakeStore:
             out.append({k: v for k, v in j.items() if k != "spec"})
         return out
 
+    def job_done(self, job_id: str, meeting_id: str | None, step: str,
+                 warning: str | None) -> None:
+        j = self.jobs.get(job_id)
+        if j is None:
+            return
+        j.update(status="done", step=step, progress=1.0, meeting_id=meeting_id, warning=warning)
+
+    def job_fail(self, job_id: str, error: str) -> None:
+        j = self.jobs.get(job_id)
+        if j is None:
+            return
+        j.update(status="error", step="ผิดพลาด", error=error)
+
+    def job_progress(self, job_id: str, step: str, progress: float) -> None:
+        j = self.jobs.get(job_id)
+        if j is None:
+            return
+        j.update(status="running", step=step, progress=max(0.0, min(1.0, progress)))
+
     def job_request_stop(self, job_id: str) -> str:
         j = self.jobs.get(job_id)
         if j is None or j["status"] not in ("queued", "running"):
@@ -240,24 +301,6 @@ class FakeStore:
 
     def set_setting(self, key: str, value) -> None:
         self.settings[key] = value
-
-    def job_done(self, job_id: str, meeting_id: str, step: str, warning: str | None = None) -> None:
-        j = self.jobs.get(job_id)
-        if j is None:
-            return
-        j["status"] = "done"
-        j["step"] = step
-        j["meeting_id"] = meeting_id
-        j["warning"] = warning
-
-    def set_translation(self, mid: str, lang: str, text: str) -> dict | None:
-        m = self.meetings.get(mid)
-        if m is None:
-            return None
-        translations = dict(m.get("translations") or {})
-        translations[lang] = text
-        m["translations"] = translations
-        return dict(m)
 
     def set_visibility(self, mid: str, visibility: str) -> dict | None:
         m = self.meetings.get(mid)
@@ -538,6 +581,14 @@ class _HttpCaseMixin:
         return self._do("POST", path, data=data, cookies=cookies,
                         content_type=content_type, headers=headers,
                         extra_headers=extra_headers)
+
+    def post_worker_json(self, path: str, body: dict | None = None, token: str = ""):
+        """POST เข้า /api/worker/... พร้อม header Bearer — endpoint นี้ไม่ใช้คุกกี้เลย.
+
+        ผู้เรียกต้อง patch config.worker_token ให้ตรงกับ token ก่อน (ดู WorkerAuthMixin
+        ใน test_bug_048_apply_result.py) ไม่งั้น _worker_authed() ปฏิเสธด้วย 403 เสมอ
+        """
+        return self.post_json(path, body, headers={"Authorization": f"Bearer {token}"})
 
     def post_bytes(self, path: str, data: bytes, cookies: dict[str, str] | None = None,
                    extra_headers: dict[str, str] | None = None):

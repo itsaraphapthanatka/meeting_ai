@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .. import runner, transcriber
 from ..config import config
-from . import backend
+from . import backend, sanitize
 from .backend import cloud, store
 
 _jobs: dict[str, dict] = {}
@@ -340,10 +340,19 @@ def track_path(job_id: str, name: str) -> Path | None:
 # ---------- นำผลลัพธ์เข้าคลัง ----------
 
 def apply_result(job_id: str, result: dict) -> None:
+    """เขียนผลของงานลงคลัง.
+
+    result มาจากสองที่: runner ในโพรเซสนี้ (เชื่อได้) และ POST /api/worker/jobs/{id}/result
+    ของ worker ที่ถือ WORKER_TOKEN (เชื่อไม่ได้เต็มร้อย) — ทางเข้าเดียวกัน จึงตรวจทุกฟิลด์ที่นี่
+    ฟิลด์ที่เซิร์ฟเวอร์เป็นคนเลือกไว้แล้ว (ภาษาปลายทางของงานแปล) อ่านจาก spec ห้ามอ่านจาก result
+    รายละเอียด: docs/tickets/BUG-048-worker-result-trusted-fields.md
+    """
     job = get(job_id)
     if job is None:
         raise RuntimeError("ไม่พบงานนี้")
     kind = job["kind"]
+    summary_error = sanitize.message(result.get("summary_error"))
+    dropped = 0
 
     if kind in ("process", "bot"):
         d = draft(job_id)
@@ -353,18 +362,19 @@ def apply_result(job_id: str, result: dict) -> None:
         tracks = d.get("tracks") or {}
         audio_name = (Path(playback).name if playback
                       else Path(sorted(tracks.values())[0]).name if tracks else "")
+        clean_segments, dropped = sanitize.segments(result.get("segments"))
         store.create(
             mid=job_id,
             title=d["title"],
             audio_name=audio_name,
             source=d.get("source") or ("bot" if kind == "bot" else "upload"),
-            language=result.get("language") or config.whisper_lang,
-            duration=result.get("duration") or 0.0,
-            segments=result.get("segments") or [],
-            summary=result.get("summary") or "",
-            summary_error=result.get("summary_error"),
+            language=sanitize.language(result.get("language")) or config.whisper_lang,
+            duration=sanitize.duration(result.get("duration")),
+            segments=clean_segments,
+            summary=sanitize.text(result.get("summary")),
+            summary_error=summary_error,
             template=d.get("template") or "general",
-            speakers=result.get("speakers") or [],
+            speakers=sanitize.speakers(result.get("speakers")),
             owner_id=d.get("owner_id"),
         )
         if not cloud:
@@ -375,17 +385,29 @@ def apply_result(job_id: str, result: dict) -> None:
 
     elif kind == "summarize":
         meeting_id = _meeting_of(job)
-        store.set_summary(meeting_id, result.get("summary") or "",
-                          error=result.get("summary_error"))
+        store.set_summary(meeting_id, sanitize.text(result.get("summary")),
+                          error=summary_error)
     else:
         meeting_id = _meeting_of(job)
-        store.set_translation(meeting_id, result["lang"], result["text"])
+        # ภาษาปลายทางถูกเลือกไว้ตั้งแต่ submit_translate() และส่งให้ worker ผ่าน build_spec()
+        # ถ้าอ่านกลับจาก result ใครถือ WORKER_TOKEN ก็ยัด key อะไรก็ได้ลง translations ของคนอื่น
+        lang = str(job.get("_lang") or (job.get("_spec") or {}).get("lang") or "").strip()
+        if not lang:
+            raise RuntimeError("งานแปลนี้ไม่มีภาษาปลายทางใน spec — กดแปลใหม่อีกครั้ง")
+        translated = sanitize.text(result.get("text"))
+        if not translated.strip():
+            raise RuntimeError("ไม่ได้รับคำแปลกลับมาจากเครื่องประมวลผล — กดแปลใหม่อีกครั้ง")
+        store.set_translation(meeting_id, lang, translated)
 
-    warning = result.get("warning")
-    if result.get("summary_error"):
-        warning = (f"สรุปไม่สำเร็จ: {result['summary_error']} — บทถอดเสียงเก็บไว้แล้ว "
+    warning = sanitize.message(result.get("warning"))
+    if summary_error:
+        warning = (f"สรุปไม่สำเร็จ: {summary_error} — บทถอดเสียงเก็บไว้แล้ว "
                    "กด “สรุปใหม่ด้วย AI” เพื่อลองอีกครั้ง")
-    step = "ถอดเสียงเสร็จ แต่สรุปไม่ได้" if result.get("summary_error") else "เสร็จ"
+    if dropped:
+        note = (f"ข้ามข้อมูลบทถอดเสียงที่ผิดรูปแบบ {dropped:,} รายการ "
+                "— บทถอดเสียงอาจไม่ครบ")
+        warning = f"{warning} · {note}" if warning else note
+    step = "ถอดเสียงเสร็จ แต่สรุปไม่ได้" if summary_error else "เสร็จ"
     if cloud:
         store.job_done(job_id, meeting_id, step, warning)
     else:

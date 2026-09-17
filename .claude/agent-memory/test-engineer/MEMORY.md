@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BUG-048 worker-result sanitize
+- [BUG-048 harness additions and testing recipe](bug-048-worker-result-sanitize.md) — FakeStore needed create/set_translation/job_done etc; pair FakeStore checks with a real LocalCase GET+export check for "breaks reading later" tickets.
 ## 2026-09-17 — BUG-012 invite/first-admin TOCTOU
 - [Deterministic race reproduction without sleeps](bug-012-toctou-fake-store-sync.md) — Barrier hook in the store's unconditional last pre-check method (`has_password`), not `time.sleep`.
 - [Per-statement locks in FakeStore atomic methods](fake-store-atomicity-per-statement.md) — one lock per method body only, or concurrency tests pass for the wrong reason.
