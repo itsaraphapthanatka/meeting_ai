@@ -164,18 +164,47 @@ LANGUAGE_NAMES = {
 
 
 def _chat(messages: list[dict], temperature: float = 0.3, timeout: int = 300,
-          max_tokens: int = 4000, retries: int = 2) -> str:
-    """เรียก LLM แบบ streaming (SSE) เพื่อกัน Cloudflare 524 บน origin ที่ตอบช้า.
+          max_tokens: int | None = None, retries: int = 2) -> str:
+    """เรียก LLM แล้วคืนคำตอบที่ "จบเอง" เท่านั้น — ไม่ยอมคืนคำตอบที่ถูกตัดกลางคัน.
 
-    การถอด/สรุป transcript ยาว โมเดลอาจใช้เวลาเกิน 120 วินาที ซึ่ง Cloudflare หน้า
-    endpoint จะตัดด้วย error 524 ถ้าเป็น request เดียวรอทั้งก้อน — streaming ทำให้มี
-    byte ไหลตลอด CF จึงนับ read-timeout ใหม่เรื่อยๆ ไม่ตัดกลางคัน
-    ลองใหม่อัตโนมัติเมื่อเจอ error ชั่วคราว (524/502/503/timeout)
+    เพดาน token มาจาก LLM_MAX_TOKENS (ค่าเริ่มต้น 4000) ถ้าโมเดลตอบจนชนเพดาน
+    (finish_reason = "length") จะขยายเพดานเป็นเท่าตัวแล้วเรียกใหม่ จนถึง
+    LLM_MAX_TOKENS_CEILING แล้วจึง raise — ก่อนหน้านี้ค่านี้ฮาร์ดโค้ดไว้ 4000 และ
+    finish_reason ไม่เคยถูกอ่าน สรุปประชุมยาวๆ จึงขาดท้ายแบบเงียบๆ (BACKLOG #7)
     """
     if not config.llm_api_key:
         raise RuntimeError("ยังไม่ได้ตั้ง LLM_API_KEY ใน .env")
 
-    url = f"{config.llm_base_url}/chat/completions"
+    budget = max_tokens if max_tokens is not None else config.llm_max_tokens
+    ceiling = max(config.llm_max_tokens_ceiling, budget)
+
+    while True:
+        text, finish_reason = _request(messages, temperature, timeout, budget, retries)
+        if finish_reason != "length":
+            if not text:
+                raise RuntimeError(
+                    "LLM ไม่ได้คืนเนื้อหา (อาจใช้ token หมดไปกับ reasoning หรือถูกตัดกลางคัน) — "
+                    "ลองใหม่อีกครั้ง หรือลดความยาว transcript"
+                )
+            return text
+        if budget >= ceiling:
+            raise RuntimeError(
+                f"คำตอบจาก LLM ถูกตัดกลางคันที่เพดาน {budget} token — "
+                "ขยาย LLM_MAX_TOKENS_CEILING ใน .env หรือลดความยาว transcript"
+            )
+        budget = min(budget * 2, ceiling)
+
+
+def _request(messages: list[dict], temperature: float, timeout: int,
+             max_tokens: int, retries: int) -> tuple[str, str]:
+    """ยิง request เดียว (streaming) คืน (เนื้อหา, finish_reason).
+
+    ใช้ streaming (SSE) เพื่อกัน Cloudflare 524 บน origin ที่ตอบช้า: การถอด/สรุป
+    transcript ยาว โมเดลอาจใช้เวลาเกิน 120 วินาที ซึ่ง Cloudflare หน้า endpoint จะตัด
+    ด้วย error 524 ถ้าเป็น request เดียวรอทั้งก้อน — streaming ทำให้มี byte ไหลตลอด
+    CF จึงนับ read-timeout ใหม่เรื่อยๆ ไม่ตัดกลางคัน
+    ลองใหม่อัตโนมัติเมื่อเจอ error ชั่วคราว (524/502/503/timeout)
+    """
     payload = json.dumps({
         "model": config.llm_model,
         "messages": messages,
@@ -183,6 +212,7 @@ def _chat(messages: list[dict], temperature: float = 0.3, timeout: int = 300,
         "max_tokens": max_tokens,
         "stream": True,
     }).encode("utf-8")
+    url = f"{config.llm_base_url}/chat/completions"
 
     def build_req() -> urllib.request.Request:
         return urllib.request.Request(
@@ -220,15 +250,24 @@ def _chat(messages: list[dict], temperature: float = 0.3, timeout: int = 300,
     raise RuntimeError(f"เรียก LLM ไม่สำเร็จหลังลอง {retries + 1} ครั้ง: {last_err}")
 
 
-def _stream_chat(req: urllib.request.Request, timeout: int) -> str:
-    """อ่าน SSE stream แล้วประกอบ content. รองรับ fallback ถ้า endpoint ไม่ stream."""
+def _stream_chat(req: urllib.request.Request, timeout: int) -> tuple[str, str]:
+    """อ่าน SSE stream แล้วประกอบ content คืน (เนื้อหา, finish_reason).
+
+    finish_reason เป็น "" ถ้า endpoint ไม่ส่งมา — ผู้เรียกต้องถือว่า "จบเอง"
+    ไม่งั้น endpoint ที่ไม่ยอมส่งฟิลด์นี้จะโดนขยายเพดาน token ไปเรื่อยๆ
+    """
     parts: list[str] = []
+    finish_reason = ""
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         ctype = resp.headers.get("Content-Type", "")
         if "text/event-stream" not in ctype:
             # endpoint ไม่ stream — อ่านทั้งก้อนแบบเดิม
             data = json.loads(resp.read().decode("utf-8"))
-            return (data["choices"][0]["message"].get("content") or "").strip()
+            choice = data["choices"][0]
+            return (
+                (choice["message"].get("content") or "").strip(),
+                choice.get("finish_reason") or "",
+            )
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:"):
@@ -237,20 +276,15 @@ def _stream_chat(req: urllib.request.Request, timeout: int) -> str:
             if chunk == "[DONE]":
                 break
             try:
-                delta = json.loads(chunk)["choices"][0].get("delta") or {}
+                choice = json.loads(chunk)["choices"][0]
             except (ValueError, KeyError, IndexError):
                 continue
-            piece = delta.get("content")
+            finish_reason = choice.get("finish_reason") or finish_reason
+            piece = (choice.get("delta") or {}).get("content")
             if piece:
                 parts.append(piece)
 
-    text = "".join(parts).strip()
-    if not text:
-        raise RuntimeError(
-            "LLM ไม่ได้คืนเนื้อหา (อาจใช้ token หมดไปกับ reasoning หรือถูกตัดกลางคัน) — "
-            "ลองใหม่อีกครั้ง หรือลดความยาว transcript"
-        )
-    return text
+    return "".join(parts).strip(), finish_reason
 
 
 def summarize(

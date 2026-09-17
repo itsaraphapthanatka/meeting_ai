@@ -29,11 +29,24 @@ def _get(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _get_int(name: str, default: int, minimum: int = 1) -> int:
+    """อ่านค่า int จาก env — ค่าที่ว่าง/ไม่ใช่ตัวเลข/ต่ำกว่า minimum ให้ใช้ default."""
+    try:
+        value = int(str(os.environ.get(name, "")).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
 class Config:
     # LLM (สรุป)
     llm_base_url: str = _get("LLM_BASE_URL", "https://consoletoken.aunjai.org/api/v1").rstrip("/")
     llm_api_key: str = _get("LLM_API_KEY", "")
     llm_model: str = _get("LLM_MODEL", "gemma-4-12b")
+    # เพดาน token ของคำตอบ สรุปประชุมยาวๆ ชน 4000 แล้วถูกตัดกลางคัน (BACKLOG #7)
+    # ถ้าโดนตัด summarizer จะขยายเพดานเป็นเท่าตัวแล้วลองใหม่ จนถึง llm_max_tokens_ceiling
+    llm_max_tokens: int = _get_int("LLM_MAX_TOKENS", 4000, minimum=256)
+    llm_max_tokens_ceiling: int = _get_int("LLM_MAX_TOKENS_CEILING", 16000, minimum=256)
 
     # ตัวถอดเสียงที่ใช้เป็นค่าเริ่มต้น: local (whisper.cpp) หรือ api (OpenAI-compatible)
     stt_provider: str = _get("STT_PROVIDER", "local").strip().lower()

@@ -18,7 +18,7 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 ## P1 — wrong behaviour
 | # | Item | Owner | Notes |
 |---|---|---|---|
-| 7 | `summarizer._chat` hard-caps `max_tokens: 4000` and ignores `finish_reason` → long summaries silently truncated (introduced in commit f068e8c) | backend-dev | make configurable, raise/retry on `length` |
+| 7 | ✅ `summarizer._chat` hard-caps `max_tokens: 4000` and ignores `finish_reason` → long summaries silently truncated (introduced in commit f068e8c) | backend-dev | **fixed 2026-09-16** · `LLM_MAX_TOKENS` / `LLM_MAX_TOKENS_CEILING`, `_stream_chat` returns `finish_reason`, `_chat` doubles the budget on `length` then raises at the ceiling · tests `test_backlog_07_summary_max_tokens` (14 tests) |
 | 8 | No transcript chunking / map-reduce → multi-hour meetings overflow the LLM context | architect → backend-dev | ADR first: chunk by timestamp, summarize parts, merge |
 | 9 | `summarize()` always outputs Thai; `--lang` / meeting language never reaches the prompt | backend-dev | add `target_lang`, use `LANGUAGE_NAMES` |
 | 12 | ✅ Invite redemption TOCTOU: user created before `redeem_invite`, boolean result discarded | backend-dev | **fixed (uncommitted) 2026-09-17** · `claim_invite` / `claim_first_admin` decide in one statement before the user exists · review also closed an email-enumeration oracle the fix itself introduced · **proven on real PostgreSQL 16.15**: 12 concurrent signups on one invite gave 12 accounts before and 1 after; 12 concurrent first-signups gave 12 admins before and 1 after · tests `test_bug_012_invite_toctou` (12) · ticket [BUG-012](../tickets/BUG-012-invite-redemption-toctou.md) · no `db-init` needed |
