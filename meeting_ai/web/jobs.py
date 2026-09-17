@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 import socket
 import tempfile
 import threading
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from .. import runner, transcriber
 from ..config import config
-from . import backend
+from . import backend, sanitize
 from .backend import cloud, store
 
 _jobs: dict[str, dict] = {}
@@ -36,6 +37,28 @@ _cv = threading.Condition(threading.RLock())
 _live_lock = threading.Lock()
 _worker: threading.Thread | None = None
 _worker_lock = threading.Lock()
+
+
+# ส่วนท้ายของ job id (หลังจุดแรก) — อนุญาตแค่ตัวอักษร/ตัวเลข/จุด/ขีด
+_JOB_SUFFIX_RE = re.compile(r"[A-Za-z0-9._-]*")
+
+# หยิบงานเดิมซ้ำได้กี่ครั้งก่อนถือว่าไม่มีวันสำเร็จ — กันงานที่ worker ทำไม่จบ (เช่น id เป็นพิษ
+# จากก่อนแพตช์ BUG-044 ที่รายงานผลกลับไม่ได้) วนเข้า jobs_reap -> claim -> เรียก LLM ใหม่ไม่รู้จบ
+MAX_ATTEMPTS = 5
+
+
+def safe_job_id(job_id: str) -> bool:
+    """job id ที่เอาไปประกอบเป็นชื่อไฟล์ได้อย่างปลอดภัย (BUG-044).
+
+    ระบบสร้าง id แค่สองแบบ: `<meeting id>` และ `<meeting id>.tr.<lang>` ฐานจึงต้องผ่าน
+    valid_id เสมอ ส่วนท้ายอนุญาตเฉพาะ [A-Za-z0-9._-] = ล็อกรูปของทั้ง id ไว้ทีเดียว
+    จึงกันทั้งตัวคั่น path (`/` ทุกระบบ, `\\` บน Windows) และ NUL/อักขระควบคุมที่ผ่าน
+    Path() ไปได้แล้วไประเบิดเป็น 500 ตอน open() — เช็คแค่ `Path(job_id).name != job_id`
+    ไม่พอด้วยเหตุผลหลัง (และบน POSIX `\\` ก็ไม่ใช่ตัวคั่น จึงไม่ถูกกันเลย)
+    เคยมีช่องให้เขียนไฟล์นอก WEB_DIR ผ่าน `.../jobs/<id>/audio` ที่ id มี `%2F..%2F`
+    """
+    base, _, suffix = (job_id or "").partition(".")
+    return store.valid_id(base) and bool(_JOB_SUFFIX_RE.fullmatch(suffix))
 
 
 def _now() -> str:
@@ -317,10 +340,19 @@ def track_path(job_id: str, name: str) -> Path | None:
 # ---------- นำผลลัพธ์เข้าคลัง ----------
 
 def apply_result(job_id: str, result: dict) -> None:
+    """เขียนผลของงานลงคลัง.
+
+    result มาจากสองที่: runner ในโพรเซสนี้ (เชื่อได้) และ POST /api/worker/jobs/{id}/result
+    ของ worker ที่ถือ WORKER_TOKEN (เชื่อไม่ได้เต็มร้อย) — ทางเข้าเดียวกัน จึงตรวจทุกฟิลด์ที่นี่
+    ฟิลด์ที่เซิร์ฟเวอร์เป็นคนเลือกไว้แล้ว (ภาษาปลายทางของงานแปล) อ่านจาก spec ห้ามอ่านจาก result
+    รายละเอียด: docs/tickets/BUG-048-worker-result-trusted-fields.md
+    """
     job = get(job_id)
     if job is None:
         raise RuntimeError("ไม่พบงานนี้")
     kind = job["kind"]
+    summary_error = sanitize.message(result.get("summary_error"))
+    dropped = 0
 
     if kind in ("process", "bot"):
         d = draft(job_id)
@@ -330,18 +362,19 @@ def apply_result(job_id: str, result: dict) -> None:
         tracks = d.get("tracks") or {}
         audio_name = (Path(playback).name if playback
                       else Path(sorted(tracks.values())[0]).name if tracks else "")
+        clean_segments, dropped = sanitize.segments(result.get("segments"))
         store.create(
             mid=job_id,
             title=d["title"],
             audio_name=audio_name,
             source=d.get("source") or ("bot" if kind == "bot" else "upload"),
-            language=result.get("language") or config.whisper_lang,
-            duration=result.get("duration") or 0.0,
-            segments=result.get("segments") or [],
-            summary=result.get("summary") or "",
-            summary_error=result.get("summary_error"),
+            language=sanitize.language(result.get("language")) or config.whisper_lang,
+            duration=sanitize.duration(result.get("duration")),
+            segments=clean_segments,
+            summary=sanitize.text(result.get("summary")),
+            summary_error=summary_error,
             template=d.get("template") or "general",
-            speakers=result.get("speakers") or [],
+            speakers=sanitize.speakers(result.get("speakers")),
             owner_id=d.get("owner_id"),
         )
         if not cloud:
@@ -352,17 +385,29 @@ def apply_result(job_id: str, result: dict) -> None:
 
     elif kind == "summarize":
         meeting_id = _meeting_of(job)
-        store.set_summary(meeting_id, result.get("summary") or "",
-                          error=result.get("summary_error"))
+        store.set_summary(meeting_id, sanitize.text(result.get("summary")),
+                          error=summary_error)
     else:
         meeting_id = _meeting_of(job)
-        store.set_translation(meeting_id, result["lang"], result["text"])
+        # ภาษาปลายทางถูกเลือกไว้ตั้งแต่ submit_translate() และส่งให้ worker ผ่าน build_spec()
+        # ถ้าอ่านกลับจาก result ใครถือ WORKER_TOKEN ก็ยัด key อะไรก็ได้ลง translations ของคนอื่น
+        lang = str(job.get("_lang") or (job.get("_spec") or {}).get("lang") or "").strip()
+        if not lang:
+            raise RuntimeError("งานแปลนี้ไม่มีภาษาปลายทางใน spec — กดแปลใหม่อีกครั้ง")
+        translated = sanitize.text(result.get("text"))
+        if not translated.strip():
+            raise RuntimeError("ไม่ได้รับคำแปลกลับมาจากเครื่องประมวลผล — กดแปลใหม่อีกครั้ง")
+        store.set_translation(meeting_id, lang, translated)
 
-    warning = result.get("warning")
-    if result.get("summary_error"):
-        warning = (f"สรุปไม่สำเร็จ: {result['summary_error']} — บทถอดเสียงเก็บไว้แล้ว "
+    warning = sanitize.message(result.get("warning"))
+    if summary_error:
+        warning = (f"สรุปไม่สำเร็จ: {summary_error} — บทถอดเสียงเก็บไว้แล้ว "
                    "กด “สรุปใหม่ด้วย AI” เพื่อลองอีกครั้ง")
-    step = "ถอดเสียงเสร็จ แต่สรุปไม่ได้" if result.get("summary_error") else "เสร็จ"
+    if dropped:
+        note = (f"ข้ามข้อมูลบทถอดเสียงที่ผิดรูปแบบ {dropped:,} รายการ "
+                "— บทถอดเสียงอาจไม่ครบ")
+        warning = f"{warning} · {note}" if warning else note
+    step = "ถอดเสียงเสร็จ แต่สรุปไม่ได้" if summary_error else "เสร็จ"
     if cloud:
         store.job_done(job_id, meeting_id, step, warning)
     else:
@@ -398,6 +443,17 @@ def claim(worker: str | None = None, kinds: list[str] | None = None) -> dict | N
             job = store.job_claim(worker, kinds)
             if job is None:
                 return None
+            # งานที่ id ประกอบเป็นชื่อไฟล์ไม่ได้ (ข้อมูลเก่าก่อนแพตช์ BUG-044) ต้องจบตรงนี้:
+            # ปล่อยไปแล้ว worker รายงาน progress/result/error กลับไม่ได้เลย (server ตอบ 400)
+            # งานจะค้าง running -> jobs_reap คืนคิว -> claim ใหม่ทุก 30 นาทีไม่รู้จบ
+            # และเรียก LLM ด้วยสรุปการประชุมเดิมซ้ำทุกรอบ
+            if not safe_job_id(job["id"]):
+                fail(job["id"], "id ของงานนี้ไม่ปลอดภัย จึงประมวลผลต่อไม่ได้ — ยกเลิกงาน")
+                continue
+            if (job.get("_attempts") or 0) > MAX_ATTEMPTS:
+                fail(job["id"], f"งานนี้ถูกหยิบไปทำซ้ำเกิน {MAX_ATTEMPTS} ครั้งแล้วยังไม่สำเร็จ "
+                                "— หยุดไว้ก่อน กดสั่งใหม่ได้ถ้าต้องการลองอีกครั้ง")
+                continue
             spec = build_spec(job["id"])
             if spec is None:
                 fail(job["id"], "ข้อมูลของงานนี้หายไปก่อนจะได้ประมวลผล")
@@ -410,6 +466,9 @@ def claim(worker: str | None = None, kinds: list[str] | None = None) -> dict | N
     with _cv:
         while _pending:
             job_id = _pending.popleft()
+            if not safe_job_id(job_id):        # เหตุผลเดียวกับฝั่ง cloud ด้านบน
+                fail(job_id, "id ของงานนี้ไม่ปลอดภัย จึงประมวลผลต่อไม่ได้ — ยกเลิกงาน")
+                continue
             spec = build_spec(job_id)
             if spec is not None and kinds is not None and spec["kind"] not in kinds:
                 # เครื่องนี้ทำงานชนิดนี้ไม่ได้ — พักไว้แล้วมองงานถัดไป

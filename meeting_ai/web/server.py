@@ -7,10 +7,14 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
+import math
 import mimetypes
 import re
+import sys
 import tempfile
+import time
 import urllib.parse
 import webbrowser
 from http import HTTPStatus
@@ -19,7 +23,7 @@ from pathlib import Path
 
 from .. import diarize, stt, summarizer
 from ..config import config
-from . import backend, exports, jobs
+from . import backend, exports, jobs, ratelimit
 from .backend import store
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -32,15 +36,54 @@ ALLOWED_EXT = {
 TRACK_NAMES = {"mixed", "mic", "system"}
 MAX_UPLOAD = 2 * 1024**3      # 2 GB
 MAX_LIVE_CLIP = 32 * 1024**2  # 32 MB — คลิปสดยาวไม่กี่สิบวินาที
+# เพดาน body ของ JSON API (BUG-011): เดิม _body_json อ่านตาม Content-Length โดยไม่มีเพดานเลย
+# ค่าปริยายคือเส้น control-plane (login/signup/invite/settings/visibility/share/translate/
+# heartbeat/claim/progress/bot) — body จริงของเส้นเหล่านี้หลักร้อยไบต์ถึงไม่กี่ KB
+MAX_JSON_BODY = 64 * 1024     # 64 KB
+# สองเส้นที่รับ transcript ทั้งก้อน (worker result + PATCH meeting) ต้องใหญ่กว่ามาก
+# ตัวเลขวัดจากข้อมูล production จริง 2026-09-16 (read-only, 13 meetings) ตาม BUG-011:
+#   segment_count สูงสุด 2,905 · segments JSON ใหญ่สุด 327,374 B (เฉลี่ย 38,384 B)
+#   segments + summary + translations ใหญ่สุด 334,634 B
+# 8 MB ≈ 25 เท่าของสถิติสูงสุดวันนี้ เผื่อประชุมยาวหลายชั่วโมงและคำแปลหลายภาษา
+# (บน Vercel body ถูกตัดที่ 4.5 MB อยู่แล้ว เพดานนี้จึงเป็นด่านของฝั่ง self-host เป็นหลัก)
+MAX_JSON_TRANSCRIPT = 8 * 1024**2  # 8 MB
+# segments ที่ผู้ใช้แก้แล้วส่งกลับมา: 50,000 ≈ 17 เท่าของ 2,905 รายการที่มากที่สุดวันนี้
+MAX_SEGMENTS = 50_000
+MAX_SEGMENT_TEXT = 5_000      # ตัวอักษรต่อ segment (ประโยคพูดจริงยาวหลักร้อยตัว)
 CHUNK = 1024 * 256
+# หลังตอบ 413 ต้องระบายของที่ client ยังส่งค้างอยู่ก่อนปิด ไม่งั้น TCP ส่ง RST แล้ว
+# client เห็นเป็น "connection reset" แทนที่จะเห็น 413 (วัดจริงกับ body 20 MB)
+# ระบายทีละก้อน ไม่เก็บลงแรม หยุดเมื่อครบเพดานไบต์หรือครบ LINGER_SECONDS นับจากเริ่มระบาย
+# (เวลารวมจริง ไม่ใช่เวลาเงียบต่อ recv — ดู _drain_rejected_body) ใหญ่กว่านี้ยอมให้ reset
+LINGER_DRAIN = 64 * 1024**2   # 64 MB
+LINGER_SECONDS = 2.0
+# กันคอนเนกชันที่ไม่ขยับค้างกินเธรด — BaseHTTPRequestHandler.timeout เดิมเป็น None
+# (ไม่มี timeout เลย) ค่านี้ตกไปถึง socket ทุกตัวผ่าน StreamRequestHandler.setup()
+SOCKET_TIMEOUT = 30
 
 SESSION_COOKIE = "mai_session"
 # endpoint ที่เข้าได้ก่อนล็อกอิน (ไม่งั้นจะล็อกอินไม่ได้เลย)
 PUBLIC_API = {("config",), ("auth", "me"), ("auth", "login"), ("auth", "signup")}
 
 _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
+# Content-Length ต้องเป็นเลขล้วนตาม RFC 9110 — int() ยอมรับ "1_0", "+10", " 10 " ซึ่ง
+# proxy ข้างหน้าอ่านไม่เหมือนเรา (parser differential = ทางเปิดให้ request smuggling)
+_CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD = 8
+
+# โควตาของเส้นที่ยิงได้โดยไม่ต้องล็อกอินและเรียก scrypt (~16 MB + CPU ต่อครั้ง) — มีสองถัง
+# ต่อ IP เพราะถังเดียวไม่พอ (ดู docs/tickets/BUG-010 รอบรีวิวที่ 1):
+#   1) ถังแคบ 10 ครั้ง/15 นาที — กัน "เดารหัสผ่านรัวๆ" สูงกว่าการใช้งานจริงมาก
+#      (คนพิมพ์ผิดไม่กี่ครั้ง ตัวจัดการรหัสผ่านลองครั้งเดียว) และ **ล้างเมื่อล็อกอินสำเร็จ**
+#      เพื่อไม่ให้ออฟฟิศที่ออกเน็ต IP เดียวถูกล็อก
+#   2) ถังแข็ง 60 ครั้ง/ชั่วโมง — **ไม่ล้างเมื่อสำเร็จ** เพราะถ้าล้างได้ คนที่มีบัญชีจริงใบเดียว
+#      (หรือรหัสผ่านที่ซื้อมา) จะสลับ "เดา 9 ครั้ง + ล็อกอินของตัวเอง 1 ครั้ง" ไปได้ไม่จำกัด
+#      = ไม่มีเพดานค่า scrypt เลย ถังนี้คือเพดานจริงของงาน scrypt ต่อ IP
+AUTH_RATE_LIMIT = 10
+AUTH_RATE_WINDOW = 15 * 60
+AUTH_HARD_LIMIT = 60
+AUTH_HARD_WINDOW = 60 * 60
 
 
 # บอทอยู่ในห้องได้นานสุดเท่านี้ (นาที) — กันงานค้างกิน worker ไปทั้งวันถ้าลืมกดหยุด
@@ -60,6 +103,11 @@ def _bot_host_ok(host: str) -> bool:
     return host in BOT_HOSTS or host.endswith(BOT_HOST_SUFFIX)
 
 
+# ตัวกรอง job id ที่เอาไปตั้งชื่อไฟล์ได้ — นิยามอยู่ชั้น jobs (ที่เดียวกับที่ประกอบ id ขึ้นมา)
+# เพื่อให้ทางเข้าทั้งสองทาง (worker API ที่นี่ และ jobs.claim) ใช้เกณฑ์เดียวกันเสมอ
+_safe_job_id = jobs.safe_job_id
+
+
 def _check_join_url(url: str) -> tuple[bool, str]:
     if not url:
         return False, "ต้องใส่ลิงก์ห้องประชุม"
@@ -76,6 +124,23 @@ def _check_join_url(url: str) -> tuple[bool, str]:
 
 class BadBody(ValueError):
     """body ของคำขออ่านไม่ได้ — ตอบ 400 ไม่ใช่ 500."""
+
+
+class UnsupportedBody(ValueError):
+    """framing ของ body อ่านไม่ได้ (เช่น Transfer-Encoding: chunked) — ตอบ 501 แล้วปิด."""
+
+
+class BodyTooLarge(ValueError):
+    """body ใหญ่เกินเพดาน — ตอบ 413 โดยไม่อ่านเข้าแรม (BUG-011)."""
+
+    def __init__(self, message: str, pending: int = 0) -> None:
+        super().__init__(message)
+        self.pending = pending  # ไบต์ที่ client บอกว่าจะส่ง — ใช้กำหนดขอบเขตการระบายทิ้ง
+
+
+def _size_text(limit: int) -> str:
+    """ขนาดสำหรับข้อความ error — เพดานเล็กต้องบอกเป็น KB ไม่งั้นกลายเป็น "0 MB"."""
+    return f"{limit // 1024**2} MB" if limit >= 1024**2 else f"{limit // 1024} KB"
 
 
 def _worker_caps() -> dict | None:
@@ -151,15 +216,76 @@ def _live_recording_enabled() -> bool:
         return True
 
 
+def _ip_key(raw: str) -> str:
+    """ทำที่อยู่ผู้เรียกให้เป็นคีย์นับคำขอ — คืน "" ถ้าไม่ใช่ IP.
+
+    ใช้ ipaddress ของ stdlib แทนการเทียบด้วย regex เอง เพราะ regex ยอมรับขยะอย่าง `....`
+    หรือ `999.999.999.999` และที่ร้ายกว่าคือ `127.0.0.1:8080` — proxy บางตัว (Azure
+    Application Gateway, IIS ARR) ต่อพอร์ตมาด้วย ถ้าเก็บพอร์ตไว้ในคีย์ ทุกการเชื่อมต่อจะได้
+    ถังของตัวเอง = ไม่ได้จำกัดอะไรเลย จึงตัดพอร์ตทิ้งก่อนแล้วค่อยแปลง
+
+    IPv6 นับรวมเป็น /64 (ผู้ใช้หนึ่งรายมักได้ทั้งบล็อก /64 มาใช้ฟรีๆ ถ้านับที่ /128
+    คนเดียวจะมีถังไม่จำกัด) ส่วน IPv4 ที่ห่อมาในรูป ::ffff:a.b.c.d ให้ยุบกลับเป็น IPv4
+    """
+    addr = (raw or "").strip()
+    if addr.startswith("["):                       # [2001:db8::1]:443
+        addr = addr[1:].partition("]")[0]
+    elif addr.count(":") == 1:                     # 203.0.113.4:8080
+        addr = addr.partition(":")[0]
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return ""
+    if ip.version == 6:
+        if ip.ipv4_mapped:
+            return str(ip.ipv4_mapped)
+        return f"{ipaddress.IPv6Network((ip, 64), strict=False).network_address}/64"
+    return str(ip)
+
+
+# เตือนครั้งเดียวพอเมื่อตัวนับกลางใช้ไม่ได้ — ถ้าเงียบสนิท ระบบจะ "ดูเหมือนมี rate limit"
+# ทั้งที่ไม่มี (สภาพปกติระหว่าง deploy เสร็จแต่ยังไม่ได้รัน ./mai db-init) ซึ่งแย่กว่าไม่แก้
+_rate_db_warned = False
+
+
+def _warn_rate_db(exc: Exception) -> None:
+    global _rate_db_warned
+    if _rate_db_warned:
+        return
+    _rate_db_warned = True
+    print("⚠️  ตัวนับ rate limit ในฐานข้อมูลใช้ไม่ได้ (rate limit ของ /api/auth/* "
+          f"เหลือเฉพาะตัวนับในหน่วยความจำของแต่ละ process): {exc} — รัน `mai db-init` "
+          "เพื่อสร้างตาราง meeting_ai.rate_limits", file=sys.stderr, flush=True)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "meeting_ai"
     protocol_version = "HTTP/1.1"
+    timeout = SOCKET_TIMEOUT      # socketserver ใช้ค่านี้ settimeout ให้ทุกคอนเนกชัน
+    body_bytes = 0                # ความยาว body ของคำขอนี้ (ตั้งใหม่ทุกคำขอใน _route)
+    # เชื่อหัวข้อ X-Forwarded-For ได้เฉพาะเมื่อรู้ว่ามี proxy คั่นอยู่จริง — ไม่งั้นใครก็ปลอม
+    # หัวข้อนี้เพื่อเลี่ยง rate limit ได้ (api/index.py บน Vercel ตั้งเป็น True ให้แล้ว)
+    trust_proxy = config.trust_proxy
+    # หัวข้อที่ยอมอ่านเมื่อ trust_proxy เปิด — **ต้องมีเฉพาะหัวข้อที่ proxy ข้างหน้าเขียนทับจริง**
+    # nginx/Cloudflare ส่งหัวข้อที่ไม่รู้จักผ่านไปตรงๆ ดังนั้น X-Vercel-Forwarded-For จึงเชื่อได้
+    # เฉพาะบน Vercel เท่านั้น (api/index.py override ค่านี้) ถ้าใส่ไว้ตรงนี้ คนยิงจะส่งหัวข้อนั้น
+    # มาเองเพื่อเลือกถังของตัวเองได้ทุกคำขอ
+    forwarded_headers = ("X-Forwarded-For",)
 
     # ---------- helpers ----------
 
     def log_message(self, fmt: str, *args) -> None:  # เงียบกว่า default ที่พิมพ์ทุก request
-        if not self.path.startswith(("/static/", "/api/jobs", "/api/live")):
-            print(f"  {self.command} {self.path}", flush=True)
+        # หลังตั้ง timeout ให้ socket แล้ว http.server เรียกทางนี้ได้ตั้งแต่ยังไม่ได้อ่าน
+        # request line (คอนเนกชันเงียบจนหมดเวลา) ตอนนั้นยังไม่มี self.path/self.command
+        path = getattr(self, "path", "")
+        if path and not path.startswith(("/static/", "/api/jobs", "/api/live")):
+            print(f"  {getattr(self, 'command', '?')} {path}", flush=True)
+
+    def log_error(self, fmt: str, *args) -> None:
+        """คอนเนกชัน keep-alive ที่เงียบจนครบ timeout เป็นเรื่องปกติ ไม่ใช่ error ที่ต้องรก console."""
+        if "timed out" in fmt:
+            return
+        super().log_error(fmt, *args)
 
     def _host_ok(self) -> bool:
         """กัน DNS rebinding — หน้าเว็บภายนอกจะยิงเข้าพอร์ตนี้ผ่านโดเมนตัวเองไม่ได้."""
@@ -167,9 +293,19 @@ class Handler(BaseHTTPRequestHandler):
         return host in ("localhost", "127.0.0.1", "::1", "") or host == self.server.bound_host
 
     def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
+        # คอนเนกชันที่เคยมี request body จะไม่ถูกใช้ซ้ำ: เราตอบหลายเส้นก่อนอ่าน body
+        # (401/403/404/405/413) ไบต์ที่ค้างอยู่จะถูกอ่านเป็น "คำขอถัดไป" บนคอนเนกชันเดิม
+        # = 2 คำตอบใน 1 คอนเนกชัน ถ้าฝั่งหน้ามี proxy ที่ pool คอนเนกชัน คำตอบจะไปโผล่ผิดคน
+        # (ของรางวัลคือคุกกี้ mai_session ของคนอื่น) ปิดทิ้งถูกกว่าไล่ตรวจทุก handler
+        if self.body_bytes:
+            self.close_connection = True
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # close_connection เป็นสถานะภายในของ http.server ไม่ได้ส่งอะไรออกสาย — ถ้าไม่บอก
+        # client ตรงๆ มันจะใช้คอนเนกชันเดิมต่อแล้วไปตายที่ "คำขอถัดไป" แทนคำขอที่ผิดจริง
+        if self.close_connection:
+            self.send_header("Connection", "close")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -186,6 +322,134 @@ class Handler(BaseHTTPRequestHandler):
     def _query(self) -> dict[str, str]:
         raw = urllib.parse.urlparse(self.path).query
         return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+
+    # ---------- จำกัดอัตราคำขอของเส้นสาธารณะที่ราคาแพง ----------
+
+    def _client_ip(self) -> str:
+        """คีย์ที่อยู่ผู้เรียกสำหรับนับคำขอ (IPv6 นับเป็น /64 — ดู _ip_key).
+
+        อ่านหัวข้อ forwarded ได้เฉพาะเมื่อ trust_proxy เปิด และเอา **ตัวขวาสุด** เท่านั้น
+        (ตัวซ้ายๆ คือค่าที่ client ใส่มาเอง เชื่อไม่ได้) ถ้าค่าไม่ใช่ IP ให้ตกไปใช้ที่อยู่จริง
+        ของ TCP ซึ่งปลอมไม่ได้
+        """
+        if self.trust_proxy:
+            for name in self.forwarded_headers:
+                raw = (self.headers.get(name) or "").strip()
+                if raw:
+                    key = _ip_key(raw.rpartition(",")[2])
+                    if key:
+                        return key
+        try:
+            peer = str(self.client_address[0])
+        except (IndexError, TypeError):
+            return "?"
+        return _ip_key(peer) or peer
+
+    def _rate_buckets(self, scope: str) -> tuple[tuple[str, int, int, bool], ...]:
+        """ถังที่ต้องผ่านทั้งหมด — (key, limit, window, ล้างเมื่อสำเร็จไหม)."""
+        ip = self._client_ip()
+        return ((f"{scope}:{ip}", AUTH_RATE_LIMIT, AUTH_RATE_WINDOW, True),
+                (f"{scope}.hour:{ip}", AUTH_HARD_LIMIT, AUTH_HARD_WINDOW, False))
+
+    def _bucket_hit(self, key: str, limit: int, window: int) -> float:
+        """นับหนึ่งครั้งในถังเดียว คืนวินาทีที่ต้องรอ (0.0 = ผ่าน)."""
+        wait = ratelimit.hit(key, limit, window)
+        if wait:
+            return wait          # โพรเซสนี้บล็อกไปแล้ว ไม่ต้องเสียเวลาไปถาม DB ซ้ำ
+        if not backend.cloud:
+            return 0.0           # โหมดไฟล์ไม่มีตาราง rate_limits (และไม่มีระบบล็อกอินอยู่แล้ว)
+        try:
+            wait = store.rate_hit(key, limit, window)
+        except Exception as e:
+            # DB ล่ม/ยังไม่ได้ db-init — ยังเหลือชั้นในหน่วยความจำ อย่าปิดประตูล็อกอินทั้งระบบ
+            # แต่ต้องส่งเสียงออกมาหนึ่งครั้ง ไม่ใช่ fail-open เงียบๆ
+            _warn_rate_db(e)
+            return 0.0
+        if wait:
+            ratelimit.block(key, wait)
+        return wait
+
+    def _rate_limited(self, scope: str) -> float:
+        """นับคำขอนี้หนึ่งครั้ง คืนวินาทีที่ต้องรอ (0.0 = ผ่าน) — ต้องเรียก *ก่อน* ทำงานหนักเสมอ.
+
+        คนที่ถือ session ที่ยังใช้ได้ข้ามถังแคบไปได้ (แต่ไม่ข้ามถังแข็ง) — ไม่งั้นคนนอกยิงขยะ
+        11 ครั้งจาก IP ขององค์กร จะล็อกคนที่ล็อกอินอยู่แล้วทั้งตึกออกจากระบบไปด้วย
+        """
+        for key, limit, window, soft in self._rate_buckets(scope):
+            if soft and self.user:
+                continue
+            wait = self._bucket_hit(key, limit, window)
+            if wait:
+                return wait
+        return 0.0
+
+    def _rate_ok(self, scope: str) -> None:
+        """คำขอสำเร็จจริง — ล้าง *เฉพาะถังแคบ* เพื่อให้คนใช้งานจริง (รวมออฟฟิศที่ออกเน็ต IP
+        เดียว) ไม่สะสมโควตา ถังแข็งห้ามล้าง ไม่งั้นใครมีบัญชีจริงใบเดียวก็ปลดเพดานได้ทั้งหมด.
+        """
+        for key, _limit, _window, soft in self._rate_buckets(scope):
+            if not soft:
+                continue
+            ratelimit.reset(key)
+            if backend.cloud:
+                try:
+                    store.rate_reset(key)
+                except Exception as e:
+                    _warn_rate_db(e)
+
+    def _drain_body(self, cap: int = 64 * 1024) -> None:
+        """อ่าน body ทิ้งไม่เกิน cap ไบต์ ก่อนจะตอบแล้วปิดสาย.
+
+        ถ้าตอบ+ปิดทันทีโดยไม่อ่านอะไรเลย ฝั่งที่ยังส่ง body อยู่จะเจอ TCP reset และมักอ่าน
+        คำตอบ 429 ของเราไม่ทัน (เห็นเป็น connection error แทนข้อความที่ควรแสดงให้ผู้ใช้)
+        มี cap เพราะจุดประสงค์ของ 429 คือ *ไม่* จ่ายค่างานให้คำขอนี้ — body ใหญ่กว่านั้นปล่อยตัด
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        left = min(max(length, 0), cap)
+        if left <= 0:
+            return
+        # บน Vercel ตัว runtime ห่อ handler ไว้ self.connection อาจไม่ใช่ซ็อกเก็ตจริง —
+        # ตั้ง timeout ไม่ได้ก็ไม่เป็นไร ห้ามให้ 429 กลายเป็น 500
+        old, changed = None, False
+        try:
+            old = self.connection.gettimeout()
+            self.connection.settimeout(2)   # กันคนส่ง body ช้าๆ ถ่วงเธรดไว้
+            changed = True
+        except (AttributeError, OSError):
+            pass
+        try:
+            while left > 0:
+                chunk = self.rfile.read(min(left, CHUNK))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            if changed:
+                try:
+                    self.connection.settimeout(old)
+                except (AttributeError, OSError):
+                    pass
+
+    def _too_many(self, wait: float) -> None:
+        """429 พร้อม Retry-After — ข้อความเดียวกันทุกกรณี ไม่บอกว่าอีเมลนั้นมีบัญชีจริงไหม.
+
+        ปิดการเชื่อมต่อด้วย (Connection: close) เพราะเราตอบก่อนอ่าน body ทั้งก้อน ถ้าปล่อยให้
+        keep-alive ต่อ ไบต์ของ body ที่ค้างในซ็อกเก็ตจะถูกอ่านเป็นคำขอถัดไปแล้วเพี้ยนทั้งสาย
+        (และการบังคับให้เปิดการเชื่อมต่อใหม่ก็เพิ่มราคาให้ฝั่งที่ยิงรัวอีกชั้น)
+        """
+        self._drain_body()
+        secs = max(1, int(wait + 0.999))
+        left = f"{(secs + 59) // 60} นาที" if secs >= 60 else f"{secs} วินาที"
+        body = json.dumps({"error": f"พยายามบ่อยเกินไป — รออีก {left} แล้วลองใหม่",
+                           "retry_after": secs}, ensure_ascii=False).encode("utf-8")
+        self._send(HTTPStatus.TOO_MANY_REQUESTS, body, "application/json; charset=utf-8",
+                   {"Retry-After": str(secs), "Connection": "close"})
+        self.close_connection = True
 
     # ---------- คุกกี้ / ผู้ใช้ ----------
 
@@ -373,13 +637,56 @@ class Handler(BaseHTTPRequestHandler):
             store.set_setting("live_recording_enabled", bool(body["live_recording_enabled"]))
         return self._json({"live_recording_enabled": _live_recording_enabled()})
 
-    def _body_json(self) -> dict:
+    def _content_length(self) -> int:
+        """Content-Length ที่เชื่อถือได้ — ไม่มี = 0, กำกวมหรือไม่ใช่เลขล้วน = 400 ไม่ใช่ 500.
+
+        ซ้ำสองบรรทัด (เช่น 2 กับ 100) คือสูตร request smuggling มาตรฐาน: proxy เชื่อค่าหนึ่ง
+        เราเชื่ออีกค่าหนึ่ง ส่วนที่เหลือบนสายกลายเป็นคำขอปลอม — ปฏิเสธไปเลยปลอดภัยกว่าเลือกข้าง
+        """
+        values = self.headers.get_all("Content-Length") or []
+        if len(values) > 1:
+            raise BadBody("Content-Length ซ้ำกันหลายค่า")
+        raw = values[0] if values else ""
+        if not raw.strip():
+            return 0                      # ไม่มีหรือว่าง = ไม่มี body
+        if not _CONTENT_LENGTH_RE.fullmatch(raw):
+            raise BadBody("Content-Length ไม่ถูกต้อง")
+        return int(raw)
+
+    def _begin_body(self) -> None:
+        """ตรวจ framing ของ body ก่อนตอบอะไรทั้งสิ้น แล้วจำความยาวไว้ที่ self.body_bytes.
+
+        ต้องทำก่อน handler ทุกตัว (ก่อนเช็ค Host ด้วย) เพราะเส้นที่ตอบ 401/403/404 ทิ้งไป
+        เฉยๆ โดยไม่อ่าน body คือจุดที่ทำให้เกิด "2 คำตอบใน 1 คอนเนกชัน" — ดูคอมเมนต์ใน _send
+        """
+        self.body_bytes = 0
+        te = [v.strip().lower() for v in (self.headers.get_all("Transfer-Encoding") or [])]
+        if te and te != ["identity"]:
+            # http.server ไม่ถอด chunked ให้ ถ้าเรารับไว้ body จะถูกอ่านเป็นคำขอถัดไปทั้งก้อน
+            self.close_connection = True
+            raise UnsupportedBody("เซิร์ฟเวอร์นี้รับ Transfer-Encoding: "
+                                  + ", ".join(te) + " ไม่ได้ ให้ส่งพร้อม Content-Length")
+        try:
+            self.body_bytes = self._content_length()
+        except BadBody:
+            # ไม่รู้ว่า body ยาวเท่าไร = ไม่รู้ว่าคำขอถัดไปเริ่มตรงไหน ต้องปิดคอนเนกชันสถานเดียว
+            self.close_connection = True
+            raise
+
+    def _body_json(self, limit: int = MAX_JSON_BODY) -> dict:
         """อ่าน body เป็น JSON — body ว่างถือว่า {} แต่ถ้าเสียให้ฟ้องตรงๆ
 
         เดิมกลืน error แล้วคืน {} ซึ่งทำให้ error ไปโผล่เป็น "ฟิลด์ที่จำเป็นหายไป"
         ชี้ผิดจุดจนไล่ปัญหายาก
+
+        limit ทำงานแบบเดียวกับ _read_body_to (BUG-011): เดิมอ่านตาม Content-Length
+        โดยไม่จำกัด ใครยิง body 20 MB มาก็กินแรมไปทั้งก้อน เส้นที่รับ transcript
+        ทั้งชุดต้องส่ง MAX_JSON_TRANSCRIPT มาเอง
         """
-        length = int(self.headers.get("Content-Length") or 0)
+        length = self.body_bytes
+        if length > limit:
+            # ปฏิเสธจาก header เลย ไม่อ่าน body ทิ้งก่อน — สิ่งที่ต้องกันคือแรมและเวลาอ่าน
+            raise BodyTooLarge(f"ข้อมูลที่ส่งมาใหญ่เกิน {_size_text(limit)}", length)
         if not length:
             return {}
         raw = self.rfile.read(length)
@@ -391,13 +698,51 @@ class Handler(BaseHTTPRequestHandler):
             raise BadBody("body ต้องเป็น JSON object")
         return data
 
+    def _drain_rejected_body(self, pending: int) -> None:
+        """อ่าน body ที่ปฏิเสธไปแล้วทิ้ง เพื่อให้ client ได้อ่าน 413 ก่อนคอนเนกชันถูกปิด
+
+        ปิด socket ทั้งที่ยังมีข้อมูลค้าง = TCP RST = client เห็น connection reset ไม่ใช่ 413
+
+        สองกับดักที่วัดเจอจริง (คนหยดข้อมูลทีละ 1 ไบต์ยึดเธรดไว้ได้ 21.6 วินาที):
+        - self.rfile เป็น BufferedReader: read(n) รอจนครบ n ไบต์ ใช้ read1 ที่คืนเท่าที่ recv ได้
+        - settimeout วัด "เงียบต่อหนึ่ง recv" ไม่ใช่เวลารวม คนหยดข้อมูลจึงรีเซ็ตนาฬิกาได้ไม่จบ
+          ต้องคำนวณเวลาที่เหลือจาก deadline แล้ว settimeout ใหม่ทุกรอบ
+        """
+        left = min(pending, LINGER_DRAIN)
+        if left <= 0:
+            return
+        deadline = time.monotonic() + LINGER_SECONDS
+        old_timeout = self.connection.gettimeout()
+        try:
+            while left > 0:
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    break
+                self.connection.settimeout(max(0.05, remain))
+                chunk = self.rfile.read1(min(CHUNK, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except OSError:
+            pass  # client หายไปเองระหว่างระบาย — ไม่ต้องทำอะไรต่อ คอนเนกชันจะถูกปิดอยู่แล้ว
+        finally:
+            try:
+                self.connection.settimeout(old_timeout)
+            except OSError:
+                pass
+
     def _read_body_to(self, dest: Path, limit: int) -> str | None:
-        """สตรีม request body ลงไฟล์ คืนข้อความ error ถ้าไม่สำเร็จ."""
-        length = int(self.headers.get("Content-Length") or 0)
+        """สตรีม request body ลงไฟล์ คืนข้อความ error ถ้าไม่สำเร็จ.
+
+        ใช้ self.body_bytes ที่ _begin_body ตรวจมาแล้ว — เดิมเรียก int() บน header ดิบ
+        ทำให้ Content-Length: abc กลายเป็น 500 พร้อมข้อความ Python หลุดไปถึง client
+        ไฟล์ใหญ่เกินเพดานคือ 413 เหมือนฝั่ง JSON (เดิมตอบ 400 และไม่ปิดคอนเนกชัน)
+        """
+        length = self.body_bytes
         if length <= 0:
             return "ไม่มีข้อมูลไฟล์ส่งมา"
         if length > limit:
-            return f"ไฟล์ใหญ่เกิน {limit // 1024**2} MB"
+            raise BodyTooLarge(f"ไฟล์ใหญ่เกิน {_size_text(limit)}", length)
         remaining = length
         with dest.open("wb") as fh:
             while remaining > 0:
@@ -429,11 +774,12 @@ class Handler(BaseHTTPRequestHandler):
         self._route()
 
     def _route(self) -> None:
-        if not self._host_ok():
-            self._error(HTTPStatus.FORBIDDEN, "Host ไม่ได้รับอนุญาต")
-            return
         path = urllib.parse.urlparse(self.path).path
         try:
+            # ต้องรู้ framing ของ body ก่อนตอบอะไร รวมถึงก่อนตอบ 403 เรื่อง Host
+            self._begin_body()
+            if not self._host_ok():
+                return self._error(HTTPStatus.FORBIDDEN, "Host ไม่ได้รับอนุญาต")
             self._resolve_user()
             if path.startswith("/api/"):
                 self._api(path)
@@ -443,6 +789,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._static(path)
             else:
                 self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ใช้ method นี้กับ path นี้ไม่ได้")
+        except UnsupportedBody as e:
+            self.close_connection = True
+            self._error(HTTPStatus.NOT_IMPLEMENTED, str(e))
+        except BodyTooLarge as e:
+            # ยังไม่ได้อ่าน body ออกจาก socket — ใช้คอนเนกชันนี้ต่อไม่ได้ (HTTP/1.1 keep-alive)
+            self.close_connection = True
+            try:
+                self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(e))
+                self._drain_rejected_body(e.pending)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass  # client ที่กำลังอัปโหลดอยู่หลุดไปก่อน — ปกติ ไม่ต้องขึ้น traceback
         except BadBody as e:
             self._error(HTTPStatus.BAD_REQUEST, str(e))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -763,6 +1120,12 @@ class Handler(BaseHTTPRequestHandler):
                    {"Set-Cookie": self._cookie_header(token)})
 
     def _login(self) -> None:
+        # ตัดสินใจก่อนอ่าน body และก่อน verify_password — เพราะ verify_password ทำ scrypt
+        # ทุกครั้งแม้ไม่พบอีเมล (กัน timing oracle) ถ้าเช็คทีหลังจะเหลือช่องเผา CPU/แรมของ
+        # เซิร์ฟเวอร์ให้คนที่ไม่ต้องล็อกอินเลย (ดู docs/tickets/BUG-010)
+        wait = self._rate_limited("login")
+        if wait:
+            return self._too_many(wait)
         body = self._body_json()
         email = str(body.get("email") or "").strip().lower()
         password = str(body.get("password") or "")
@@ -772,9 +1135,17 @@ class Handler(BaseHTTPRequestHandler):
         if user is None:
             # ไม่บอกว่าอีเมลผิดหรือรหัสผิด กัน enumerate อีเมลในระบบ
             return self._error(HTTPStatus.UNAUTHORIZED, "อีเมลหรือรหัสผ่านไม่ถูกต้อง")
+        self._rate_ok("login")
         self._login_response(user)
 
     def _signup(self) -> None:
+        # เส้นสาธารณะเหมือนกัน แต่ภัยหลักไม่ใช่ scrypt — คนที่ไม่มีรหัสเชิญที่ใช้ได้จะถูกตีกลับ
+        # ก่อนถึง set_password เสมอ ภัยคือ "เดารหัสเชิญ" ได้ไม่จำกัดผ่าน invite_email() และ
+        # การยิง count_users()/has_password() เข้าฐานข้อมูลฟรีทุกครั้ง
+        # แยกถังจากล็อกอินเพื่อไม่ให้การสมัครไปกินโควตาล็อกอินของเครื่องเดียวกัน
+        wait = self._rate_limited("signup")
+        if wait:
+            return self._too_many(wait)
         body = self._body_json()
         email = str(body.get("email") or "").strip().lower()
         password = str(body.get("password") or "")
@@ -787,26 +1158,52 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(HTTPStatus.BAD_REQUEST,
                                f"รหัสผ่านต้องยาวอย่างน้อย {MIN_PASSWORD} ตัวอักษร")
 
+        # first_run/invite_email เป็นแค่ pre-check ไว้เลือกข้อความเท่านั้น การตัดสินสิทธิ์จริง
+        # อยู่ที่ claim_* ข้างล่าง (BUG-012) — อ่านตรงนี้แล้วเชื่อไม่ได้ อีก request แซงได้เสมอ
         first_run = store.count_users() == 0
-        invite_ok, invite_email = (True, None) if first_run else store.invite_email(invite)
-        if not first_run and not invite_ok:
-            # ไม่บอกว่าอีเมลนี้มีบัญชีอยู่แล้วหรือไม่ (กัน enumerate) แต่ต้องไม่ทำให้คนที่มี
-            # บัญชีอยู่แล้วไปตันตายที่การขอรหัสเชิญ
-            return self._error(HTTPStatus.FORBIDDEN,
-                               "ต้องมีรหัสเชิญที่ยังใช้ได้ (ขอจากแอดมินของทีม) "
-                               "— ถ้ามีบัญชีอยู่แล้วให้เข้าสู่ระบบแทน")
-        if invite_email and invite_email != email:
-            return self._error(HTTPStatus.FORBIDDEN,
-                               f"รหัสเชิญนี้ออกให้อีเมล {invite_email} เท่านั้น")
-        if store.has_password(email):
+        invite_ok = False
+        if not first_run:
+            if not invite:
+                # ไม่บอกว่าอีเมลนี้มีบัญชีอยู่แล้วหรือไม่ (กัน enumerate) แต่ต้องไม่ทำให้คนที่มี
+                # บัญชีอยู่แล้วไปตันตายที่การขอรหัสเชิญ
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   "ต้องมีรหัสเชิญที่ยังใช้ได้ (ขอจากแอดมินของทีม) "
+                                   "— ถ้ามีบัญชีอยู่แล้วให้เข้าสู่ระบบแทน")
+            invite_ok, invite_email = store.invite_email(invite)
+            if invite_ok and invite_email and invite_email != email:
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   f"รหัสเชิญนี้ออกให้อีเมล {invite_email} เท่านั้น")
+        # ตอบ "มีบัญชีอยู่แล้ว" ได้เฉพาะคนที่ถือรหัสเชิญที่ใช้ได้จริงเท่านั้น: ของเดิม 403 ตรงรหัสเชิญ
+        # ใช้ไม่ได้บังหน้าบรรทัดนี้ไว้ พอย้ายการตัดสินไปที่ claim_* แล้วเปิดทิ้งไว้จะกลายเป็น oracle
+        # ให้ใครก็ได้ยิงรหัสมั่วๆ + อีเมลเป้าหมายมาถามว่าอีเมลนั้นมีบัญชีในระบบไหม (409 คนละข้อความ)
+        # invite_ok เป็นแค่การเลือกข้อความเหมือนเดิม — invite ที่ใช้ไม่ได้แล้วกลับมาใช้ได้ไม่ได้
+        # จึงไม่มีทางที่ข้ามบรรทัดนี้แล้ว claim สำเร็จ (ไม่มีช่องเขียนทับรหัสผ่านของบัญชีที่มีอยู่)
+        if (first_run or invite_ok) and store.has_password(email):
             return self._error(HTTPStatus.CONFLICT, "อีเมลนี้มีบัญชีอยู่แล้ว — เข้าสู่ระบบเลย")
 
-        # คนแรกของระบบเป็นแอดมิน (ยังไม่มีใครเชิญได้)
+        # จุดตัดสินแบบ atomic — ทุกอย่างข้างบนเป็นแค่ pre-check ไว้เลือกข้อความ (BUG-012)
+        # ของเดิมสร้างผู้ใช้ก่อนแล้วค่อย redeem โดยทิ้งค่าที่คืนมา: ยิงสมัครพร้อมกันด้วยรหัสเชิญ
+        # ใบเดียวได้บัญชีครบทุกราย และสมัครพร้อมกันตอนระบบว่างได้แอดมินสองคน
+        # จองให้ได้ก่อนจึงจะสร้างผู้ใช้ — แพ้ก็ตอบ 409 โดยยังไม่มีอะไรถูกสร้าง
+        if first_run:
+            # คนแรกของระบบเป็นแอดมิน (ยังไม่มีใครเชิญได้) — จองสิทธิ์นี้ได้คนเดียว
+            if not store.claim_first_admin(email):
+                return self._error(HTTPStatus.CONFLICT,
+                                   "ระบบนี้มีผู้ใช้คนแรกไปแล้ว "
+                                   "— ต้องใช้รหัสเชิญจากแอดมินจึงจะสมัครได้")
+        elif not store.claim_invite(invite, email):
+            # ไม่บอกว่ารหัสไม่มีจริง/หมดอายุ/ถูกใช้ไปแล้ว — บอกแค่ว่าใช้ไม่ได้
+            return self._error(HTTPStatus.CONFLICT,
+                               "รหัสเชิญนี้ใช้ไม่ได้แล้ว (ขอรหัสใหม่จากแอดมินของทีม) "
+                               "— ถ้ามีบัญชีอยู่แล้วให้เข้าสู่ระบบแทน")
+
         user = store.ensure_user(email, name=name, is_admin=first_run)
         store.set_password(user["id"], password)
         if not first_run:
-            store.redeem_invite(invite, user["id"])
+            # ผูกว่าใครใช้ใบไหน — ล้มตรงนี้ไม่กระทบสิทธิ์ รหัสถูกจองไปแล้ว
+            store.attach_invite(invite, user["id"])
         user["is_admin"] = first_run or user.get("is_admin", False)
+        self._rate_ok("signup")
         self._login_response(user)
 
     # ---------- API สำหรับ worker แยกเครื่อง ----------
@@ -849,6 +1246,9 @@ class Handler(BaseHTTPRequestHandler):
             if spec is None:
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self.send_header("Content-Length", "0")
+                if self.body_bytes:      # เส้นนี้ไม่ผ่าน _send จึงต้องบอก close เอง
+                    self.close_connection = True
+                    self.send_header("Connection", "close")
                 self.end_headers()
                 return
             # ทั้งงาน process และ bot จบด้วยไฟล์เสียงผสมที่ worker ต้องส่งขึ้นที่เก็บ
@@ -874,7 +1274,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if len(rest) >= 3 and rest[0] == "jobs":
             job_id, action = rest[1], rest[2]
+            # unquote ทีหลัง split path แล้ว `%2F` จึงรอดมาเป็น `/` ในตัว id — ต้องกรองก่อน
+            # เอา id ไปแตะไฟล์ (เช่น action `audio` ที่ประกอบเป็น WEB_DIR/<id>.<ext>)
             job_id = urllib.parse.unquote(job_id)
+            if not _safe_job_id(job_id):
+                return self._error(HTTPStatus.BAD_REQUEST, "job id ไม่ถูกต้อง")
 
             if action == "tracks" and len(rest) == 4 and self.command in ("GET", "HEAD"):
                 path = jobs.track_path(job_id, rest[3])
@@ -910,7 +1314,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"playback": str(dest)})
 
             if action == "result":
-                body = self._body_json()
+                # worker ส่ง transcript + summary ทั้งก้อนกลับมา ต้องใช้เพดานใหญ่
+                body = self._body_json(MAX_JSON_TRANSCRIPT)
                 worker = str(body.pop("worker", "") or "").strip()[:80]
                 try:
                     jobs.apply_result(job_id, body)
@@ -1066,13 +1471,19 @@ class Handler(BaseHTTPRequestHandler):
         self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ใช้ method นี้กับ path นี้ไม่ได้")
 
     def _patch(self, mid: str) -> None:
-        body = self._body_json()
+        # ผู้ใช้แก้ transcript แล้วส่ง segments ทั้งชุดกลับมา — เพดานเท่ากับ worker result
+        body = self._body_json(MAX_JSON_TRANSCRIPT)
         title, summary, segments = body.get("title"), body.get("summary"), body.get("segments")
         if title is None and summary is None and segments is None:
             return self._error(HTTPStatus.BAD_REQUEST,
                                "ต้องส่ง title, summary หรือ segments มาอย่างน้อยหนึ่งอย่าง")
 
         if segments is not None:
+            # _clean_segments ปฏิเสธลิสต์ยาวเกินอยู่แล้ว แต่ตอบได้แค่ None = "รูปแบบไม่ถูกต้อง"
+            # ซึ่งชี้สาเหตุผิด เช็คด้วย predicate ตัวเดียวกันตรงนี้เพื่อให้ได้ 413 + เหตุผลจริง
+            if _too_many_segments(segments):
+                return self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                                   f"segments มากเกิน {MAX_SEGMENTS:,} รายการ")
             clean = _clean_segments(segments)
             if clean is None:
                 return self._error(HTTPStatus.BAD_REQUEST, "รูปแบบ segments ไม่ถูกต้อง")
@@ -1130,6 +1541,11 @@ class Handler(BaseHTTPRequestHandler):
         lang = str(self._body_json().get("lang") or "").strip()
         if not lang:
             return self._error(HTTPStatus.BAD_REQUEST, "ต้องระบุ lang")
+        # lang ไหลไปเป็นส่วนหนึ่งของ job id (`<mid>.tr.<lang>`) และเข้า prompt ของ LLM
+        # จึงรับเฉพาะรหัสใน allow-list ไม่ใช่สตริงอะไรก็ได้จากผู้ใช้
+        if lang not in summarizer.LANGUAGE_NAMES:
+            return self._error(HTTPStatus.BAD_REQUEST,
+                               "lang ต้องเป็นหนึ่งใน " + ", ".join(summarizer.LANGUAGE_NAMES))
         meeting = store.get(mid)
         if meeting is None:
             return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมนี้")
@@ -1257,9 +1673,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, target.read_bytes(), ctype, {"Cache-Control": "no-cache"})
 
 
+def _too_many_segments(raw) -> bool:
+    """จุดเดียวที่เทียบจำนวน segment กับ MAX_SEGMENTS (ใช้ทั้งใน _patch และ _clean_segments)."""
+    return isinstance(raw, list) and len(raw) > MAX_SEGMENTS
+
+
 def _clean_segments(raw) -> list[dict] | None:
     """ตรวจและทำความสะอาด segments ที่ผู้ใช้แก้มาจากหน้าเว็บ."""
-    if not isinstance(raw, list):
+    if not isinstance(raw, list) or _too_many_segments(raw):
         return None
     out = []
     for item in raw:
@@ -1270,7 +1691,12 @@ def _clean_segments(raw) -> list[dict] | None:
             end = float(item.get("end", 0))
         except (TypeError, ValueError):
             return None
-        text = str(item.get("text", "")).strip()
+        # NaN/Infinity ผ่าน float() ได้ (json.loads ก็รับ NaN, "1e400" = inf) แต่ json.dump
+        # เขียนออกเป็น NaN ที่อ่านกลับไม่ได้ — เคยทำให้การประชุมเปิดไม่ขึ้นถาวรหลัง PATCH
+        if not (math.isfinite(start) and math.isfinite(end)):
+            return None
+        # ตัดข้อความเหมือนที่ทำกับ speaker มาตลอด — หนึ่งช่วงพูดยาวไม่กี่พันตัวอักษร
+        text = str(item.get("text", "")).strip()[:MAX_SEGMENT_TEXT]
         seg = {"start": round(start, 2), "end": round(end, 2), "text": text}
         speaker = item.get("speaker")
         if speaker:
@@ -1292,7 +1718,10 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
 
     print(f"🌐 meeting_ai web  →  {url}")
     print(f"   เก็บข้อมูลแบบ: {backend.mode()}"
-          + ("  (มีระบบล็อกอิน)" if backend.auth_required() else "  (ไม่มีล็อกอิน)"))
+          + ("  (มีระบบล็อกอิน)" if backend.auth_required() else "  (ไม่มีล็อกอิน)"),
+          flush=True)  # flush ก่อน เพราะบรรทัดของที่เก็บไฟล์ออกทาง stderr — เวลา redirect จะได้เรียงถูก
+    # เลือกที่เก็บไฟล์เสียงตั้งแต่ตอนเริ่ม เพื่อให้บรรทัดบอกสถานะ S3/ดิสก์ โผล่ก่อนรับ request แรก
+    backend.storage()
     if host not in ("127.0.0.1", "localhost", "::1") and not backend.auth_required():
         print("⚠️  ผูกกับ interface ภายนอก และไม่มีระบบล็อกอิน — ใครในเครือข่ายก็เปิดได้")
     if not (config.llm_api_key and "your-key" not in config.llm_api_key):
