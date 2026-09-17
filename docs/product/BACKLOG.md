@@ -58,7 +58,7 @@ Seeded 2026-09-16 from the full code review (see `docs/PROJECT-CONTEXT.md` → "
 ## P2 — quality, debt, docs
 | # | Item | Owner | Notes |
 |---|---|---|---|
-| 23 | CI: GitHub Actions running `compileall`, `./mai --help`, and `tests/` | devops-engineer | none exists |
+| 23 | ✅ CI: GitHub Actions running `compileall`, `./mai --help`, and `tests/` | devops-engineer | **done 2026-09-17 (PR #17)** · `.github/workflows/ci.yml` สาม job ไม่มี secret · [run แรกเขียวทั้งหมด](https://github.com/itsaraphapthanatka/meeting_ai/actions/runs/35204069477): ubuntu `264 tests OK (skipped=7)` 76s · windows เท่ากัน 96s · ubuntu+postgres `264 tests OK` **0 skip** 74s · ticket [BUG-023](../tickets/BUG-023-ci.md) · เหลือให้ owner: ตั้ง Branch protection → Require status checks ถ้าอยากให้บล็อกการ merge จริง |
 | 24 | Dead cleanup never scheduled: `pgstore.purge_expired()`, `workers_forget()`, `db.close()`, `blobstore.reset()`, `backend.health()` → sessions/dead workers accumulate | backend-dev | call from `jobs_reap` or a cron |
 | 25 | Retention for `logs/` (real-meeting screenshots) and failed `recordings/bot/*.wav` | devops-engineer | e.g. 30 days |
 | 26 | `store.py` / `pgstore.py` share ~70 duplicated lines (`new_id`, `valid_id`, `fmt_time`, `transcript_text`, `_snippet`) | backend-dev | `web/_common.py` |

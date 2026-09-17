@@ -1,6 +1,10 @@
 # BACKLOG #23 — CI: GitHub Actions รัน `compileall`, `./mai --help`, และ `tests/`
 
-- **Status:** implemented on `ci/github-actions` — ผลรันจริงครั้งแรกบน GitHub จะเห็นที่ PR ของ branch นี้เอง
+- **Status:** ✅ done 2026-09-17 (PR #17) — [run แรกเขียวทั้งสาม job](https://github.com/itsaraphapthanatka/meeting_ai/actions/runs/35204069477)
+  ตั้งแต่ครั้งแรก: `test (ubuntu-latest)` 1m24s `264 tests OK (skipped=7)` · `test (windows-latest)`
+  1m51s เท่ากัน · `test (ubuntu-latest + postgres)` 1m52s `264 tests OK` **ไม่มี skip เลย** ตรงตาม
+  ที่ออกแบบไว้ทุกตัวเลข และ `usage: mai` ปรากฏใน log ของทั้งสอง OS = launcher ทั้ง `./mai` และ
+  `.\mai.cmd` รันผ่านจริงบน runner ของ GitHub (ข้อที่ก่อนหน้านี้ยืนยันจากเครื่องนี้ไม่ได้)
 - **Severity:** ไม่ใช่ P0/P1 (ไม่มีช่องโหว่) แต่เป็นความเสี่ยงเชิงกระบวนการ: ชุดทดสอบ 264 ตัว
   ไม่เคยรันอัตโนมัติเลยมาก่อน — สองเหตุการณ์ในวันนี้ (helper method หายจากการ merge conflict,
   method ซ้ำชื่อบดกันเอง) ถูกจับได้เพราะมีคนสั่งรันมือ ไม่ใช่เพราะมีระบบใดเฝ้าอยู่
