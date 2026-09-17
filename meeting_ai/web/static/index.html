@@ -133,58 +133,10 @@
       </label>
     </div>
 
-    <!-- ตัวเลือกที่แทบไม่มีใครเปลี่ยน ยุบไว้ใน <details> พร้อมสรุปค่าปัจจุบันบนหัวข้อ
-         (บนจอแคบห้าช่องนี้กินความสูงเกือบเต็มหน้าจอก่อนจะได้เห็นวิธีนำเสียงเข้าเสียอีก) -->
-    <details class="adv">
-      <summary>
-        <span>ตัวเลือกเพิ่มเติม</span>
-        <span id="adv-sum" class="adv-sum"></span>
-      </summary>
-    <div class="field-row">
-      <label class="field field-sm">
-        <span>ภาษาที่พูด</span>
-        <select id="f-lang">
-          <option value="th">ไทย</option>
-          <option value="en">English</option>
-          <option value="ja">日本語</option>
-          <option value="zh">中文</option>
-          <option value="auto">ตรวจอัตโนมัติ</option>
-        </select>
-      </label>
-      <label class="field field-sm">
-        <span>รูปแบบสรุป</span>
-        <select id="f-template"></select>
-      </label>
-      <label class="field field-sm">
-        <span>ตัวถอดเสียง</span>
-        <select id="f-stt"></select>
-      </label>
-    </div>
-    <p id="stt-note" class="hint"></p>
-
-    <div class="field-row diarize-row">
-      <label class="check-inline">
-        <input id="f-diarize" type="checkbox" checked>
-        <span>แยกผู้พูด (ระบุว่าใครพูดประโยคไหน)</span>
-      </label>
-      <label class="field field-xs">
-        <span>จำนวนคน</span>
-        <select id="f-speakers">
-          <option value="0">ให้ระบบเดา</option>
-          <option value="2">2 คน</option>
-          <option value="3">3 คน</option>
-          <option value="4">4 คน</option>
-          <option value="5">5 คน</option>
-          <option value="6">6 คน</option>
-          <option value="8">8 คน</option>
-        </select>
-      </label>
-      <p id="diarize-note" class="hint" hidden></p>
-    </div>
-    </details>
 
     <!-- ตัวเลือกวิธีนำเสียงเข้า — บนจอแคบโชว์ทีละการ์ด (ดู setupCapturePicker ใน app.js)
          จอกว้างยังกางทั้งสามใบเหมือนเดิม เพราะมีที่พอและเทียบกันได้ในตาเดียว -->
+    <div id="cap-label" class="field-label">เอาเสียงเข้ามายังไง</div>
     <div id="cap-seg" class="seg" role="tablist" hidden>
       <button class="seg-btn is-on" type="button" role="tab" data-cap="upload">อัปโหลดไฟล์</button>
       <button class="seg-btn" type="button" role="tab" data-cap="rec">อัดสด</button>
@@ -196,9 +148,14 @@
         <h3>📁 อัปโหลดไฟล์</h3>
         <p class="muted">ไฟล์ที่ Meet/Teams/Zoom อัดไว้ — mp3, m4a, wav, mp4, webm ฯลฯ</p>
         <div id="drop" class="drop">
+          <svg class="drop-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 17v1.5A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V17"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
           <p>ลากไฟล์มาวางที่นี่</p>
           <p class="muted">หรือ</p>
           <button id="btn-pick" class="btn" type="button">เลือกไฟล์</button>
+          <p class="drop-formats muted">mp3 · m4a · wav · mp4 · webm</p>
           <input id="f-file" type="file" accept="audio/*,video/*" hidden>
         </div>
       </div>
@@ -301,6 +258,56 @@
         <p id="bot-note" class="hint"></p>
       </div>
     </div>
+
+    <!-- ตัวเลือกที่แทบไม่มีใครเปลี่ยน ยุบไว้ใน <details> พร้อมสรุปค่าปัจจุบันบนหัวข้อ
+         (บนจอแคบห้าช่องนี้กินความสูงเกือบเต็มหน้าจอก่อนจะได้เห็นวิธีนำเสียงเข้าเสียอีก) -->
+    <details class="adv">
+      <summary>
+        <span>ตัวเลือกเพิ่มเติม</span>
+        <span id="adv-sum" class="adv-sum"></span>
+      </summary>
+    <div class="field-row">
+      <label class="field field-sm">
+        <span>ภาษาที่พูด</span>
+        <select id="f-lang">
+          <option value="th">ไทย</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+          <option value="zh">中文</option>
+          <option value="auto">ตรวจอัตโนมัติ</option>
+        </select>
+      </label>
+      <label class="field field-sm">
+        <span>รูปแบบสรุป</span>
+        <select id="f-template"></select>
+      </label>
+      <label class="field field-sm">
+        <span>ตัวถอดเสียง</span>
+        <select id="f-stt"></select>
+      </label>
+    </div>
+    <p id="stt-note" class="hint"></p>
+
+    <div class="field-row diarize-row">
+      <label class="check-inline">
+        <input id="f-diarize" type="checkbox" checked>
+        <span>แยกผู้พูด (ระบุว่าใครพูดประโยคไหน)</span>
+      </label>
+      <label class="field field-xs">
+        <span>จำนวนคน</span>
+        <select id="f-speakers">
+          <option value="0">ให้ระบบเดา</option>
+          <option value="2">2 คน</option>
+          <option value="3">3 คน</option>
+          <option value="4">4 คน</option>
+          <option value="5">5 คน</option>
+          <option value="6">6 คน</option>
+          <option value="8">8 คน</option>
+        </select>
+      </label>
+      <p id="diarize-note" class="hint" hidden></p>
+    </div>
+    </details>
 
     <!-- แถบควบคุมลอยด้านล่าง (floating bottom control bar) — position:fixed ใน CSS
          จึงวางไว้นอก .cards ก็ได้ สลับเนื้อหาไปตามสถานะเดียวกับ #rec-idle/#rec-live -->
