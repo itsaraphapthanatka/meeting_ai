@@ -12,9 +12,11 @@ import json
 import math
 import mimetypes
 import re
+import secrets
 import sys
 import tempfile
 import time
+import traceback
 import urllib.parse
 import webbrowser
 from http import HTTPStatus
@@ -263,6 +265,14 @@ def _warn_rate_db(exc: Exception) -> None:
 class Handler(BaseHTTPRequestHandler):
     server_version = "meeting_ai"
     protocol_version = "HTTP/1.1"
+
+    def version_string(self) -> str:
+        """ค่าเริ่มต้นของ BaseHTTPRequestHandler ต่อท้ายด้วย sys_version = "Python/3.12.10"
+
+        ซึ่งบอกคนที่สแกนหาเป้าว่าจะยิง CVE ของล่ามตัวไหน (BACKLOG #52) ชื่อผลิตภัณฑ์พอแล้ว
+        — ตัดทิ้งทั้งหัวข้อไม่ได้เพราะ http.server เขียนเองทุกคำตอบ
+        """
+        return self.server_version
     timeout = SOCKET_TIMEOUT      # socketserver ใช้ค่านี้ settimeout ให้ทุกคอนเนกชัน
     body_bytes = 0                # ความยาว body ของคำขอนี้ (ตั้งใหม่ทุกคำขอใน _route)
     # เชื่อหัวข้อ X-Forwarded-For ได้เฉพาะเมื่อรู้ว่ามี proxy คั่นอยู่จริง — ไม่งั้นใครก็ปลอม
@@ -288,6 +298,21 @@ class Handler(BaseHTTPRequestHandler):
         if "timed out" in fmt:
             return
         super().log_error(fmt, *args)
+
+    def _oops(self, status: HTTPStatus, message: str) -> None:
+        """ตอบข้อความกลาง ๆ พร้อมรหัสอ้างอิง แล้วเก็บ traceback ไว้ที่เซิร์ฟเวอร์ (BACKLOG #51)
+
+        ของเดิมส่ง str(e) ออกไปตรง ๆ ซึ่งเป็นข้อความของ Python ที่บอกโครงสร้างภายใน:
+        "invalid literal for int() with base 10: 'abc'" บอกชนิดข้อมูลที่เราแปลง,
+        ข้อผิดพลาดของ psycopg บอกโฮสต์/พอร์ต/ชื่อฐานข้อมูลจริง, ของ STT บอก endpoint ที่ใช้
+        รหัสอ้างอิงทำให้เจ้าของยังจับคู่คำร้องเรียนกับบรรทัดใน log ได้โดยไม่ต้องบอกใครว่าข้างในเป็นอะไร
+        """
+        ref = secrets.token_hex(3)
+        # path อย่างเดียว ไม่เอา query — โทเคนแชร์/พารามิเตอร์ค้นหาไม่ควรไปนอนใน log
+        path = urllib.parse.urlparse(self.path or "").path
+        print(f"!! [{ref}] {getattr(self, 'command', '?')} {path}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        self._error(status, f"{message} (รหัสอ้างอิง {ref})")
 
     def _host_ok(self) -> bool:
         """กัน DNS rebinding — หน้าเว็บภายนอกจะยิงเข้าพอร์ตนี้ผ่านโดเมนตัวเองไม่ได้."""
@@ -806,8 +831,8 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, str(e))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # เบราว์เซอร์ปิดไปกลางทาง ไม่ใช่ปัญหา
-        except Exception as e:
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+        except Exception:
+            self._oops(HTTPStatus.INTERNAL_SERVER_ERROR, "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์")
 
     def _api(self, path: str) -> None:
         parts = [p for p in path.split("/") if p][1:]  # ตัด 'api'
@@ -1086,8 +1111,8 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["me"] and self.command in ("GET", "HEAD"):
             try:
                 first_run = store.count_users() == 0
-            except Exception as e:
-                return self._error(HTTPStatus.SERVICE_UNAVAILABLE, f"ต่อฐานข้อมูลไม่ได้: {e}")
+            except Exception:
+                return self._oops(HTTPStatus.SERVICE_UNAVAILABLE, "ต่อฐานข้อมูลไม่ได้")
             return self._json({"user": self.user, "first_run": first_run,
                                "share": self.share})
 
@@ -1324,9 +1349,17 @@ class Handler(BaseHTTPRequestHandler):
                 worker = str(body.pop("worker", "") or "").strip()[:80]
                 try:
                     jobs.apply_result(job_id, body)
-                except Exception as e:
+                except RuntimeError as e:
+                    # RuntimeError ตรงนี้คือเงื่อนไขที่ apply_result ตั้งใจแจ้ง (ไม่พบงาน,
+                    # งานแปลไม่มีภาษาปลายทาง) ข้อความเป็นภาษาไทยที่เขียนให้เจ้าของอ่าน
+                    # และต้องไปโผล่ในการ์ดงานด้วย — อันนี้ไม่ใช่ข้อมูลภายในที่รั่ว
                     jobs.fail(job_id, str(e))
                     return self._error(HTTPStatus.BAD_REQUEST, str(e))
+                except Exception:
+                    # bug ที่ไม่ได้ตั้งใจ — ข้อความของ Python จะไปโผล่ในการ์ดงานของเจ้าของ
+                    # คงสถานะ 400 ไว้เหมือนเดิม เปลี่ยนเป็น 5xx เสี่ยงให้ worker วนส่งซ้ำไม่จบ
+                    jobs.fail(job_id, "บันทึกผลงานไม่สำเร็จ — ดู log ของเซิร์ฟเวอร์")
+                    return self._oops(HTTPStatus.BAD_REQUEST, "บันทึกผลงานไม่สำเร็จ")
                 if worker and backend.cloud:
                     store.worker_finished(worker)
                 return self._json({"ok": True})
@@ -1377,8 +1410,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.BAD_REQUEST, err)
             try:
                 text = jobs.transcribe_clip(clip, lang, prompt=prompt)
-            except Exception as e:
-                return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+            except Exception:
+                return self._oops(HTTPStatus.INTERNAL_SERVER_ERROR, "ถอดเสียงช่วงนี้ไม่สำเร็จ")
         self._json({"text": text})
 
     # ---------- meetings ----------
@@ -1684,8 +1717,8 @@ class Handler(BaseHTTPRequestHandler):
         token = str(self._body_json().get("token") or "").strip()
         try:
             target = store.share_target(token) if token else None
-        except Exception as e:
-            return self._error(HTTPStatus.SERVICE_UNAVAILABLE, f"ต่อฐานข้อมูลไม่ได้: {e}")
+        except Exception:
+            return self._oops(HTTPStatus.SERVICE_UNAVAILABLE, "ต่อฐานข้อมูลไม่ได้")
         if target is None:
             return self._error(HTTPStatus.NOT_FOUND, "ลิงก์แชร์นี้ใช้ไม่ได้แล้ว")
         body = json.dumps({"share": target}, ensure_ascii=False).encode("utf-8")
