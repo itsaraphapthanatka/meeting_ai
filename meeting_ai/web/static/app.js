@@ -230,9 +230,23 @@ function workerCan(w) {
     + (lacks.length ? ` · ขาด: ${esc(lacks.join(', '))}` : '');
 }
 
+/* ชิปสถานะของมือถือ — แทนกล่องรายชื่อเครื่องยาว ๆ ที่เคยกินพื้นที่บนสุดของหน้าแรก
+   แตะแล้วเข้าหน้า #devices ที่มีรายละเอียดเต็ม */
+function renderDeviceChip(ws) {
+  const chip = $('#m-devices');
+  if (!chip) return;
+  const alive = ws.filter((w) => w.alive).length;
+  chip.hidden = !ws.length;
+  chip.dataset.state = alive ? 'ok' : 'down';
+  $('#m-chip-text').textContent = alive
+    ? `${alive} เครื่องพร้อม`
+    : 'ไม่มีเครื่องประมวลผลออนไลน์';
+}
+
 function renderWorkers() {
   const el = $('#workers');
   const ws = state.workers || [];
+  renderDeviceChip(state.config.auth_required ? ws : []);
   if (!state.config.auth_required || !ws.length) { el.hidden = true; return; }
   el.hidden = false;
 
@@ -361,6 +375,7 @@ function renderUserBox() {
     box.innerHTML = '';
   }
   $('#btn-new').hidden = !canEdit() || !!state.share;
+  $('#m-new').hidden = $('#btn-new').hidden;   // ปุ่มเดียวกันคนละจอ ต้องซ่อนพร้อมกัน
   // คนถือลิงก์แชร์เห็นได้อันเดียว สถิติรวมกับช่องค้นหาจึงไม่มีความหมาย
   const shareOnly = !!state.share && !state.user;
   $('#stats').hidden = shareOnly;
@@ -536,17 +551,154 @@ function setHash(h) {
   }
 }
 
+/* บนจอแคบเราโชว์ทีละหน้าแทนการเอา sidebar มากองบน panel (ของเดิมยาวเกิน 3000px)
+   ค่าใน body[data-view] เป็นตัวบอก CSS ว่าตอนนี้อยู่หน้าไหน — เดสก์ท็อปไม่สนใจค่านี้เลย */
+const MOBILE_Q = window.matchMedia('(max-width: 860px)');
+const isMobile = () => MOBILE_Q.matches;
+
+const VIEW_BAR = {
+  home:    { title: 'การประชุม', back: false },
+  new:     { title: 'ประชุมใหม่', back: true },
+  devices: { title: 'เครื่องประมวลผล', back: true },
+  // หน้ารายละเอียดไม่ใส่ชื่อบนแถบ เพราะชื่อการประชุมในเนื้อหาแก้ไขได้ (contenteditable)
+  // มีสองที่จะสับสนว่าต้องแก้อันไหน
+  meeting: { title: '', back: true, action: '⋯' },
+};
+
+function setView(v) {
+  document.body.dataset.view = v;
+  closeMeetingSheet();   // ออกจากหน้าแล้วแผ่นต้องไม่ค้างทับหน้าถัดไป
+  const bar = $('#mobilebar');
+  const spec = VIEW_BAR[v] || VIEW_BAR.home;
+  bar.hidden = !isMobile();
+  $('#mb-back').hidden = !spec.back;
+  $('#mb-title').textContent = spec.title;
+  const act = $('#mb-action');
+  act.hidden = !spec.action;
+  act.textContent = spec.action || '';
+}
+
+// เดสก์ท็อปยังเห็น panel เป็นฟอร์ม "ประชุมใหม่" เหมือนเดิม — ต่างกันแค่ CSS ของจอแคบที่ซ่อน panel ไว้
+const showHome = () => showNew('#home');
+
+function showDevices() {
+  setHash('#devices');
+  renderWorkers();
+  setView('devices');
+}
+
 function applyHash() {
   const h = location.hash;
   const m = h.match(/^#m\/([\w-]+)$/);
   if (m) openMeeting(m[1]);
+  else if (h === '#devices') showDevices();
+  else if (h === '#home') showHome();
   else showNew();
 }
 
-function showNew() {
+/* action sheet ของหน้ารายละเอียด — ไม่สร้างปุ่มชุดใหม่ แต่ให้ CSS ย้าย .detail-actions
+   (ปุ่มดาวน์โหลด/แชร์/ความเป็นส่วนตัว/ลบ ชุดเดิม) ลงมาเป็นแผ่นล่างจอตอน body.sheet-open
+   ถ้าทำปุ่มใหม่ซ้อน จะมีสองชุดที่ต้องซิงก์สถานะ hidden/disabled กันเองตลอดไป */
+function openMeetingSheet() {
+  if (!$('.detail-actions')) return;
+  document.body.classList.add('sheet-open');
+  $('#sheet-scrim').hidden = false;
+}
+
+function closeMeetingSheet() {
+  document.body.classList.remove('sheet-open');
+  $('#sheet-scrim').hidden = true;
+}
+
+/* จอแคบ: สรุปกับบทถอดเสียงเป็นแท็บ แทนที่จะต่อกันยาว */
+function setupDetailTabs() {
+  const seg = $('#d-seg');
+  if (!seg) return;
+  const panes = $$('.dtab');
+  if (!isMobile()) {
+    seg.hidden = true;
+    panes.forEach((p) => p.classList.remove('tab-off'));
+    return;
+  }
+  seg.hidden = false;
+  const btns = $$('.seg-btn', seg);
+  const pick = (tab) => {
+    btns.forEach((b) => {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('is-on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    panes.forEach((p) => p.classList.toggle('tab-off', p.dataset.tab !== tab));
+  };
+  btns.forEach((b) => { b.onclick = () => pick(b.dataset.tab); });
+  pick('summary');
+}
+
+/* จอแคบ: เลือกวิธีนำเสียงเข้าทีละอันแทนการกางการ์ดทั้งสามใบพร้อมกัน
+   จอกว้างไม่แตะเลย — ปุ่มถูกซ่อนด้วย CSS และ data-cap ที่ตั้งไว้ไม่มีผลกับ .card ที่ display เป็น grid
+   การ์ดอัดสดอาจถูกปิดโดยแอดมิน (rec-card.hidden) ปุ่มของมันจึงต้องหายไปด้วย ไม่ใช่กดแล้วเจอที่ว่าง */
+function setupCapturePicker() {
+  const seg = $('#cap-seg');
+  if (!seg) return;
+  const cards = $$('.cards .card');
+  if (!isMobile()) {
+    // จอกว้างกางทั้งสามใบเหมือนเดิม — ต้องล้าง cap-off ทิ้งเผื่อผู้ใช้เพิ่งขยายหน้าต่างจากจอแคบ
+    seg.hidden = true;
+    cards.forEach((c) => c.classList.remove('cap-off'));
+    document.body.classList.remove('cap-rec');
+    return;
+  }
+  const avail = new Set(cards.filter((c) => !c.hidden).map((c) => c.dataset.cap));
+  const btns = $$('.seg-btn', seg).filter((b) => {
+    const ok = avail.has(b.dataset.cap);
+    b.hidden = !ok;
+    return ok;
+  });
+  seg.hidden = btns.length < 2;
+  if (seg.hidden) return;
+
+  const pick = (cap) => {
+    btns.forEach((b) => {
+      const on = b.dataset.cap === cap;
+      b.classList.toggle('is-on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    // ใช้คลาสไม่ใช่ hidden: การ์ดอัดสดใช้ hidden สื่อว่า "แอดมินปิดฟีเจอร์" อยู่แล้ว
+    // ถ้าเอามาใช้ซ้ำเป็น "ไม่ได้เลือกแท็บนี้" สองความหมายจะทับกันจนหาบั๊กไม่เจอ
+    cards.forEach((c) => c.classList.toggle('cap-off', c.dataset.cap !== cap));
+    // แถบอัดลอยด้านล่างมีความหมายเฉพาะตอนอยู่แท็บอัดสด
+    document.body.classList.toggle('cap-rec', cap === 'rec');
+  };
+  btns.forEach((b) => { b.onclick = () => pick(b.dataset.cap); });
+  pick(btns[0].dataset.cap);
+}
+
+/* สรุปค่าใน <details> ให้เห็นบนหัวข้อ จะได้ไม่ต้องกางออกมาดูว่าตั้งอะไรไว้ */
+function setupAdvSummary() {
+  const out = $('#adv-sum');
+  if (!out) return;
+  // จอกว้างกางไว้เลย (ที่ว่างมีพอ และของเดิมก็เห็นทุกช่องอยู่แล้ว) จอแคบยุบไว้
+  const det = out.closest('details');
+  if (det) det.open = !isMobile();
+  const label = (sel) => {
+    const el = $(sel);
+    return el && el.selectedIndex >= 0 ? el.options[el.selectedIndex].text : '';
+  };
+  const update = () => {
+    const bits = [label('#f-lang'), label('#f-template'), label('#f-stt')].filter(Boolean);
+    if ($('#f-diarize') && $('#f-diarize').checked) bits.push('แยกผู้พูด');
+    out.textContent = bits.join(' · ');
+  };
+  ['#f-lang', '#f-template', '#f-stt', '#f-diarize', '#f-speakers']
+    .forEach((s) => { const el = $(s); if (el) el.addEventListener('change', update); });
+  update();
+}
+
+function showNew(hash = '#new') {
   state.current = null;
   state.meeting = null;
-  setHash('#new');
+  setHash(hash);
+  setView(hash === '#home' ? 'home' : 'new');
   renderList();
   const panel = $('#panel');
   panel.innerHTML = '';
@@ -627,6 +779,8 @@ function showNew() {
   $('#btn-stop').onclick = stopRecording;
   $('#btn-mute').onclick = toggleMute;
   buildWaveBars();
+  setupCapturePicker();
+  setupAdvSummary();
   setupSources();
   setupBot();
 }
@@ -1441,6 +1595,7 @@ async function openMeeting(id) {
   state.current = id;
   state.meeting = m;
   setHash(`#m/${id}`);
+  setView('meeting');
   renderList();
   // เผื่อมาจากหน้า "ประชุมใหม่" ที่ตั้ง padding กันแถบลอยด้านล่างไว้ — หน้านี้ไม่มีแถบนั้น
   document.body.classList.remove('has-floatbar');
@@ -1513,6 +1668,12 @@ async function openMeeting(id) {
       await refresh();
     } catch (e2) { banner(`เปลี่ยนชื่อผู้พูดไม่สำเร็จ: ${e2.message}`); }
   };
+
+  setupDetailTabs();
+  // ปุ่มในแผ่นเป็นปุ่มเดิมของ .detail-actions — กดแล้วต้องปิดแผ่นเอง ไม่งั้นม่านค้างทับหน้า
+  $('.detail-actions').addEventListener('click', () => {
+    if (document.body.classList.contains('sheet-open')) closeMeetingSheet();
+  });
 
   /* --- คลิกบรรทัด -> กระโดดไปฟัง --- */
   $('#d-transcript').onclick = (e) => {
@@ -1711,7 +1872,27 @@ $('#search').oninput = (e) => {
   searchTimer = setTimeout(() => { state.query = q; refresh(); }, 220);
 };
 
-$('#btn-new').onclick = showNew;
+$('#btn-new').onclick = () => showNew();
+
+// ปุ่มย้อนกลับของมือถือ — ทุกหน้ากลับไปที่รายการ (ไม่ใช้ history.back() เพราะผู้ใช้อาจเข้ามา
+// ที่ #m/<id> ตรง ๆ จากลิงก์แชร์ แล้วย้อนกลับจะหลุดออกจากเว็บไปเลย)
+$('#mb-back').onclick = () => showHome();
+$('#m-new').onclick = () => showNew();
+$('#m-devices').onclick = () => showDevices();
+$('#mb-action').onclick = () => openMeetingSheet();
+// สลับระหว่างจอกว้าง/แคบกลางคัน (หมุนเครื่อง, ย่อหน้าต่าง) ต้องอัปเดตแถบเอง
+$('#sheet-scrim').onclick = closeMeetingSheet;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.body.classList.contains('sheet-open')) closeMeetingSheet();
+});
+
+MOBILE_Q.addEventListener('change', () => {
+  setView(document.body.dataset.view || 'home');
+  // ฟอร์ม/หน้ารายละเอียดที่ค้างอยู่ต้องสลับระหว่าง "กางทั้งหมด" กับ "เลือกทีละอัน" ตามไปด้วย
+  if ($('#cap-seg')) { setupCapturePicker(); setupAdvSummary(); }
+  if ($('#d-seg')) setupDetailTabs();
+  if (!isMobile()) closeMeetingSheet();
+});
 
 $('#list').onclick = (e) => {
   const li = e.target.closest('li[data-id]');
@@ -1763,6 +1944,8 @@ async function loadShares(id) {
   // คนถือลิงก์แชร์เปิดได้แค่การประชุมนั้น พาไปเลยไม่ต้องผ่านรายการ
   if (state.share) return openMeeting(state.share.meeting_id);
   if (location.hash) applyHash();
-  else if (state.meetings.length) openMeeting(state.meetings[0].id);
-  else showNew();
+  // บนมือถือหน้าแรกต้องเป็น "รายการ" ไม่ใช่กระโดดเข้าการประชุมล่าสุดทันที (เดสก์ท็อปเห็นทั้งสอง
+  // ฝั่งพร้อมกันอยู่แล้ว การเปิดอันล่าสุดให้เลยจึงยังสมเหตุสมผลเฉพาะจอกว้าง)
+  else if (state.meetings.length && !isMobile()) openMeeting(state.meetings[0].id);
+  else showHome();
 })();

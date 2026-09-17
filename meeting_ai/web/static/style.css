@@ -146,11 +146,6 @@ body {
 /* กันเนื้อหาโดนแถบลอยด้านล่างบัง — ตั้งจาก JS เฉพาะตอนอยู่หน้า "ประชุมใหม่" ที่การ์ดอัดสดใช้ได้ */
 body.has-floatbar .panel { padding-bottom: 96px; }
 
-@media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; }
-  .sidebar { min-height: 0; border-right: none; border-bottom: 1px solid var(--border); }
-}
-
 /* ---------- meeting list ---------- */
 
 .list { list-style: none; margin: 0; padding: 8px; }
@@ -752,3 +747,264 @@ body.auth-only #stats { display: none; }
 .share-actions .muted { font-size: 12.5px; }
 
 .center { text-align: center; color: var(--muted); padding: 60px 20px; }
+
+
+/* =======================================================================
+   กฎของจอแคบต้องอยู่ท้ายสุดของไฟล์เสมอ — หลายกฎที่นี่ทับกฎเดิมที่ specificity เท่ากัน
+   ถ้าย้ายขึ้นไปอยู่กลางไฟล์ กฎเดิมที่เขียนทีหลังจะชนะเงียบ ๆ (เจอมาแล้ว)
+   ======================================================================= */
+/* ---------- จอแคบ: โชว์ทีละหน้า ----------
+   ของเดิมแค่ยุบสองคอลัมน์เป็นหนึ่ง = เอา sidebar (ค้นหา + คิวงาน + เครื่องประมวลผล + รายการ)
+   ไปกองทับฟอร์ม "ประชุมใหม่" ทั้งก้อน หน้าเดียวยาวเกิน 3000px และไม่มีลำดับความสำคัญอะไรเลย
+   ตอนนี้ body[data-view] เป็นตัวเลือกว่าจะโชว์ region ไหน (ดู setView() ใน app.js) */
+.mobilebar, .m-cta, .m-chip, .seg { display: none; }
+
+/* กล่องตัวเลือกเพิ่มเติม — ใช้ทั้งสองจอ ต่างกันแค่เปิด/ปิดตั้งต้น (ตั้งจาก JS) */
+.adv { margin: 0 0 16px; }
+.adv > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  list-style: none;
+}
+.adv > summary::-webkit-details-marker { display: none; }
+.adv > summary::after {
+  content: '›';
+  position: absolute;
+  right: 26px;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  transform: rotate(90deg);
+}
+.adv[open] > summary::after { transform: rotate(-90deg); }
+.adv > summary { position: relative; }
+.adv-sum { font-weight: 400; font-size: 12.5px; color: var(--muted); }
+.adv[open] .adv-sum { display: none; }
+.adv[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.adv[open] > .field-row:first-of-type { margin-top: 12px; }
+
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { min-height: 0; border-right: none; border-bottom: none; background: var(--bg); }
+  .panel { padding: 16px; }
+
+  .mobilebar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 10px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 30;
+  }
+  .mb-icon {
+    border: 0;
+    background: none;
+    color: var(--text);
+    font-size: 26px;
+    line-height: 1;
+    /* 44px = เป้าแตะขั้นต่ำที่นิ้วโป้งกดพลาดยาก */
+    min-width: 44px;
+    height: 44px;
+    cursor: pointer;
+  }
+  .mb-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 17px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mb-icon[hidden] { display: none; }
+  /* ไม่มีปุ่มย้อนกลับ = หัวข้อต้องไม่ชิดขอบจอ */
+  .mb-back-hidden .mb-title { padding-left: 10px; }
+
+  /* topbar บนมือถือเหลือแค่แบรนด์กับบัญชี — ปุ่ม "+ ประชุมใหม่" ย้ายไปเป็นการ์ดใหญ่ในหน้าแรก */
+  .topbar #btn-new { display: none; }
+  .topbar #stats { display: none; }
+
+  .m-cta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: calc(100% - 28px);
+    margin: 14px;
+    padding: 16px 18px;
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--accent);
+    color: #fff;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+  .m-cta-t { font-size: 17px; font-weight: 600; }
+  .m-cta-s { font-size: 13px; opacity: .78; }
+
+  .m-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 14px 12px;
+    padding: 7px 13px 7px 11px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .m-chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .m-chip[data-state="down"] .m-chip-dot { background: var(--warn); }
+  .m-cta[hidden], .m-chip[hidden] { display: none; }
+
+  /* หนึ่งหน้าจอ = หนึ่งแถบหัว: หน้าแรกใช้ topbar (มีแบรนด์กับบัญชี) หน้าอื่นใช้ mobilebar
+     (มีปุ่มย้อนกลับกับชื่อหน้า) ถ้าโชว์ทั้งคู่จะกินความสูงไปเกือบ 110px ตั้งแต่ยังไม่เห็นเนื้อหา */
+  body[data-view="home"] .mobilebar { display: none; }
+  body:not([data-view="home"]) .topbar { display: none; }
+
+  /* ลำดับบนมือถือ: ปุ่มหลัก → สถานะเครื่อง → ค้นหา → คิวงาน → รายการ
+     (DOM เรียงตามเดสก์ท็อปที่ค้นหาอยู่บนสุด จึงสลับด้วย order แทนการย้าย markup) */
+  .sidebar { display: flex; flex-direction: column; }
+  .search-wrap { order: 3; border-bottom: 0; padding: 0 14px 12px; }
+  .m-cta { order: 1; }
+  .m-chip { order: 2; }
+  .jobs { order: 4; }
+  #workers { order: 5; }
+  .list { order: 6; }
+
+  /* รายการประชุมเป็นการ์ดเหมือนในดีไซน์ — ของเดิมเป็นแถวเปล่าที่แตะยาก */
+  .list { padding: 0 14px 24px; display: flex; flex-direction: column; gap: 10px; }
+  .list li {
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    padding: 14px 40px 14px 16px;
+    position: relative;
+  }
+  .list li::after {
+    content: '›';
+    position: absolute;
+    right: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font-size: 22px;
+    line-height: 1;
+  }
+  .list li.active { border-color: transparent; }
+  .list .empty { background: none; }
+  .list .empty::after { content: none; }
+
+  /* ชื่อหน้าอยู่บน mobilebar แล้ว ไม่ต้องมีหัวข้อซ้ำในเนื้อหา */
+  .pane-title { display: none; }
+
+  .seg:not([hidden]) {
+    display: flex;
+    gap: 2px;
+    margin: 0 0 16px;
+    padding: 3px;
+    border-radius: 12px;
+    background: var(--surface-2);
+  }
+  .seg-btn {
+    flex: 1;
+    min-height: 38px;
+    border: 0;
+    border-radius: 9px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .seg-btn.is-on { background: var(--surface); color: var(--text); font-weight: 600; }
+  .seg-btn[hidden] { display: none; }
+
+  .cards { gap: 0; }
+  .card.cap-off { display: none; }
+  /* เมื่อมีปุ่มแท็บแล้ว การ์ดไม่ต้องมีกรอบหรือหัวข้อของตัวเอง — ชื่ออยู่บนปุ่มที่กดมาแล้ว
+     ไม่งั้นจะเป็นกล่องในกล่องพร้อมหัวข้อซ้ำสองที่ */
+  .seg:not([hidden]) ~ .cards .card {
+    background: none;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+  }
+  .seg:not([hidden]) ~ .cards .card > h3 { display: none; }
+  /* แถบอัดลอยด้านล่างมีความหมายเฉพาะตอนอยู่แท็บ "อัดสด" */
+  body:not(.cap-rec) .floatbar { display: none; }
+  body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
+
+  /* --- หน้ารายละเอียด --- */
+  .dtab.tab-off { display: none; }
+  /* ชื่อส่วนอยู่บนปุ่มแท็บที่เพิ่งกดมาแล้ว ไม่ต้องเขียนซ้ำใต้ปุ่ม */
+  .dtab > .section-head > h3,
+  .dtab > .section-head > div > h3 { display: none; }
+  /* ปุ่มชุดบนหัวข้อ ("แก้ไข/แปล/สรุปใหม่" ฯลฯ) ตกบรรทัดได้ ไม่ต้องอัดให้อยู่แถวเดียว */
+  .section-head { flex-wrap: wrap; gap: 8px; }
+  .detail-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+  /* #d-title มี flex: 1 1 320px ไว้สำหรับแถวแนวนอน — พอสลับเป็นคอลัมน์ flex-basis
+     กลายเป็น "ความสูง" 320px ทันที (ช่องว่างใต้ชื่อการประชุมยาวครึ่งจอ) */
+  .detail-head #d-title { flex: 0 0 auto; width: 100%; }
+
+  /* ชุดปุ่มของการประชุมย้ายลงเป็นแผ่นล่างจอ (เปิดด้วยปุ่ม ⋯ บน mobilebar) */
+  .detail-actions { display: none; }
+  .sheet-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: rgba(0, 0, 0, .55);
+  }
+  .sheet-scrim[hidden] { display: none; }
+  body.sheet-open .detail-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    position: fixed;
+    z-index: 60;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 14px 14px calc(18px + env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-radius: 22px 22px 0 0;
+    box-shadow: 0 -8px 30px rgba(0, 0, 0, .35);
+  }
+  body.sheet-open .detail-actions > * {
+    width: 100%;
+    min-height: 48px;
+    text-align: left;
+    font-size: 16px;
+  }
+
+  /* --- หน้าไหนโชว์อะไร --- */
+  body[data-view="home"] .panel { display: none; }
+  body[data-view="home"] #workers { display: none; }
+
+  body[data-view="new"] .sidebar,
+  body[data-view="meeting"] .sidebar { display: none; }
+
+  /* หน้าเครื่องประมวลผล: เหลือเฉพาะกล่อง #workers ในคอลัมน์เดียวกัน */
+  body[data-view="devices"] .panel,
+  body[data-view="devices"] .search-wrap,
+  body[data-view="devices"] .jobs,
+  body[data-view="devices"] .list,
+  body[data-view="devices"] .m-cta,
+  body[data-view="devices"] .m-chip { display: none; }
+  body[data-view="devices"] #workers { display: block; }
+  body[data-view="devices"] .wk-head { display: none; }   /* ชื่อหน้าอยู่บน mobilebar แล้ว */
+}

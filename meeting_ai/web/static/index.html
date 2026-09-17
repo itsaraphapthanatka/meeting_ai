@@ -30,11 +30,33 @@
 
 <div id="banner" class="banner" hidden></div>
 
+<!-- แถบนำทางของมือถือ — เดสก์ท็อปไม่ใช้ เพราะ sidebar กับ panel เห็นพร้อมกันอยู่แล้ว
+     บนจอแคบเราโชว์ทีละหน้า (list / ประชุมใหม่ / เครื่องประมวลผล / รายละเอียด) แถบนี้จึงเป็น
+     ทางเดียวที่จะย้อนกลับได้ ปุ่มขวาเปลี่ยนตามหน้า (เช่น ⋯ ของหน้ารายละเอียด) -->
+<div id="mobilebar" class="mobilebar" hidden>
+  <button id="mb-back" class="mb-icon" type="button" aria-label="ย้อนกลับ">‹</button>
+  <span id="mb-title" class="mb-title"></span>
+  <button id="mb-action" class="mb-icon" type="button" hidden aria-label="เมนู">⋯</button>
+</div>
+
+<!-- ม่านของ action sheet — ตัวแผ่นคือ .detail-actions เดิมที่ถูก CSS ย้ายมาอยู่ล่างจอ
+     (ไม่ได้ทำปุ่มชุดใหม่ ตัวจัดการเหตุการณ์จึงเป็นของเดิมทั้งหมด ไม่มีทางหลุดกัน) -->
+<div id="sheet-scrim" class="sheet-scrim" hidden></div>
+
 <main class="layout">
   <aside class="sidebar">
     <div class="search-wrap">
       <input id="search" type="search" placeholder="ค้นหาในชื่อ สรุป และบทถอดเสียง…" autocomplete="off">
     </div>
+    <!-- สองอันนี้โผล่เฉพาะจอแคบ (ดู style.css) — เดสก์ท็อปใช้ปุ่มบน topbar กับกล่อง
+         เครื่องประมวลผลที่กางอยู่แล้ว ไม่ต้องมีซ้ำ -->
+    <button id="m-new" class="m-cta" type="button">
+      <span class="m-cta-t">เริ่มประชุมใหม่</span>
+      <span class="m-cta-s">อัปโหลดไฟล์ · อัดสด · ส่งบอทเข้าห้อง</span>
+    </button>
+    <button id="m-devices" class="m-chip" type="button" hidden>
+      <span class="m-chip-dot"></span><span id="m-chip-text"></span>
+    </button>
     <div id="jobs" class="jobs"></div>
     <div id="workers" class="workers" hidden></div>
     <ul id="list" class="list"></ul>
@@ -96,13 +118,23 @@
 <!-- ---------- หน้าจอ: ประชุมใหม่ ---------- -->
 <template id="tpl-new">
   <div class="pane">
-    <h2>ประชุมใหม่</h2>
+    <h2 class="pane-title">ประชุมใหม่</h2>
 
     <div class="field-row">
       <label class="field">
         <span>ชื่อการประชุม</span>
         <input id="f-title" type="text" placeholder="เช่น ประชุมทีม Product ประจำสัปดาห์">
       </label>
+    </div>
+
+    <!-- ตัวเลือกที่แทบไม่มีใครเปลี่ยน ยุบไว้ใน <details> พร้อมสรุปค่าปัจจุบันบนหัวข้อ
+         (บนจอแคบห้าช่องนี้กินความสูงเกือบเต็มหน้าจอก่อนจะได้เห็นวิธีนำเสียงเข้าเสียอีก) -->
+    <details class="adv">
+      <summary>
+        <span>ตัวเลือกเพิ่มเติม</span>
+        <span id="adv-sum" class="adv-sum"></span>
+      </summary>
+    <div class="field-row">
       <label class="field field-sm">
         <span>ภาษาที่พูด</span>
         <select id="f-lang">
@@ -143,9 +175,18 @@
       </label>
       <p id="diarize-note" class="hint" hidden></p>
     </div>
+    </details>
+
+    <!-- ตัวเลือกวิธีนำเสียงเข้า — บนจอแคบโชว์ทีละการ์ด (ดู setupCapturePicker ใน app.js)
+         จอกว้างยังกางทั้งสามใบเหมือนเดิม เพราะมีที่พอและเทียบกันได้ในตาเดียว -->
+    <div id="cap-seg" class="seg" role="tablist" hidden>
+      <button class="seg-btn is-on" type="button" role="tab" data-cap="upload">อัปโหลดไฟล์</button>
+      <button class="seg-btn" type="button" role="tab" data-cap="rec">อัดสด</button>
+      <button class="seg-btn" type="button" role="tab" data-cap="bot">ส่งบอท</button>
+    </div>
 
     <div class="cards">
-      <div class="card">
+      <div class="card" data-cap="upload">
         <h3>📁 อัปโหลดไฟล์</h3>
         <p class="muted">ไฟล์ที่ Meet/Teams/Zoom อัดไว้ — mp3, m4a, wav, mp4, webm ฯลฯ</p>
         <div id="drop" class="drop">
@@ -156,7 +197,7 @@
         </div>
       </div>
 
-      <div class="card" id="rec-card">
+      <div class="card" id="rec-card" data-cap="rec">
         <h3>⏺️ อัดสดจากเบราว์เซอร์</h3>
         <p class="muted">
           เลือกได้ว่าจะกดอัดเลยแบบไม่ต้องแชร์หน้าจอ หรือดักเสียงจากแท็บให้คมที่สุด
@@ -218,7 +259,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" data-cap="bot">
         <h3>🤖 เชิญบอทเข้าห้องประชุม</h3>
         <p class="muted">
           Google Meet, Microsoft Teams, Zoom — บอทเข้าไปนั่งฟังแล้วสรุปให้
@@ -313,6 +354,15 @@
 
     <audio id="d-audio" controls preload="metadata"></audio>
 
+    <!-- จอแคบ: สรุปกับบทถอดเสียงยาวมากทั้งคู่ วางต่อกันแล้วต้องเลื่อนผ่านสรุปทั้งอันกว่าจะถึง
+         บทถอดเสียง — แยกเป็นแท็บ (ดู setupDetailTabs ใน app.js) จอกว้างยังเห็นทั้งสองส่วนต่อกัน -->
+    <div id="d-seg" class="seg" role="tablist" hidden>
+      <button class="seg-btn is-on" type="button" role="tab" data-tab="summary">สรุป</button>
+      <button class="seg-btn" type="button" role="tab" data-tab="transcript">บทถอดเสียง</button>
+    </div>
+
+    <div class="dtab" data-tab="summary">
+
     <div class="section-head">
       <div>
         <h3>สรุป</h3>
@@ -331,6 +381,9 @@
     <div id="d-summary" class="md"></div>
     <textarea id="d-editor" class="editor" hidden spellcheck="false"></textarea>
 
+    </div>
+
+    <div class="dtab" data-tab="transcript">
     <div class="section-head">
       <h3>บทถอดเสียง</h3>
       <div>
@@ -341,6 +394,7 @@
     </div>
     <p class="hint">คลิกบรรทัดไหนก็ได้เพื่อกระโดดไปฟังเสียงตรงจุดนั้น</p>
     <div id="d-transcript" class="transcript-list"></div>
+    </div>
   </div>
 </template>
 
