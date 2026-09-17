@@ -2,6 +2,7 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+- [File store concurrency (BUG-056)](file-store-concurrency.md) — msvcrt ใช้ `LK_NBLCK` ไม่ใช่ `LOCK_NBLCK`; ผู้อ่านทำให้ `os.replace` ล้ม 83% บน Windows; เทสชุดเดิมไม่แตะเส้นทางเขียนของ store
 ## 2026-09-17 — auth rate limit (BUG-010)
 - [กับดัก 4 ข้อของ rate limiter](rate-limit-design-traps.md) — สำเร็จแล้วล้างโควตา / เชื่อหัวข้อ proxy ผิดตัว / regex แปลง IP + IPv6 /128 / แคชทิ้งคีย์ที่เพิ่งนับ
 - อย่าใช้ `sed`/replace ทั้งไฟล์กับ SQL: รอบแรกเติม `::double precision` หลุดไปสอง statement ที่ไม่เกี่ยวกับตั๋วและทดสอบกับ Postgres จริงไม่ได้ — ตรวจ `git diff` ของไฟล์ SQL ทีละบรรทัดเสมอ
