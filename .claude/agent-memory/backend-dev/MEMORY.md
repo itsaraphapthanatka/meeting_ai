@@ -2,6 +2,8 @@
 
 One line per lesson; newest first. No secrets, no personal data.
 
+## 2026-09-17 — BACKLOG #20 (worker --once / heartbeat)
+- [heartbeat ไม่ใช่ตัวตัดสินการ reap](worker-liveness-vs-job-reaping.md) — reaper ดู `jobs.updated_at` และรันแค่ใน `jobs.claim()`; กับดักการเขียนเทสต์ที่ขับ `worker.run()` จริง; `test_bug_011` แกว่งเมื่อรันชุดเทสต์พร้อมกันหลาย session
 ## 2026-09-17 — BACKLOG #15/#16 (static guard + share cookie)
 - [GET ที่ตั้งคุกกี้ = fixation](cookie-set-by-get-is-fixation.md) — ยืนยันด้วย POST + application/json (415 ถ้าไม่ใช่) และเช็คโทเคนใน URL ก่อน needsAuth()
 - [str.startswith ไม่ใช่การตรวจ containment](prefix-string-path-guard.md) — โฟลเดอร์พี่น้อง static_backup/ หลุด; PoC ด้วยการ patch server.STATIC_DIR

@@ -31,6 +31,11 @@ POLL_IDLE = 3.0        # วินาที รอเมื่อคิวว่
 POLL_ERROR_MAX = 60.0  # เพดาน backoff เมื่อต่อเซิร์ฟเวอร์ไม่ได้
 PROGRESS_MIN_GAP = 1.5  # ไม่ยิง progress ถี่กว่านี้ (นอกจากเปลี่ยนขั้น)
 HEARTBEAT_SEC = 20.0    # เต้นบอกเซิร์ฟเวอร์ว่ายังอยู่ (ฝั่งนั้นถือว่าหลุดที่ 75 วิ)
+# รองานที่ค้างอยู่ให้จบก่อนออกได้นานแค่ไหน — ของเดิมตายตัวที่ 600 วิ ซึ่งสั้นกว่างานจริงมาก
+# (บอทนั่งในห้องได้ถึง 180 นาที แล้วยังต้องถอดเสียง + สรุปต่ออีก) พอครบเวลาแล้วโปรเซสออก
+# เธรดงานเป็น daemon จึงถูกฆ่ากลางคัน เซิร์ฟเวอร์เห็นแค่งานค้าง running แล้ว jobs_reap()
+# คืนงานเข้าคิวใหม่ (งานบอทตีเป็น error) ทั้งที่งานเดิมเกือบเสร็จแล้ว
+DRAIN_MAX_SEC = 6 * 3600
 # ตรวจความสามารถของเครื่องใหม่ทุกกี่วินาที — Docker Desktop เปิด/ปิดได้ตลอดเวลา
 # ถ้าเช็กครั้งเดียวตอนเปิด worker จะโฆษณาความสามารถผิดไปทั้ง session
 # (เคยเจอจริง: เครื่องที่ Docker ดับไปแล้วยังคว้างานบอทมาทำ)
@@ -308,14 +313,25 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
         return state["caps"]
 
     def beat() -> None:
-        while not stopping["flag"]:
+        """เต้นจนกว่าจะ "ถูกสั่งหยุด **และ** ไม่มีงานค้าง" — ไม่ใช่แค่ถูกสั่งหยุด.
+
+        ผูกกับ stopping["flag"] อย่างเดียวไม่ได้: --once ตั้งธงนี้ทันทีที่คว้างานมาได้
+        และ Ctrl+C ก็ตั้งระหว่างงานยังเดินอยู่ หยุดเต้นตอนนั้น = บอกเซิร์ฟเวอร์ว่าเครื่องนี้ตายแล้ว
+        ทั้งที่งานยังทำอยู่จริง (ครบ 75 วิ หน้าเว็บขึ้น "เงียบไป…" และ worker_capabilities()
+        มองไม่เห็นเครื่องนี้ จนคนสั่งงานใหม่ไม่ได้ทั้งที่มี worker ทำงานอยู่)
+        """
+        while True:
             with active_lock:
                 busy = bool(active)
                 first = next(iter(active), None)
+            if stopping["flag"] and not busy:
+                return
             client.heartbeat(worker_name, "busy" if busy else "idle", first, gpu,
                              refresh_caps())
             for _ in range(int(HEARTBEAT_SEC * 2)):
-                if stopping["flag"]:
+                with active_lock:
+                    busy = bool(active)
+                if stopping["flag"] and not busy:
                     return
                 time.sleep(0.5)
 
@@ -401,10 +417,17 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
             break
 
     # รองานที่ยังค้างให้จบก่อนออก (บอทที่อยู่ในห้องจะได้ปิดไฟล์เสียงเรียบร้อย)
-    for _ in range(600):
+    # ออกก่อนงานจบ = เธรด daemon ถูกฆ่าเงียบ ๆ งานค้างสถานะ running จนโดน reaper คืนคิว/ตีเป็น error
+    drain_until = time.monotonic() + DRAIN_MAX_SEC
+    while True:
         with active_lock:
-            if not active:
-                break
+            left = list(active)
+        if not left:
+            break
+        if time.monotonic() >= drain_until:
+            print(f"⚠️  รองานค้างครบ {int(DRAIN_MAX_SEC)}s แล้วยังไม่จบ — ออกทั้งที่ยังทำอยู่: "
+                  + ", ".join(left), file=sys.stderr)
+            break
         time.sleep(1)
 
     # ถูกสั่งหยุดตอนไม่มีงานค้าง
