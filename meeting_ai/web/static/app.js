@@ -250,7 +250,14 @@ function renderWorkers() {
   if (!state.config.auth_required || !ws.length) { el.hidden = true; return; }
   el.hidden = false;
 
-  const rows = ws.map((w) => {
+  // เรียงตามสถานะแล้วคั่นหัวข้อกลุ่ม — เจ้าของเครื่องมี worker 4 ตัวที่ออฟไลน์ 3
+  // ถ้าไม่จัดกลุ่มจะต้องอ่านทีละบรรทัดว่าตัวไหนยังใช้ได้
+  const rank = (w) => (w.status === 'busy' ? 0 : w.alive ? 1 : 2);
+  let lastGroup = null;
+  const rows = [...ws].sort((a, b) => rank(a) - rank(b)).map((w) => {
+    const group = w.alive ? 'พร้อมใช้งาน' : 'ออฟไลน์';
+    const head = group === lastGroup ? '' : `<div class="wk-group">${group}</div>`;
+    lastGroup = group;
     const cls = w.status === 'busy' ? 'busy' : (w.alive ? 'idle' : 'gone');
     const label = { busy: 'กำลังทำงาน', idle: 'ว่าง', gone: 'หลุดไป' }[cls];
     // server ตัด job_title/job_id ออกจาก worker ที่ส่งให้ผู้ใช้ทั่วไป (ไม่ใช่แอดมิน) เพราะเดิม
@@ -261,7 +268,7 @@ function renderWorkers() {
     const detail = w.status === 'busy' && w.job_title
       ? esc(w.job_title)
       : (w.alive ? `เห็นล่าสุด ${fmtAgo(w.quiet_for)}` : `เงียบไป ${fmtAgo(w.quiet_for)}`);
-    return `<div class="wk ${cls}">
+    return `${head}<div class="wk ${cls}">
       <span class="wk-dot"></span>
       <div class="wk-body">
         <span class="wk-name">${esc(w.name)}</span>
@@ -663,10 +670,12 @@ function setupDetailTabs() {
 function setupCapturePicker() {
   const seg = $('#cap-seg');
   if (!seg) return;
+  const label = $('#cap-label');
   const cards = $$('.cards .card');
   if (!isMobile()) {
     // จอกว้างกางทั้งสามใบเหมือนเดิม — ต้องล้าง cap-off ทิ้งเผื่อผู้ใช้เพิ่งขยายหน้าต่างจากจอแคบ
     seg.hidden = true;
+    if (label) label.hidden = true;
     cards.forEach((c) => c.classList.remove('cap-off'));
     document.body.classList.remove('cap-rec');
     return;
@@ -678,6 +687,7 @@ function setupCapturePicker() {
     return ok;
   });
   seg.hidden = btns.length < 2;
+  if (label) label.hidden = seg.hidden;   // หัวข้อโผล่คู่กับแถบเสมอ
   if (seg.hidden) return;
 
   const pick = (cap) => {
@@ -796,6 +806,12 @@ function showNew(hash = '#new') {
   drop.addEventListener('drop', (e) => {
     const file = e.dataTransfer.files[0];
     if (file) uploadFile(file);
+  });
+  // บนมือถือไม่มีการลากไฟล์ กล่องทั้งใบจึงควรแตะได้ ไม่ใช่ต้องเล็งปุ่มเล็ก ๆ ตรงกลาง
+  // (เช็ค closest('button') กัน dialog เปิดสองครั้งตอนกดโดนปุ่มพอดี)
+  drop.addEventListener('click', (e) => {
+    if (e.target.closest('button')) return;
+    $('#f-file').click();
   });
 
   $('#btn-rec').onclick = startRecording;

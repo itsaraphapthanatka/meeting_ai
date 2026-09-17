@@ -4,6 +4,10 @@
    นิวทรัลสองสี (Charcoal / Off-White) สลับหน้าที่กันระหว่างสว่าง/มืดพอดี */
 
 :root {
+  /* บอกเบราว์เซอร์ว่าหน้านี้รองรับทั้งสองธีม คอนโทรลของ UA ที่สไตล์เองไม่ได้
+     (<audio controls>, ตัวเลือกใน <select> ที่กางออกมา, แถบเลื่อน, ตัวเลือกวันที่)
+     จะได้เป็นสีตามธีมด้วย — ไม่งั้นตัวเล่นเสียงเป็นแถบขาวสว่างกลางหน้าจอมืด */
+  color-scheme: light dark;
   --bg: #f2f2f7;
   --surface: #ffffff;
   --surface-2: #e5e5ea;
@@ -145,6 +149,15 @@ body {
 
 /* กันเนื้อหาโดนแถบลอยด้านล่างบัง — ตั้งจาก JS เฉพาะตอนอยู่หน้า "ประชุมใหม่" ที่การ์ดอัดสดใช้ได้ */
 body.has-floatbar .panel { padding-bottom: 96px; }
+
+.wk-group {
+  padding: 12px 12px 4px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .3px;
+}
+.wk-group:first-child { padding-top: 4px; }
 
 /* ---------- meeting list ---------- */
 
@@ -757,7 +770,7 @@ body.auth-only #stats { display: none; }
    ของเดิมแค่ยุบสองคอลัมน์เป็นหนึ่ง = เอา sidebar (ค้นหา + คิวงาน + เครื่องประมวลผล + รายการ)
    ไปกองทับฟอร์ม "ประชุมใหม่" ทั้งก้อน หน้าเดียวยาวเกิน 3000px และไม่มีลำดับความสำคัญอะไรเลย
    ตอนนี้ body[data-view] เป็นตัวเลือกว่าจะโชว์ region ไหน (ดู setView() ใน app.js) */
-.mobilebar, .m-cta, .m-chip, .seg, .acct, .m-section { display: none; }
+.mobilebar, .m-cta, .m-chip, .seg, .acct, .m-section, .field-label { display: none; }
 
 /* กล่องตัวเลือกเพิ่มเติม — ใช้ทั้งสองจอ ต่างกันแค่เปิด/ปิดตั้งต้น (ตั้งจาก JS) */
 .adv { margin: 0 0 16px; }
@@ -979,6 +992,21 @@ body.auth-only #stats { display: none; }
   /* ชื่อหน้าอยู่บน mobilebar แล้ว ไม่ต้องมีหัวข้อซ้ำในเนื้อหา */
   .pane-title { display: none; }
 
+  /* หัวข้อเหนือแถบเลือกวิธีนำเสียงเข้า — มีเฉพาะจอแคบ (จอกว้างการ์ดมีหัวข้อของตัวเองอยู่แล้ว) */
+  .field-label:not([hidden]) {
+    display: block;
+    margin: 0 0 8px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  /* กล่องลากไฟล์: ไอคอน + บอกนามสกุลในกล่องเลย ย่อหน้าอธิบายเหนือกล่องจึงซ้ำซ้อน */
+  .seg:not([hidden]) ~ .cards .card > p.muted { display: none; }
+  .drop-icon { color: var(--accent); }
+  .drop-formats { margin: 4px 0 0; font-size: 12.5px; }
+  #drop { cursor: pointer; }
+
   .seg:not([hidden]) {
     display: flex;
     gap: 2px;
@@ -1072,7 +1100,26 @@ body.auth-only #stats { display: none; }
   body[data-view="devices"] .jobs,
   body[data-view="devices"] .list,
   body[data-view="devices"] .m-cta,
+  body[data-view="devices"] .m-section,
   body[data-view="devices"] .m-chip { display: none; }
+
+  /* แถวเครื่องเป็นการ์ดเหมือนในดีไซน์ ของเดิมเป็นบล็อกเทาก้อนเดียวทุกเครื่องติดกัน */
+  /* หน้าเต็มจอไม่ต้องมีกรอบครอบอีกชั้น การ์ดแต่ละใบวางบนพื้นหลังหน้าไปเลย */
+  body[data-view="devices"] #workers {
+    margin: 0;
+    padding: 0 14px 24px;
+    border: 0;
+    background: none;
+  }
+  body[data-view="devices"] .wk-name { font-size: 15px; white-space: normal; }
+  body[data-view="devices"] .wk-sub { font-size: 13px; }
+  body[data-view="devices"] .wk {
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
+    margin-bottom: 10px;
+  }
+  body[data-view="devices"] .wk-group { padding: 14px 2px 6px; }
   body[data-view="devices"] #workers { display: block; }
   body[data-view="devices"] .wk-head { display: none; }   /* ชื่อหน้าอยู่บน mobilebar แล้ว */
 }
