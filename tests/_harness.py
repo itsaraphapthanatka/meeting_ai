@@ -165,7 +165,7 @@ class FakeStore:
                duration: float, segments: list[dict], summary: str,
                summary_error: str | None = None, template: str = "general",
                speakers: list[str] | None = None, owner_id: str | None = None,
-               visibility: str = "private") -> dict:
+               visibility: str = "private", peaks: list[int] | None = None) -> dict:
         """เทียบเท่า store.create()/pgstore.create() — ใช้ทดสอบ jobs.apply_result() เส้น process/bot
 
         โดยไม่ต่อ Postgres จริง (BUG-048): ต้องเก็บค่าที่ sanitize.py คัดมาแล้วตรงๆ ไม่ตรวจซ้ำ
@@ -180,6 +180,7 @@ class FakeStore:
             "edited": False, "transcript_edited": False,
             "created": _now(), "updated": _now(),
             "summary": summary, "segments_list": list(segments), "translations": {},
+            "peaks": list(peaks) if peaks else None,
         }
         self.meetings[mid] = m
         return dict(m)

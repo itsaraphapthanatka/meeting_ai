@@ -31,6 +31,7 @@ MAX_NAME = 60                 # ชื่อผู้พูด
 MAX_SPEAKERS = 200
 MAX_LANGUAGE = 32             # รหัสภาษาจาก whisper เช่น "th", "en"
 MAX_MESSAGE = 500             # warning / summary_error ที่เอาไปโชว์ในการ์ดงาน
+MAX_PEAKS = 512               # แท่ง waveform — หน้าเว็บวาด 64 เผื่อไว้ให้เปลี่ยนได้โดยไม่ต้องแก้ที่นี่
 
 # ชื่อ/รหัสสั้น ๆ ห้ามมีตัวขึ้นบรรทัดใหม่ ไม่งั้นไปโผล่กลางตาราง export และหัวข้อสรุป
 _CTRL_RE = re.compile(r"[\r\n\t]+")
@@ -67,6 +68,25 @@ def duration(value) -> float:
     if not math.isfinite(seconds) or seconds < 0:
         return 0.0
     return seconds
+
+
+def peaks(raw) -> list[int] | None:
+    """ความดังต่อช่วงสำหรับวาด waveform — คืน None ถ้าใช้ไม่ได้ (ไม่มีก็แค่ไม่มีกราฟ).
+
+    มาจาก worker ที่เชื่อไม่ได้เต็มร้อยเหมือนฟิลด์อื่น และค่านี้ถูกยัดลง style="height:N%"
+    ในเบราว์เซอร์ ต้องเป็นจำนวนเต็ม 0-100 ล้วน ๆ เท่านั้น ไม่ใช่สตริงหรือ NaN
+    ยาวเกินเพดานก็ตัดทิ้ง ไม่ใช่ปฏิเสธทั้งก้อน (waveform ไม่ใช่ของสำคัญพอให้ทิ้งงานทั้งงาน)
+    """
+    if not isinstance(raw, list) or not raw:
+        return None
+    out = []
+    for item in raw[:MAX_PEAKS]:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        if not math.isfinite(item):
+            return None
+        out.append(max(0, min(100, int(item))))
+    return out or None
 
 
 def speakers(raw) -> list[str]:

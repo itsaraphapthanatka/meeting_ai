@@ -305,6 +305,7 @@ def create(
     speakers: list[str] | None = None,
     owner_id: str | None = None,      # ไม่ใช้ในโหมดไฟล์ — มีไว้ให้ signature ตรงกับ pgstore
     visibility: str = "private",      # เช่นกัน
+    peaks: list[int] | None = None,
 ) -> dict:
     """บันทึกการประชุมใหม่ คืน metadata ที่เก็บลง index.
 
@@ -327,7 +328,10 @@ def create(
         "template": template,
         "speakers": speakers or [],
     }
-    detail = {"id": mid, "segments": segments, "summary": summary, "translations": {}}
+    # peaks อยู่ใน detail ไม่ใช่ index: index ถูกอ่านทั้งก้อนทุกครั้งที่เปิดรายการ
+    # 64 ตัวเลขคูณจำนวนประชุมจะบวมโดยไม่มีใครใช้จนกว่าจะเปิดการประชุมนั้นจริง
+    detail = {"id": mid, "segments": segments, "summary": summary, "translations": {},
+              "peaks": peaks or None}
     # _guard = ล็อกข้ามโพรเซส (BUG-056) · _write_detail = เขียนแล้วล้างแคช (BUG-055)
     # ต้องใช้ทั้งคู่ ไม่ใช่เลือกอย่างใดอย่างหนึ่ง
     with _guard():
@@ -351,6 +355,7 @@ def get(mid: str) -> dict | None:
     out["segments_list"] = detail.get("segments", [])
     out["transcript"] = timestamped(detail)
     out["translations"] = detail.get("translations", {})
+    out["peaks"] = detail.get("peaks") or None
     return out
 
 

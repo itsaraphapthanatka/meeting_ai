@@ -636,6 +636,22 @@ const PEAK_CACHE = 'mai_peaks_';
    ทางที่ถูกจริงคือให้ worker คำนวณตอนประมวลผลแล้วเก็บไว้กับการประชุม — ดู BACKLOG */
 const PEAK_MAX_SECONDS = 20 * 60;
 
+/* ยืด/ย่อชุดค่าให้พอดีกับจำนวนแท่ง — ฝั่ง worker ส่งมา 64 ค่าเท่ากับที่วาด แต่ถ้าวันหนึ่ง
+   ฝั่งใดฝั่งหนึ่งเปลี่ยนจำนวน กราฟต้องไม่เพี้ยนหรือขาดหาย */
+function resamplePeaks(src, n) {
+  if (!src || !src.length) return null;
+  if (src.length === n) return src;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const from = Math.floor(i * src.length / n);
+    const to = Math.max(from + 1, Math.floor((i + 1) * src.length / n));
+    let max = 0;
+    for (let j = from; j < to && j < src.length; j++) max = Math.max(max, src[j] || 0);
+    out.push(max);
+  }
+  return out;
+}
+
 function drawPeaks(bars, peaks) {
   bars.forEach((b, i) => { b.style.height = `${Math.max(6, peaks[i] || 0)}%`; });
 }
@@ -768,6 +784,14 @@ function setupPlayer(mid) {
 
   setIcon();
   paint();
+
+  // ทางหลัก: worker คำนวณให้ตอนประมวลผลแล้ว (BACKLOG #60) — ได้ทุกความยาว ไม่ต้องโหลดไฟล์ซ้ำ
+  const served = resamplePeaks((state.meeting && state.meeting.peaks) || null, PEAK_BARS);
+  if (served) {
+    drawPeaks(bars, served);
+    return;
+  }
+  // ทางสำรอง: ประชุมเก่าที่บันทึกไว้ก่อนมีฟีเจอร์นี้ — ถอดในเบราว์เซอร์ถ้าไฟล์สั้นพอ
   loadPeaks(mid, (state.meeting && state.meeting.duration) || 0).then((peaks) => {
     // ผู้ใช้อาจเปิดการประชุมอื่นไปแล้วระหว่างรอถอดไฟล์ — อย่าวาดทับของใหม่
     if (peaks && state.current === mid) drawPeaks(bars, peaks);
