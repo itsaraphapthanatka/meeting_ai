@@ -105,6 +105,15 @@ class TestSweepAgainstPostgres(unittest.TestCase):
         self.tag = uuid.uuid4().hex[:8]
         self.addCleanup(self._cleanup)
         pgstore._last_sweep = 0.0
+        # นาฬิกาของด่านกันซ้ำอยู่ในตาราง settings แถวเดียวที่ใช้ร่วมกันทุกเทสต์ในคลาสนี้ —
+        # เทสต์ก่อนหน้าที่สวีปไปแล้วจะทำให้เทสต์ถัดไป "ยังไม่ถึงรอบ" ผลจึงขึ้นกับลำดับการรัน
+        # (เจอจริงที่ CI: ในเครื่องไม่มี Postgres เลยไม่เห็น) ตั้งให้ย้อนอดีตก่อนทุกครั้ง
+        self._reset_gate()
+
+    def _reset_gate(self) -> None:
+        with self.pgdb.connect() as conn:
+            conn.execute("update meeting_ai.settings set updated_at = now() - interval '2 days' "
+                         "where key = %s", (self.pgstore.SWEEP_KEY,))
 
     def _cleanup(self) -> None:
         with self.pgdb.connect() as conn:
@@ -200,7 +209,7 @@ class TestSweepAgainstPostgres(unittest.TestCase):
 
     def test_the_second_sweep_within_the_hour_is_skipped(self):
         # เรียกได้ถี่เท่าไรก็ได้คือเงื่อนไขที่ทำให้เกาะทาง claim ได้ตั้งแต่แรก
-        self.assertTrue(self.pgstore._claim_sweep())
+        self.assertTrue(self.pgstore._claim_sweep(), "ด่านถูกรีเซ็ตใน setUp แล้ว รอบแรกต้องได้สิทธิ์")
         self.assertFalse(self.pgstore._claim_sweep(),
                          "รอบที่สองต้องไม่ได้สิทธิ์ ไม่งั้นทุก claim จะยิง DELETE")
 
@@ -214,9 +223,7 @@ class TestSweepAgainstPostgres(unittest.TestCase):
     def test_a_due_sweep_runs_for_a_fresh_instance(self):
         # กันเทสต์ข้างบนผ่านเพราะ "ไม่เคยทำงานเลย" — ตั้งนาฬิกาให้เลยรอบแล้วต้องได้สิทธิ์
         self.pgstore.sweep(force=True)
-        with self.pgdb.connect() as conn:
-            conn.execute("update meeting_ai.settings set updated_at = now() - interval '2 days' "
-                         "where key = %s", (self.pgstore.SWEEP_KEY,))
+        self._reset_gate()
         self.pgstore._last_sweep = 0.0
         self.assertNotEqual(self.pgstore.sweep_if_due(), {})
 
