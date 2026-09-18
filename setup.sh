@@ -37,6 +37,23 @@ else
   curl -L --fail -o "$MODEL_FILE" "$URL"
 fi
 
+# ตรวจลายนิ้วมือ (BACKLOG #22) — macOS ใช้ shasum ไม่มี sha256sum ติดมา
+SUMS="$MODEL_DIR/SHA256SUMS"
+WANT="$(awk -v n="ggml-$MODEL.bin" '$2 == n { print $1 }' "$SUMS" 2>/dev/null || true)"
+if [ -z "$WANT" ]; then
+  echo "    ⚠️  ยังไม่มีลายนิ้วมือของ ggml-$MODEL.bin ใน $SUMS — ไฟล์นี้ไม่ถูกตรวจ"
+else
+  GOT="$(shasum -a 256 "$MODEL_FILE" | cut -d" " -f1)"
+  if [ "$GOT" != "$WANT" ]; then
+    echo "❌ โมเดลไม่ตรงลายนิ้วมือที่บันทึกไว้ — ไฟล์เสียหายหรือถูกสลับระหว่างทาง"
+    echo "   ต้องการ: $WANT"
+    echo "   ได้:     $GOT"
+    rm -f "$MODEL_FILE"
+    exit 1
+  fi
+  echo "    ✅ ลายนิ้วมือถูกต้อง"
+fi
+
 # ปรับ .env ให้ชี้โมเดลที่โหลดจริง (ถ้าไม่ใช่ค่า default)
 if [ ! -f "$DIR/.env" ]; then cp "$DIR/.env.example" "$DIR/.env"; fi
 
