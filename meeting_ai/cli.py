@@ -110,6 +110,43 @@ def _cmd_db_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_db_check(args: argparse.Namespace) -> int:
+    """ตรวจค่าคงที่ของข้อมูลในฐาน cloud — อ่านอย่างเดียว ไม่แก้อะไร (BACKLOG #42).
+
+    คืน 1 เมื่อข้อที่เป็น "security" ไม่ผ่าน เพื่อให้เอาไปใส่สคริปต์/CI ได้
+    ส่วนข้อ "hygiene" รายงานอย่างเดียว ไม่ทำให้ล้ม
+    """
+    from .web import db
+    gaps = db.missing_pieces()
+    if gaps:
+        print("❌ ยังขาด: " + "; ".join(gaps), file=sys.stderr)
+        return 2
+    from .web import pgstore
+
+    # ห้ามเรียก db.init() ที่นี่ — มันสร้าง/แก้ schema ส่วนคำสั่งนี้ต้องอ่านอย่างเดียว
+    # connect() เปิด pool ให้เองอยู่แล้วเมื่อถูกใช้ครั้งแรก
+    try:
+        rows = pgstore.audit()
+    except Exception as e:
+        print(f"❌ ตรวจไม่สำเร็จ: {type(e).__name__}", file=sys.stderr)
+        return 2
+    finally:
+        db.close()
+    bad = 0
+    for row in rows:
+        mark = "✅" if row["ok"] else ("🚨" if row["severity"] == "security" else "⚠️")
+        print(f"{mark} {row['key']:22s} {row['count']:>8,}")
+        if not row["ok"]:
+            print(f"     {row['why']}")
+            if row["severity"] == "security":
+                bad += 1
+    if bad:
+        print("\n❌ มีข้อที่กระทบสิทธิ์ผู้ใช้ — อย่าเพิ่งปล่อยผ่าน", file=sys.stderr)
+        return 1
+    print("\n✅ ผ่านทุกข้อที่กระทบสิทธิ์")
+    return 0
+
+
 def worker_default_bots() -> int:
     """ค่าเริ่มต้นของ --max-bots — อ่านจาก config ไม่ใช่เขียนเลขซ้ำ.
 
@@ -239,6 +276,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("db-init", help="สร้างตารางใน Postgres (โหมด cloud — ต้องตั้ง DATABASE_URL)")
     sp.set_defaults(func=_cmd_db_init)
+
+    sp = sub.add_parser("db-check",
+                        help="ตรวจค่าคงที่ของข้อมูลใน Postgres (อ่านอย่างเดียว ไม่แก้อะไร)")
+    sp.set_defaults(func=_cmd_db_check)
 
     sp = sub.add_parser(
         "worker",
