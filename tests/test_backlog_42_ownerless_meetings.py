@@ -16,6 +16,8 @@ production (ดู PROJECT-CONTEXT) สิ่งที่ทำได้แล�
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import unittest
 import uuid
@@ -93,6 +95,40 @@ class TestTheCommand(unittest.TestCase):
              mock.patch.object(pgstore, "audit",
                                mock.Mock(side_effect=AssertionError("ไม่ควรถูกเรียก"))):
             self.assertEqual(cli._cmd_db_check(mock.Mock()), 2)
+
+    def test_the_missing_pieces_message_says_where_to_run_it(self):
+        """เจ้าของรันบนเครื่อง worker สองครั้งแล้วได้ข้อความเดิม ซึ่งอ่านเหมือนสั่งให้ไปลงเพิ่ม.
+
+        เครื่อง worker ไม่มี DATABASE_URL และ psycopg **โดยตั้งใจ** — มันรับงานถอดเสียง
+        ไม่ได้ต่อฐาน ข้อความที่บอกแค่ "ยังขาด ..." จึงชวนให้เอา DATABASE_URL ของ
+        production ไปวางบนเครื่องที่ไม่ควรมี ซึ่งเป็นเหตุการณ์เดียวกับที่ทำให้เกิด #58
+        """
+        from meeting_ai.web import db
+
+        err = io.StringIO()
+        with mock.patch.object(db, "missing_pieces",
+                               lambda: ["ตัวแปร DATABASE_URL"]), \
+             contextlib.redirect_stderr(err):
+            rc = cli._cmd_db_check(mock.Mock())
+        self.assertEqual(rc, 2)
+        text = err.getvalue()
+        self.assertIn("DATABASE_URL", text)
+        self.assertIn("cloud", text)
+        self.assertIn("worker", text, "ต้องบอกว่าเครื่อง worker ไม่ใช่ที่ของคำสั่งนี้")
+
+    def test_db_init_says_the_same_thing(self):
+        # ทั้งสองคำสั่งเจอกำแพงเดียวกัน จึงต้องอธิบายเหมือนกัน ไม่ใช่ตัวใดตัวหนึ่ง
+        from meeting_ai.web import db
+
+        err = io.StringIO()
+        with mock.patch.object(db, "missing_pieces",
+                               lambda: ["ตัวแปร DATABASE_URL"]), \
+             mock.patch.object(db, "init",
+                               mock.Mock(side_effect=AssertionError("ไม่ควรถูกเรียก"))), \
+             contextlib.redirect_stderr(err):
+            rc = cli._cmd_db_init(mock.Mock())
+        self.assertEqual(rc, 2)
+        self.assertIn("worker", err.getvalue())
 
     def test_it_is_registered_as_a_subcommand(self):
         args = cli.build_parser().parse_args(["db-check"])
