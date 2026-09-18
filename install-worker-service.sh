@@ -3,7 +3,9 @@
 #
 #   ./install-worker-service.sh                 # แสดง unit ที่จะได้ (ไม่เขียนอะไร)
 #   ./install-worker-service.sh --install       # เขียนจริง (ต้อง sudo)
-#   ./install-worker-service.sh --install --api https://xxx.vercel.app
+#   ./install-worker-service.sh --install --api https://xxx.vercel.app --max-bots 6
+#
+# --max-bots: ย้ายจาก unit เดิมที่ฝังเลขไว้ ต้องส่งเลขเดิมมาด้วย ไม่งั้นจะได้ค่าตั้งต้น 3
 #
 # ทับค่าที่เดาได้เองด้วยตัวแปรสภาพแวดล้อม (เทสต์ใช้ทางนี้):
 #   MAI_SVC_USER  MAI_SVC_GROUP  MAI_SVC_HOME  MAI_SVC_ROOT  MAI_SVC_ENVFILE
@@ -26,11 +28,13 @@ unit_dir="${MAI_SVC_UNIT_DIR:-/etc/systemd/system}"
 
 do_install=0
 api=""
+max_bots=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --install) do_install=1 ;;
         --print) do_install=0 ;;
         --api) shift; api="${1:-}" ;;
+        --max-bots) shift; max_bots="${1:-}" ;;
         --env-file) shift; envfile="${1:-}" ;;
         -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
         *) echo "ไม่รู้จักตัวเลือก: $1" >&2; exit 2 ;;
@@ -85,13 +89,18 @@ if [ ! -f "$envfile" ]; then
     cp "$here/$EXAMPLE_NAME" "$envfile"
     echo "สร้าง $envfile จากตัวอย่าง — **ต้องแก้ MAI_API ก่อน** ไม่งั้น worker จะไม่เจอเซิร์ฟเวอร์"
 fi
-if [ -n "$api" ]; then
-    # เขียนค่า MAI_API ทับบรรทัดเดิม (ไม่ต่อท้ายซ้ำ ๆ ทุกครั้งที่รัน)
-    tmp="$envfile.tmp.$$"
-    { grep -v '^MAI_API=' "$envfile" || true; echo "MAI_API=$api"; } > "$tmp"
+# เขียนทับบรรทัดเดิม ไม่ต่อท้ายซ้ำ ๆ ทุกครั้งที่รัน (ค่าสุดท้ายชนะแบบเดาไม่ได้)
+set_env() {
+    local key=$1 value=$2 tmp="$envfile.tmp.$$"
+    { grep -v "^$key=" "$envfile" || true; echo "$key=$value"; } > "$tmp"
     mv "$tmp" "$envfile"
-    echo "ตั้ง MAI_API=$api"
-fi
+    echo "ตั้ง $key=$value"
+}
+
+[ -n "$api" ] && set_env MAI_API "$api"
+# ค่าเริ่มต้นในไฟล์ตัวอย่างคือ 3 ซึ่งอาจ **ต่ำกว่า** ที่เครื่องนั้นเคยตั้งไว้ใน unit เดิม
+# (เครื่อง GB10 ใช้ 6) ย้ายมาใช้ไฟล์ตัวแปรแล้วลืมข้อนี้ = จำนวนบอทพร้อมกันลดลงเงียบ ๆ
+[ -n "$max_bots" ] && set_env MAI_MAX_BOTS "$max_bots"
 
 command -v systemctl >/dev/null 2>&1 || { echo "ไม่มี systemctl — ข้ามการ reload"; exit 0; }
 # reload ล้มไม่ใช่เหตุให้ทั้งสคริปต์ล้ม: ไฟล์ถูกเขียนไปแล้ว และ reload ต้องสิทธิ์ root
