@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import random
 import re
 import shutil
 import subprocess
@@ -483,7 +484,16 @@ def _stage_removable(stage: Path, moved: bool) -> bool:
 
 
 def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
-    """ข้อความ error ที่ไล่ต่อได้ — บอกอาการที่เจอใน log ไม่ใช่แค่ลิสต์สาเหตุที่เป็นไปได้."""
+    """ข้อความ error ที่ไล่ต่อได้ — บอกอาการที่เจอใน log ไม่ใช่แค่ลิสต์สาเหตุที่เป็นไปได้.
+
+    ข้อความนี้เดินทางไปไกลกว่าที่คนเขียนคิด: worker ส่งเข้า jobs.error แล้วเจ้าของการประชุม
+    อ่านได้ผ่าน /api/jobs/{id} จึงต้องเป็น "สิ่งที่ผู้ใช้ทำอะไรต่อได้" ไม่ใช่ของสำหรับคนดูแล
+    เครื่อง — เดิมยัด path เต็มของเครื่อง worker กับ log ดิบ 12 บรรทัดของ container ลงไปด้วย
+    ซึ่งมีลิงก์ห้องประชุม/ชื่อไฟล์/โครงสร้างโฟลเดอร์ของเครื่องคนอื่นปนได้ (BACKLOG #40)
+
+    ของพวกนั้นไม่ได้หายไป — พิมพ์ลง stdout ของ worker พร้อมรหัสอ้างอิงเดียวกับที่แนบไปใน
+    ข้อความ คนดูแลเครื่องจึงยังไล่ต่อได้ และผู้ใช้มีรหัสไว้บอกว่าให้ดูงานไหน
+    """
     lines = list(tail)
     joined = chr(10).join(lines)
     hints = []
@@ -504,15 +514,24 @@ def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
     # ต้องอ่านก่อนโฟลเดอร์พักถูกลบใน finally ของ join_and_record()
     status = _read_status(out_wav.parent)
     shot = _keep_debug_shot(out_wav.parent, job_id)
+    ref = f"{random.randrange(16 ** 6):06x}"
     parts = ["ไม่ได้ไฟล์เสียง — บอทเข้าห้องไม่สำเร็จ"]
     if hints:
+        # hints เป็นข้อความคงที่ที่เราเขียนเอง ไม่ได้เอาบรรทัด log มาต่อ จึงไม่มีอะไรรั่ว
         parts.append("สาเหตุที่เจอใน log: " + " · ".join(hints))
     if status:
         parts.append(f"สถานะล่าสุดที่บอทรายงาน: {status}")
     if shot:
-        parts.append(f"ภาพหน้าจอตอนพลาด: {shot}")
+        parts.append("มีภาพหน้าจอตอนพลาดเก็บไว้ที่เครื่องประมวลผล")
+    parts.append(f"ให้ผู้ดูแลเครื่องดู log ของ worker ที่รหัส {ref}")
+
+    # ส่วนที่คนดูแลเครื่องต้องใช้ ออกทาง stdout ของ worker เท่านั้น ไม่ขึ้นเว็บ
+    detail = [f"[bot {ref}] เข้าห้องไม่สำเร็จ (job {job_id or '-'})"]
+    if shot:
+        detail.append(f"[bot {ref}] ภาพหน้าจอ: {shot}")
     if lines:
-        parts.append("log ท้ายสุดของบอท:" + chr(10) + chr(10).join(lines[-12:]))
+        detail.append(f"[bot {ref}] log ท้ายสุดของบอท:" + chr(10) + chr(10).join(lines[-12:]))
+    print(chr(10).join(detail), file=sys.stderr, flush=True)
     return chr(10).join(parts)
 
 
@@ -625,8 +644,13 @@ def join_and_record(
         except OSError as e:
             # ย้ายข้าม filesystem (ปลายทางเป็น tempdir) ล้มได้ เช่น ENOSPC — เสียงยังอยู่ครบที่โฟลเดอร์พัก
             # (_stage_removable กันไม่ให้ถูกลบ) ต้องบอก path ไปด้วย ไม่งั้นคนอ่าน error จะสรุปว่าเสียงหาย
-            raise RuntimeError(f"ย้ายไฟล์เสียงไปปลายทางไม่สำเร็จ ({e}) — "
-                               f"ไฟล์ที่อัดได้ยังอยู่ที่ {cout}") from e
+            # path ของเครื่อง worker ไม่ใช่ข้อมูลของเจ้าของการประชุม (BACKLOG #40) แต่คนอ่าน
+            # ต้องรู้ว่า "เสียงไม่ได้หาย" ไม่งั้นจะไปนั่งอัดใหม่ทั้งที่ไฟล์ยังอยู่
+            print(f"⚠️  ย้ายไฟล์เสียงไม่สำเร็จ ({e}) — ไฟล์ที่อัดได้ยังอยู่ที่ {cout}",
+                  file=sys.stderr, flush=True)
+            raise RuntimeError("ย้ายไฟล์เสียงไปปลายทางไม่สำเร็จ — "
+                               "ไฟล์ที่อัดได้ยังอยู่ที่เครื่องประมวลผล ยังไม่หาย "
+                               "ให้ผู้ดูแลเครื่องกู้ให้") from e
         moved = True
     finally:
         # ถึงตรงนี้ container จบแล้ว เสียงย้ายไปปลายทาง ภาพอยู่ใน logs/ แล้ว
