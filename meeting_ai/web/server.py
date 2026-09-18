@@ -53,6 +53,8 @@ MAX_JSON_TRANSCRIPT = 8 * 1024**2  # 8 MB
 MAX_SEGMENTS = 50_000
 MAX_SEGMENT_TEXT = 5_000      # ตัวอักษรต่อ segment (ประโยคพูดจริงยาวหลักร้อยตัว)
 CHUNK = 1024 * 256
+# Range ที่อ่านออกแต่สนองไม่ได้ — ต้องแยกจาก "ไม่มี/อ่านไม่ออก" ที่ต้องเสิร์ฟทั้งไฟล์ (BACKLOG #46)
+UNSATISFIABLE = "unsatisfiable"
 # หลังตอบ 413 ต้องระบายของที่ client ยังส่งค้างอยู่ก่อนปิด ไม่งั้น TCP ส่ง RST แล้ว
 # client เห็นเป็น "connection reset" แทนที่จะเห็น 413 (วัดจริงกับ body 20 MB)
 # ระบายทีละก้อน ไม่เก็บลงแรม หยุดเมื่อครบเพดานไบต์หรือครบ LINGER_SECONDS นับจากเริ่มระบาย
@@ -1620,8 +1622,23 @@ class Handler(BaseHTTPRequestHandler):
                                          owner_id=self.user_id or meeting.get("owner_id")),
                    HTTPStatus.ACCEPTED)
 
-    def _parse_range(self, size: int) -> tuple[int, int] | None:
-        """แปลง header Range เป็น (start, end) แบบรวมปลาย — None ถ้าไม่มีหรืออ่านไม่ได้."""
+    def _parse_range(self, size: int) -> tuple[int, int] | str | None:
+        """แปลง header Range เป็น (start, end) แบบรวมปลาย.
+
+        คืนสามแบบ เพราะ RFC 9110 แยกสามกรณีนี้ออกจากกันจริง ๆ และเดิมเรายุบสองอันหลังเข้าด้วยกัน:
+
+          None            ไม่มี header หรืออ่านไม่ออก -> **เมิน Range แล้วเสิร์ฟทั้งไฟล์ 200**
+          UNSATISFIABLE   อ่านออกแต่สนองไม่ได้ (เริ่มเลยท้ายไฟล์) -> 416 + Content-Range: bytes */size
+          (start, end)    ช่วงที่ส่งได้
+
+        เดิม "เลยท้ายไฟล์" คืน None เหมือนกับ header ที่พัง ผลคือผู้เล่นที่เลื่อนไปท้ายคลิป
+        (หรือขอ byte ถัดจากไบต์สุดท้ายเพื่อถามความยาว) ได้ 200 + ไฟล์เสียงทั้งก้อนกลับไป
+        ประชุมสองชั่วโมงคือหลายร้อยเมกะไบต์ที่ไหลผ่าน serverless function โดยไม่มีใครต้องการ
+        และผู้เล่นก็ยังไม่รู้อยู่ดีว่าขอเกินไปแล้ว
+
+        "ปลายน้อยกว่าต้น" (bytes=5-2) นับเป็น header พัง ไม่ใช่สนองไม่ได้ — RFC ให้เมิน
+        ของเดิมปล่อยผ่านจนได้ Content-Length ติดลบออกสาย
+        """
         raw = self.headers.get("Range")
         if not raw:
             return None
@@ -1629,12 +1646,18 @@ class Handler(BaseHTTPRequestHandler):
         if not m or not (m.group(1) or m.group(2)):
             return None
         if not m.group(1):                       # bytes=-N  = N ไบต์ท้ายไฟล์
-            length = min(int(m.group(2)), size)
+            want = int(m.group(2))
+            # ขอ 0 ไบต์ท้ายไฟล์ = สนองไม่ได้ ไม่ใช่ "เอาทั้งไฟล์" (เดิมได้ช่วงกลับหัว size..size-1)
+            if want == 0 or size == 0:
+                return UNSATISFIABLE
+            length = min(want, size)
             return (size - length, size - 1)
         start = int(m.group(1))
         end = int(m.group(2)) if m.group(2) else size - 1
-        if start >= size:
+        if m.group(2) and end < start:
             return None
+        if start >= size:
+            return UNSATISFIABLE
         return (start, min(end, size - 1))
 
     def _audio(self, mid: str) -> None:
@@ -1664,6 +1687,10 @@ class Handler(BaseHTTPRequestHandler):
         size = path.stat().st_size
         # ต้องรองรับ Range ไม่งั้นเลื่อนหาตำแหน่งในไฟล์ประชุมยาวๆ ไม่ได้
         span = self._parse_range(size)
+        if span == UNSATISFIABLE:
+            # ต้องบอกความยาวจริงกลับไปด้วย ไม่งั้นผู้เล่นไม่มีทางรู้ว่าต้องขอแค่ไหน
+            return self._send(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, b"", "text/plain",
+                              {"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"})
         start, end = span if span else (0, size - 1)
         length = end - start + 1
 
