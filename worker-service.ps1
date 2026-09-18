@@ -1,4 +1,4 @@
-﻿<#
+﻿﻿<#
 .SYNOPSIS
   รัน worker ของ meeting_ai เบื้องหลัง (ไม่มีหน้าต่างค้าง) ผ่าน Windows Task Scheduler
 
@@ -6,11 +6,11 @@
   ติดตั้งเป็น scheduled task ของผู้ใช้ปัจจุบัน — ไม่ต้องสิทธิ์ admin
     - เริ่มเองตอนล็อกอิน
     - พังแล้วรีสตาร์ตเองทุก 1 นาที (ไม่จำกัดครั้ง)
-    - เขียน log ไว้ที่ logs\worker.log
+    - เขียน log ไว้ที่ logs\worker.log (หมุนเมื่อเกินขนาด เก็บย้อนหลัง -MaxLogFiles รุ่น)
     - ไม่มีหน้าต่างโผล่
 
 .EXAMPLE
-  .\worker-service.ps1 install -Api https://meeting-ai-swart.vercel.app -Name "เครื่องหลัก"
+  .\worker-service.ps1 install -Api https://xxx.vercel.app -Name "เครื่องหลัก"
   .\worker-service.ps1 status
   .\worker-service.ps1 log
   .\worker-service.ps1 stop
@@ -25,11 +25,16 @@ param(
     [ValidateSet("install", "uninstall", "start", "stop", "restart", "status", "log")]
     [string]$Action = "status",
 
-    [string]$Api = "https://meeting-ai-swart.vercel.app",
+    # ที่อยู่เซิร์ฟเวอร์ — ไม่ใส่ = อ่านจาก MAI_API ไม่มีอีกก็ใช้ค่าเดียวกับ `mai worker`
+    # (เดิมฝัง URL ของ production ของเจ้าของไว้ตรงนี้ ใครก็อปสคริปต์ไปใช้จะยิงเข้าเซิร์ฟเวอร์
+    #  คนอื่นโดยไม่รู้ตัว — BACKLOG #28)
+    [string]$Api = $(if ($env:MAI_API) { $env:MAI_API } else { "http://127.0.0.1:8765" }),
     [string]$Name,
     [string]$TaskName = "meeting_ai worker",
     [int]$LogTailLines = 40,
     [int]$MaxLogMB = 20,
+    # เก็บ log ก้อนเก่าไว้กี่รุ่น (worker.log.1 .. worker.log.N)
+    [int]$MaxLogFiles = 3,
 
     # รันแม้ยังไม่ได้ล็อกอิน (เริ่มตอนบูตเครื่องเลย)
     # ลอง S4U ก่อน — ไม่ต้องเก็บรหัส Windows ไว้ที่ไหน ถ้าไม่ได้จะถามรหัสให้ใส่เอง
@@ -44,6 +49,17 @@ $root = $PSScriptRoot
 if (-not $root) { $root = (Get-Location).Path }
 $logDir = Join-Path $root "logs"
 $logFile = Join-Path $logDir "worker.log"
+
+function Q([string]$s) {
+    # ทุกค่าที่ถูกฝังลงตัวห่อต้องผ่านตัวนี้ (BACKLOG #28)
+    #
+    # เดิมต่อสตริงเข้าไปใน '...' ตรง ๆ ชื่อเครื่องที่มีเครื่องหมาย ' จึงปิดสตริงกลางคัน
+    # แล้วส่วนที่เหลือกลายเป็น **คำสั่งที่รันจริง** ไม่ใช่แค่พังแบบเห็นได้ —
+    # วัดแล้ว: -Name "x'; <คำสั่ง>; '" ได้ไฟล์ที่พาร์สผ่าน 0 error และคำสั่งนั้นถูกรัน
+    # ส่วนชื่อธรรมดาอย่าง "O'Brien's PC" ทำให้ worker ได้ --name O แล้วมีอาร์กิวเมนต์
+    # ขยะตามมาอีกสองตัว โดยไม่มีอะไรเตือน
+    "'" + ($s -replace "'", "''") + "'"
+}
 
 function Info($m) { Write-Host $m }
 function Ok($m)   { Write-Host "  OK   $m" -ForegroundColor Green }
@@ -81,28 +97,50 @@ function Install-WorkerTask {
 
     New-Item -ItemType Directory -Force $logDir | Out-Null
 
-    # ตัวห่อ: ตั้ง encoding ให้ไทยไม่เพี้ยนใน log, ตัด log ที่ใหญ่เกิน, แล้วรัน worker
+    # ตัวห่อ: ตั้ง encoding ให้ไทยไม่เพี้ยนใน log, หมุน log, แล้วรัน worker
     $runner = Join-Path $root "run-worker-hidden.ps1"
     @"
 # สร้างโดย worker-service.ps1 — ตัวห่อสำหรับรันเบื้องหลัง (แก้ไฟล์นี้เองไม่จำเป็น)
 `$ErrorActionPreference = 'Continue'
-Set-Location '$root'
-`$env:PYTHONPATH = '$root'
+Set-Location $(Q $root)
+`$env:PYTHONPATH = $(Q $root)
 `$env:PYTHONIOENCODING = 'utf-8'
 # PowerShell อ่าน stdout ของโปรแกรมภายนอกด้วย codepage ของ console (cp874 บนเครื่องไทย)
 # ทำให้ข้อความ UTF-8 จาก python เพี้ยนทั้งหมด ต้องบอกให้อ่านเป็น UTF-8 ก่อน
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 `$OutputEncoding = [System.Text.Encoding]::UTF8
-`$log = '$logFile'
-# ตัด log ถ้าใหญ่เกิน ${MaxLogMB}MB (เก็บก้อนเก่าไว้หนึ่งรุ่น)
-if ((Test-Path `$log) -and ((Get-Item `$log).Length -gt ${MaxLogMB}MB)) {
-    Move-Item `$log "`$log.old" -Force
+
+`$log = $(Q $logFile)
+`$maxBytes = $($MaxLogMB * 1MB)
+`$keep = $MaxLogFiles
+
+# หมุน log **ระหว่างทาง** ไม่ใช่แค่ตอนเริ่ม (BACKLOG #25b)
+#
+# ของเดิมเช็คขนาดครั้งเดียวก่อนเข้าไปป์ไลน์ แล้ว Out-File -Append ถือ handle ไว้จนจบ
+# worker ที่ไม่พังจะไม่รีสตาร์ตเลยหลายเดือน ไฟล์จึงโตได้ไม่จำกัดตลอดอายุโพรเซส
+# วัดแล้ว: ตั้งเพดาน 0 MB รันรอบเดียว ได้ log 890,994 ไบต์ โดยไม่มีการหมุนสักครั้ง
+#
+# Add-Content เปิด-ปิดไฟล์ทุกบรรทัด จึงเปลี่ยนชื่อไฟล์ระหว่างทางได้โดยไม่มี handle ค้าง
+# (ช้ากว่าไปป์ไลน์เดิม แต่ worker พ่นไม่กี่บรรทัดต่อนาที)
+function Roll-Log {
+    for (`$i = `$keep; `$i -ge 1; `$i--) {
+        `$src = if (`$i -eq 1) { `$log } else { "`$log.`$(`$i - 1)" }
+        if (Test-Path `$src) { Move-Item `$src "`$log.`$i" -Force -ErrorAction SilentlyContinue }
+    }
 }
-"[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] เริ่ม worker" | Out-File `$log -Append -Encoding utf8
-& '$py' -m meeting_ai worker --api '$Api' --name '$Name' 2>&1 |
-    ForEach-Object { "[`$(Get-Date -Format 'HH:mm:ss')] `$_" } |
-    Out-File `$log -Append -Encoding utf8
-"[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] worker หยุด (exit `$LASTEXITCODE)" | Out-File `$log -Append -Encoding utf8
+
+# นับไบต์ที่เขียนเอง แทนการ stat ไฟล์ทุกบรรทัด
+`$script:written = if (Test-Path `$log) { (Get-Item `$log).Length } else { 0 }
+function Write-Log([string]`$line) {
+    if (`$script:written -ge `$maxBytes) { Roll-Log; `$script:written = 0 }
+    Add-Content -LiteralPath `$log -Value `$line -Encoding utf8
+    `$script:written += [System.Text.Encoding]::UTF8.GetByteCount(`$line) + 2
+}
+
+Write-Log "[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] เริ่ม worker"
+& $(Q $py) -m meeting_ai worker --api $(Q $Api) --name $(Q $Name) 2>&1 |
+    ForEach-Object { Write-Log "[`$(Get-Date -Format 'HH:mm:ss')] `$_" }
+Write-Log "[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] worker หยุด (exit `$LASTEXITCODE)"
 "@ | Set-Content $runner -Encoding UTF8
 
     $psExe = (Get-Command powershell).Source
