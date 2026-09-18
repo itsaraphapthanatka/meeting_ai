@@ -12,7 +12,10 @@ whisper.cpp/
 
 # data / outputs
 recordings/
-models/
+# โมเดลเป็นไฟล์หลาย GB ไม่ commit — แต่ลายนิ้วมือของมันต้องอยู่ใน repo (BACKLOG #22)
+# ต้องเขียนเป็น models/* ไม่ใช่ models/ ไม่งั้น git ไม่เดินเข้าโฟลเดอร์เลยและ ! ไม่มีผล
+models/*
+!models/SHA256SUMS
 bin/
 *.wav
 *.mp3
