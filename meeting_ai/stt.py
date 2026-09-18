@@ -278,13 +278,44 @@ def _prepare(src: Path, workdir: Path) -> list[tuple[Path, float]]:
         return [(packed, 0.0)]
 
     # ยังใหญ่เกิน (ประชุมยาวมาก) ตัดเป็นท่อนแล้วเลื่อน timestamp ให้ต่อกัน
+    #
+    # -reset_timestamps 1 ไม่ใช่ของประดับ: Ogg เก็บ granule position แบบ "เวลาสัมบูรณ์ของสตรีมเดิม"
+    # ตัดด้วย -c copy เฉยๆ ท่อนที่ห้าจึงเป็นไฟล์ที่ **ประกาศว่าตัวเองยาว 0→หลายนาที** ทั้งที่มีเสียง
+    # อยู่แค่ช่วงท้าย (วัดจริงด้วย ffprobe: ท่อนละ 7 วิ ได้ duration 7, 14, 21, 28... ตามลำดับท่อน)
+    # ตัวถอดเสียงฝั่ง API ก็ decode ด้วย libav เหมือนกัน มันจึงคืน timestamp ที่บวก offset มาแล้ว
+    # แล้วโค้ดนี้บวก i*900 ทับเข้าไปอีก = **เลื่อนสองเท่า** ไม่ใช่แค่คลาดนิดหน่อยอย่างที่ตั๋วเขียน
+    #
+    # และ offset ต้องถามจาก ffmpeg เอง (-segment_list csv) ไม่ใช่คำนวณจากลำดับท่อน: -segment_time
+    # เป็น "ตัดที่แพ็กเก็ตแรกตั้งแต่เวลานี้ไป" ไม่ใช่ตัดตรงเป๊ะ ความยาวจริงของแต่ละท่อนจึงไม่เท่ากัน
+    # เสมอไป และความคลาดจะสะสมทบกันไปทุกท่อน
     pattern = str(workdir / "part-%03d.ogg")
+    listing = workdir / "parts.csv"
     _ffmpeg(["-i", str(packed), "-f", "segment", "-segment_time", str(CHUNK_SECONDS),
-             "-c", "copy", pattern])
+             "-reset_timestamps", "1", "-c", "copy",
+             "-segment_list", str(listing), "-segment_list_type", "csv", pattern])
     parts = sorted(workdir.glob("part-*.ogg"))
     if not parts:
         raise RuntimeError("ตัดไฟล์เสียงเป็นท่อนไม่สำเร็จ")
-    return [(p, i * float(CHUNK_SECONDS)) for i, p in enumerate(parts)]
+    return list(zip(parts, _segment_offsets(listing, parts)))
+
+
+def _segment_offsets(listing: Path, parts: list[Path]) -> list[float]:
+    """เวลาเริ่มจริงของแต่ละท่อน ตามที่ ffmpeg เขียนรายการไว้เอง (ชื่อไฟล์,เริ่ม,จบ)."""
+    starts: dict[str, float] = {}
+    try:
+        for row in listing.read_text(encoding="utf-8").splitlines():
+            cols = row.split(",")
+            if len(cols) >= 2 and cols[0].strip():
+                starts[Path(cols[0].strip()).name] = float(cols[1])
+    except (OSError, ValueError):
+        starts = {}
+    if len(starts) == len(parts) and all(p.name in starts for p in parts):
+        return [starts[p.name] for p in parts]
+    # ffmpeg รุ่นที่ไม่เขียนรายการให้ — กลับไปใช้ค่าตามลำดับท่อน ซึ่งถูกเมื่อตัดได้ตรงเป๊ะเท่านั้น
+    # บอกให้รู้ตัว ดีกว่าปล่อยให้ timestamp เพี้ยนเงียบๆ แบบเดิม
+    _notice("⚠️  อ่านเวลาเริ่มของแต่ละท่อนจาก ffmpeg ไม่ได้ — ใช้ค่าตามลำดับท่อนแทน "
+            "timestamp ของประชุมที่ยาวมากอาจคลาดเคลื่อน")
+    return [i * float(CHUNK_SECONDS) for i in range(len(parts))]
 
 
 def _transcribe_api(
@@ -320,7 +351,12 @@ def _transcribe_api(
     # ไม่มี segments = API ตอบ 200 แต่ไม่เจอเสียงพูด ซึ่งคือ "ไฟล์เงียบ" ไม่ใช่ API พัง
     # ปล่อยให้ว่างแล้วให้ runner เป็นคนบอกสาเหตุ (ทางเดียวกับ whisper ในเครื่อง)
     # ไม่งั้นข้อความ error จะชี้ไปที่ API ทั้งที่ปัญหาอยู่ที่ต้นทางเสียง
-    return Transcript(language=detected, segments=segments)
+    #
+    # กรองข้อความหลอนด้วยตัวเดียวกับทางในเครื่อง (BACKLOG #18): การวนคำเดิมซ้ำๆ ตอนเจอช่วงเงียบ
+    # เป็นพฤติกรรมของโมเดล whisper ไม่ใช่ของ "ที่รัน" — ฝั่ง API ก็วนเหมือนกัน แต่เดิมไม่มีใครกรอง
+    # ขยะจึงไหลเข้าบทถอดเสียง ไปโผล่ในสรุป และกิน token ของ LLM ไปฟรีๆ
+    return Transcript(language=detected,
+                      segments=transcriber.drop_hallucinations(segments))
 
 
 # ---------- ทางเข้าเดียว ----------
