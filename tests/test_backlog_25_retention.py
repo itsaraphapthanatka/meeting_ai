@@ -203,15 +203,25 @@ class TestTheWorkerRunsIt(unittest.TestCase):
                                side_effect=OSError("ดิสก์มีปัญหา")):
             self.assertEqual(worker.prune_artifacts_if_due(), {})
 
-    def test_the_startup_path_forces_a_run(self):
+    def test_the_startup_path_starts_the_pruner(self):
         src = Path(worker.__file__).read_text(encoding="utf-8")
-        self.assertIn("prune_artifacts_if_due(force=True)", src)
+        self.assertIn("_start_pruner()", src[src.index("def run("):])
 
-    def test_the_main_loop_calls_it_too(self):
-        # เรียกแค่ตอนสตาร์ต = worker ที่รันยาวเป็นสัปดาห์ไม่เคยเก็บกวาดเลย
+    def test_it_runs_on_a_daemon_thread_not_on_the_claim_loop(self):
+        # รอบแรกผมวางไว้บนลูปรับงาน แล้ว CI ฝั่ง Windows จับได้: prune ถาม docker
+        # (รอได้ถึง DOCKER_TIMEOUT) + เดินไล่โฟลเดอร์ = หน่วงทุกงาน และชนเพดาน drain ของ #20
         src = Path(worker.__file__).read_text(encoding="utf-8")
-        loop = src[src.index("    while not stopping[\"flag\"]:"):]
-        self.assertIn("prune_artifacts_if_due()", loop[:400])
+        loop = src[src.index('    while not stopping["flag"]:'):]
+        self.assertNotIn("prune_artifacts_if_due", loop,
+                         "เก็บกวาดต้องไม่คั่นทางหยิบงาน")
+        self.assertIn("mai-bot-pruner", src)
+
+    def test_the_pruner_thread_is_a_daemon(self):
+        # ไม่ใช่ daemon = Ctrl+C แล้วโพรเซสไม่ยอมจบ เพราะเธรดนี้นอนรออีกหนึ่งวัน
+        with mock.patch.object(worker.threading, "Thread") as thread:
+            worker._start_pruner()
+        thread.assert_called_once()
+        self.assertTrue(thread.call_args.kwargs.get("daemon"))
 
 
 if __name__ == "__main__":
