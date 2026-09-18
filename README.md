@@ -197,7 +197,7 @@ profile เดียวเก็บได้ทุกเจ้า (`bot/profile/
 ## Deploy ขึ้น Vercel (ทีม/แชร์/มือถือ)
 
 สถาปัตยกรรม: **Vercel ถือ UI + ข้อมูล + คิว ส่วนงานหนักอยู่บนเครื่องที่มี GPU ของคุณ**
-Vercel ไม่มี GPU และ function ยาวสุด 5 นาที ถอดเสียงบนนั้นไม่ได้
+Vercel ไม่มี GPU และ function ของโปรเจกต์นี้ตั้งเพดานไว้ **60 วินาที** (`vercel.json` → `maxDuration`) ถอดเสียงบนนั้นไม่ได้
 
 ```
 เบราว์เซอร์/มือถือ ──► Vercel (API + Postgres + ล็อกอิน + ลิงก์แชร์)
@@ -433,8 +433,11 @@ curl -L -o models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx \
 
 | สถานะแต่ละแพลตฟอร์ม | |
 |---|---|
-| **Google Meet** | ✅ รองรับ (เฟส 1) |
-| **Teams / Zoom** | 🚧 กำลังพัฒนา — ตอนนี้ใช้วิธี BlackHole ด้านล่าง หรือให้ Zoom อัดเองแล้ว `./mai process` |
+| **Google Meet** | ✅ รองรับ ทดสอบกับห้องจริงแล้ว |
+| **Microsoft Teams** | ✅ รองรับ (บอทกด "Continue on this browser" ให้เอง) |
+| **Zoom** | ❌ Zoom บล็อกบอทตามนโยบายของเขา และโปรเจกต์นี้**ตั้งใจไม่หลบเลี่ยง** — ใช้วิธีอัดจากเครื่องผู้เข้าร่วม หรือให้ Zoom อัดเองแล้ว `./mai process` |
+
+(ตารางเดียวกับหัวข้อ "แพลตฟอร์มที่รองรับ" ด้านบน — อย่าแก้ที่เดียว)
 
 > ⚠️ ห้องที่บังคับล็อกอิน Google หรือไม่อนุญาต guest บอทจะเข้าไม่ได้ —
 > ต้องเป็นห้องที่เปิดให้คนนอกเข้าร่วมได้ (most common) และมีคนกด Admit
@@ -500,13 +503,16 @@ meeting_ai/
 ├── bot/                # บอทเข้าห้องประชุมออนไลน์ (รันใน Docker)
 │   ├── Dockerfile      #   Chromium + pulseaudio + ffmpeg
 │   ├── entrypoint.sh   #   เตรียมเสียง/จอเสมือน แล้วรันบอท
-│   └── join_meet.py    #   เข้า Google Meet + อัดเสียงในห้อง (Playwright)
+│   ├── join_meeting.py #   เข้าห้อง + อัดเสียง (Playwright)
+│   ├── platforms.py    #   รู้จัก Meet/Teams/Zoom: ปุ่มไหน เลือกอย่างไร
+│   └── login.py        #   โหมดล็อกอินครั้งเดียว เก็บ session ไว้ใน bot/profile/
 └── meeting_ai/
     ├── config.py       # โหลด .env
     ├── bot.py          # ฝั่ง host: สั่ง Docker รันบอท → ต่อ pipeline
     ├── recorder.py     # อัดเสียงสด (ffmpeg: avfoundation/dshow)
-    ├── transcriber.py  # ถอดเสียง (whisper.cpp)
-    ├── summarizer.py   # สรุป + เทมเพลต + แปลภาษา (gemma endpoint)
+    ├── stt.py          # เลือกตัวถอดเสียง: whisper.cpp ในเครื่อง หรือ API
+    ├── transcriber.py  # ถอดเสียงด้วย whisper.cpp + ตัวกรองข้อความหลอน
+    ├── summarizer.py   # สรุป + เทมเพลต + แปลภาษา + map-reduce สำหรับประชุมยาว
     ├── diarize.py      # แยกผู้พูด (sherpa-onnx, ออปชัน)
     ├── runner.py       # ตัวประมวลผลหนึ่งงาน — ใช้ร่วมทั้งโหมดในเครื่องและโหมด worker
     ├── worker.py       # ตัวรับงานจากเซิร์ฟเวอร์ไกล (mai worker)
@@ -514,8 +520,15 @@ meeting_ai/
     ├── cli.py          # คำสั่งย่อย
     └── web/            # หน้าเว็บ (http.server จาก stdlib)
         ├── server.py   # routing + REST API
-        ├── jobs.py     # คิวงานเบื้องหลัง (worker เดียว) + progress
-        ├── store.py    # คลังการประชุมเป็นไฟล์ JSON
+        ├── backend.py  # เลือกที่เก็บข้อมูล: ไฟล์ JSON หรือ Postgres
+        ├── store.py    # คลังการประชุมเป็นไฟล์ JSON (โหมดในเครื่อง)
+        ├── pgstore.py  # คลังการประชุมบน Postgres (โหมด cloud)
+        ├── _common.py  # ตัวช่วยที่สองคลังต้องทำเหมือนกันเป๊ะ ๆ
+        ├── db.py       # connection pool ของ Postgres
+        ├── blobstore.py# ไฟล์เสียง: ดิสก์ หรือ S3/R2 (SigV4 เขียนเอง)
+        ├── jobs.py     # คิวงาน + progress + นำผลเข้าคลัง
+        ├── sanitize.py # ตรวจข้อมูลที่ worker ส่งกลับก่อนเก็บ
+        ├── ratelimit.py# จำกัดอัตราคำขอ
         ├── exports.py  # md / txt / srt / vtt / docx
         └── static/     # index.html, app.js, style.css (ไม่มี dependency)
 ```

@@ -964,7 +964,8 @@ class Handler(BaseHTTPRequestHandler):
             # ตัด job_title/job_id ให้คนที่ไม่ใช่แอดมิน เหมือนที่แนบไปกับ /api/jobs
             return self._json({"workers": self._workers_view()})
 
-        if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "stop"                 and self.command == "POST":
+        if (len(parts) == 3 and parts[0] == "jobs" and parts[2] == "stop"
+                and self.command == "POST"):
             job_id = urllib.parse.unquote(parts[1])
             job = jobs.get(job_id)
             if job is None:
@@ -1041,7 +1042,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(HTTPStatus.CONFLICT,
                                "ยังส่งบอทไม่ได้ — " + "; ".join(bot_missing))
 
-        title = _SAFE_TITLE_RE.sub(" ", str(body.get("title") or "")).strip()             or "ประชุมที่บอทเข้าร่วม"
+        title = (_SAFE_TITLE_RE.sub(" ", str(body.get("title") or "")).strip()
+                 or "ประชุมที่บอทเข้าร่วม")
         template = str(body.get("template") or summarizer.DEFAULT_TEMPLATE)
         if template not in summarizer.TEMPLATES:
             template = summarizer.DEFAULT_TEMPLATE

@@ -107,7 +107,7 @@ def mix_tracks(paths: list[Path], dest: Path) -> Path:
 def _transcribe_track(
     path: Path, language: str | None, base: float, span: float, label: str, progress: ProgressFn,
     provider: str | None = None,
-) -> tuple[list[dict], str]:
+) -> tuple[list[dict], str, str]:      # segments, ภาษาที่ตรวจได้, provider ที่ใช้จริง
     def on_progress(frac: float) -> None:
         progress(f"ถอดเสียง{label} {int(frac * 100)}%",
                  base + span * max(0.0, min(1.0, frac)))
