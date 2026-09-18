@@ -12,6 +12,9 @@ from __future__ import annotations
 import os
 
 from . import db
+from .. import log as _log
+
+log = _log.get(__name__)
 
 CLOUD_ENV = "MEETING_AI_CLOUD"
 
@@ -29,8 +32,7 @@ else:
     # เปิดโหมด cloud มาแต่ยังไม่มี DATABASE_URL — ต้องบอก ไม่ใช่เงียบแล้วตกไปใช้ไฟล์
     if _want_cloud():
         import sys
-        print("⚠️  ขอโหมด cloud แต่ยังต่อฐานข้อมูลไม่ได้: "
-              + "; ".join(db.missing_pieces()) + " — ใช้แบบไฟล์ไปก่อน", file=sys.stderr)
+        log.warning('⚠️  ขอโหมด cloud แต่ยังต่อฐานข้อมูลไม่ได้: ' + '; '.join(db.missing_pieces()) + ' — ใช้แบบไฟล์ไปก่อน')
 
 
 def storage():

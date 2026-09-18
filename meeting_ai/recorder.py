@@ -15,6 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import config
+from . import log as _log
+
+log = _log.get(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -207,8 +210,8 @@ def record(output: str | Path, mic: bool = True, system: bool = True) -> Path:
         cmd += ["-filter_complex", "amix=inputs=2:duration=longest:normalize=0"]
     cmd += ["-ar", "16000", "-ac", "1", str(output)]
 
-    print(f"🎙️  กำลังอัดเสียง → {output}")
-    print("   กด Ctrl+C เพื่อหยุดอัด\n")
+    log.info(f'🎙️  กำลังอัดเสียง → {output}')
+    log.info('   กด Ctrl+C เพื่อหยุดอัด\n')
 
     kwargs: dict = {"stdin": subprocess.PIPE}
     if IS_WINDOWS:
@@ -220,7 +223,7 @@ def record(output: str | Path, mic: bool = True, system: bool = True) -> Path:
         proc.wait()
     except KeyboardInterrupt:
         _stop(proc)
-        print(f"\n✅ หยุดอัดแล้ว: {output}")
+        log.info(f'\n✅ หยุดอัดแล้ว: {output}')
     if not output.exists():
-        print("⚠️  ไม่พบไฟล์ผลลัพธ์ — ตรวจ index อุปกรณ์ด้วย: mai devices", file=sys.stderr)
+        log.warning('⚠️  ไม่พบไฟล์ผลลัพธ์ — ตรวจ index อุปกรณ์ด้วย: mai devices')
     return output

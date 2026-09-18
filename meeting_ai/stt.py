@@ -22,6 +22,9 @@ from typing import Callable
 from . import transcriber
 from .config import config
 from .transcriber import Segment, Transcript
+from . import log as _log
+
+log = _log.get(__name__)
 
 LOCAL = "local"
 API = "api"
@@ -112,24 +115,18 @@ _announced: set[str] = set()
 
 
 def _notice(msg: str) -> None:
-    """บอกทาง stderr ว่าเลือกตัวถอดเสียงอะไร — ข้อความเดิมพิมพ์ครั้งเดียวต่อโพรเซส
+    """บอกว่าเลือกตัวถอดเสียงอะไร — ข้อความเดิมออกครั้งเดียวต่อโพรเซส.
 
-    แพตเทิร์นเดียวกับ blobstore._notice() (BUG-045): resolve() ถูกเรียกทั้งตอนสตาร์ต CLI และในเธรด
-    ที่กำลังทำงานจริง คอนโซล cp874 เขียนภาษาไทยไม่ได้ ถ้าปล่อย UnicodeEncodeError ขึ้นไปจะกลายเป็น
-    งานพังเพราะบรรทัดเตือน — ยอมเสียอักษรไทยดีกว่า และถ้า stderr ใช้ไม่ได้เลย (serverless) ก็เงียบไป
-    กันซ้ำเพราะ CLI resolve() เองแล้วส่งค่าที่ได้ต่อให้ transcribe() ซึ่ง resolve() ซ้ำอีกรอบ
+    กันซ้ำเพราะ CLI เรียก resolve() เองแล้วส่งค่าที่ได้ต่อให้ transcribe() ซึ่ง resolve() ซ้ำอีกรอบ
+
+    เดิมต้องลองเขียนสองรอบ (ไทย แล้วค่อย ascii) เพราะคอนโซล cp874 เขียนภาษาไทยไม่ได้ และ
+    UnicodeEncodeError จากบรรทัดเตือนเคยทำให้ทั้งงานล้ม (BUG-045) — ตั้งแต่ย้ายมาใช้ logging
+    (BACKLOG #35) handler จัดการข้อยกเว้นของตัวเอง บรรทัด log จึงไม่มีทางล้มงานที่เรียกมันอีก
     """
     if msg in _announced:
         return
     _announced.add(msg)
-    for text in (msg, msg.encode("ascii", "replace").decode("ascii")):
-        try:
-            print(text, file=sys.stderr, flush=True)
-            return
-        except UnicodeEncodeError:
-            continue
-        except Exception:
-            return
+    log.warning(msg)
 
 
 def reset_notices() -> None:

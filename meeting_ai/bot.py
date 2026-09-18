@@ -18,6 +18,9 @@ import time
 from pathlib import Path
 
 from .config import config
+from . import log as _log
+
+log = _log.get(__name__)
 
 # ดูจอบอทได้สองทาง: เบราว์เซอร์ (noVNC) หรือ VNC client จริง
 NOVNC_URL = "http://localhost:6080/vnc.html?autoconnect=1&resize=scale"
@@ -180,7 +183,7 @@ def build_image(force: bool = False) -> None:
     if not force and _image_exists(docker) and _image_hash(docker) == want:
         return
     why = "ยังไม่มี image" if not _image_exists(docker) else "โค้ดบอทเปลี่ยน"
-    print(f"🐳 build image ของบอท ({why}) — ครั้งแรกใช้เวลาหลายนาที...")
+    log.info(f'🐳 build image ของบอท ({why}) — ครั้งแรกใช้เวลาหลายนาที...')
     # ไม่ capture output: การ build ครั้งแรกใช้เวลาหลายนาที คนต้องเห็นความคืบหน้า
     # แต่ต้องมีเพดานเวลา ไม่งั้น docker ที่ค้างรอเครือข่ายจะแขวน worker ไว้ทั้งวันโดยไม่มีใครรู้
     # และต้องไม่โยน CalledProcessError ดิบๆ ออกไป — มันไปโผล่เป็น traceback ในการ์ดงาน
@@ -370,19 +373,17 @@ def login(site: str = "google") -> None:
     )
     if started.returncode != 0:
         raise RuntimeError(f"เปิด container สำหรับล็อกอินไม่สำเร็จ — {started.stderr.strip()}")
-    print("🔐 กำลังเปิดหน้าจอบอท...")
+    log.info('🔐 กำลังเปิดหน้าจอบอท...')
     time.sleep(6)  # รอ x11vnc + websockify + Chromium พร้อม
-    print(f"\n  1) {_open_bot_screen()}\n"
-          f"  2) ล็อกอินบัญชีของบอทให้เรียบร้อย ({site}) — แนะนำบัญชีเฉพาะบอท\n"
-          "  3) เสร็จแล้วกลับมาที่นี่ กด Enter เพื่อบันทึก\n")
+    log.info(f'\n  1) {_open_bot_screen()}\n  2) ล็อกอินบัญชีของบอทให้เรียบร้อย ({site}) — แนะนำบัญชีเฉพาะบอท\n  3) เสร็จแล้วกลับมาที่นี่ กด Enter เพื่อบันทึก\n')
     try:
         input("   >>> ล็อกอินเสร็จแล้วกด Enter... ")
     except (EOFError, KeyboardInterrupt):
         pass
-    print("💾 กำลังบันทึก profile...")
+    log.info('💾 กำลังบันทึก profile...')
     _stop(docker, container)
     _rm(docker, container)
-    print(f"✅ ล็อกอินเรียบร้อย — profile เก็บที่ {PROFILE_DIR}\n   ใช้ ./mai bot <ลิงก์> ได้เลย")
+    log.info(f'✅ ล็อกอินเรียบร้อย — profile เก็บที่ {PROFILE_DIR}\n   ใช้ ./mai bot <ลิงก์> ได้เลย')
 
 
 SHOTS = ("bot_debug.png", "bot_after_join.png", "bot_inroom.png")
@@ -550,8 +551,7 @@ def prune_old_artifacts(days: int | None = None, now: float | None = None) -> di
         except OSError:
             continue
         # ดังหน่อยตั้งใจ: นี่คือเสียงประชุมที่อาจไม่มีสำเนาที่อื่น ต้องมีร่องรอยว่าใครลบไปเมื่อไร
-        print(f"🗑  ลบโฟลเดอร์พักที่กำพร้าเกิน {days} วัน: {stage.name} "
-              f"({size / 1e6:.1f} MB)", file=sys.stderr, flush=True)
+        log.warning(f'🗑  ลบโฟลเดอร์พักที่กำพร้าเกิน {days} วัน: {stage.name} ({size / 1000000.0:.1f} MB)')
         shutil.rmtree(stage, ignore_errors=True)
         out["stages"] += 1
         out["bytes"] += size
@@ -623,7 +623,7 @@ def _fail_reason(out_wav: Path, tail, job_id: str | None) -> str:
         detail.append(f"[bot {ref}] ภาพหน้าจอ: {shot}")
     if lines:
         detail.append(f"[bot {ref}] log ท้ายสุดของบอท:" + chr(10) + chr(10).join(lines[-12:]))
-    print(chr(10).join(detail), file=sys.stderr, flush=True)
+    log.warning(chr(10).join(detail))
     return chr(10).join(parts)
 
 
@@ -680,9 +680,9 @@ def join_and_record(
         IMAGE,
     ]
 
-    print(f"🤖 ส่งบอท \"{name}\" เข้าห้องประชุม...")
-    print("   ⚠️ อย่าลืมกด 'รับเข้าห้อง' (Admit) ให้บอทในโปรแกรมประชุม")
-    print("   กด Ctrl+C เมื่อจบ เพื่อให้บอทออกจากห้องและหยุดอัด\n")
+    log.info(f'🤖 ส่งบอท "{name}" เข้าห้องประชุม...')
+    log.info("   ⚠️ อย่าลืมกด 'รับเข้าห้อง' (Admit) ให้บอทในโปรแกรมประชุม")
+    log.info('   กด Ctrl+C เมื่อจบ เพื่อให้บอทออกจากห้องและหยุดอัด\n')
     # docker stop -> SIGTERM -> join_meeting.py ปิด ffmpeg ให้ wav สมบูรณ์ก่อนตาย
     # (ห้าม kill ตรงๆ ไม่งั้น header ของ wav ไม่ถูกเขียนปิด ไฟล์จะเสีย)
     def leave() -> None:
@@ -698,7 +698,7 @@ def join_and_record(
     def pump() -> None:
         for line in proc.stdout or ():
             tail.append(line.rstrip())
-            print(line.rstrip(), flush=True)
+            log.info(line.rstrip())
 
     threading.Thread(target=pump, name="bot-log", daemon=True).start()
     started = time.monotonic()
@@ -712,16 +712,16 @@ def join_and_record(
                 if proc.poll() is not None:
                     break
                 if on_tick(time.monotonic() - started, _read_status(cout.parent)):
-                    print("⏹  ได้รับคำสั่งให้บอทออกจากห้อง")
+                    log.info('⏹  ได้รับคำสั่งให้บอทออกจากห้อง')
                     leave()
                     break
             warn = _wait_or_kill(proc, docker, container)
     except KeyboardInterrupt:
-        print("\n⏹  กำลังสั่งบอทออกจากห้องอย่างสุภาพ...")
+        log.info('\n⏹  กำลังสั่งบอทออกจากห้องอย่างสุภาพ...')
         leave()
         warn = _wait_or_kill(proc, docker, container)
     if warn:
-        print(f"⚠️  {warn}")
+        log.info(f'⚠️  {warn}')
         tail.append(warn)
 
     moved = False
@@ -730,7 +730,7 @@ def join_and_record(
             raise RuntimeError(_fail_reason(cout, tail, job_id))
         kept = _keep_debug_shot(cout.parent, job_id)
         if kept:
-            print(f"🖼  ภาพหน้าจอบอท: {kept.parent}")
+            log.info(f'🖼  ภาพหน้าจอบอท: {kept.parent}')
         try:
             shutil.move(str(cout), str(out_wav))
         except OSError as e:
@@ -738,8 +738,7 @@ def join_and_record(
             # (_stage_removable กันไม่ให้ถูกลบ) ต้องบอก path ไปด้วย ไม่งั้นคนอ่าน error จะสรุปว่าเสียงหาย
             # path ของเครื่อง worker ไม่ใช่ข้อมูลของเจ้าของการประชุม (BACKLOG #40) แต่คนอ่าน
             # ต้องรู้ว่า "เสียงไม่ได้หาย" ไม่งั้นจะไปนั่งอัดใหม่ทั้งที่ไฟล์ยังอยู่
-            print(f"⚠️  ย้ายไฟล์เสียงไม่สำเร็จ ({e}) — ไฟล์ที่อัดได้ยังอยู่ที่ {cout}",
-                  file=sys.stderr, flush=True)
+            log.warning(f'⚠️  ย้ายไฟล์เสียงไม่สำเร็จ ({e}) — ไฟล์ที่อัดได้ยังอยู่ที่ {cout}')
             raise RuntimeError("ย้ายไฟล์เสียงไปปลายทางไม่สำเร็จ — "
                                "ไฟล์ที่อัดได้ยังอยู่ที่เครื่องประมวลผล ยังไม่หาย "
                                "ให้ผู้ดูแลเครื่องกู้ให้") from e
@@ -751,5 +750,5 @@ def join_and_record(
         # ยกเว้นตอน move พัง — เสียงยังอยู่ที่นี่ที่เดียว ดู _stage_removable()
         if _stage_removable(cout.parent, moved):
             shutil.rmtree(cout.parent, ignore_errors=True)
-    print(f"✅ ได้ไฟล์เสียง: {out_wav}")
+    log.info(f'✅ ได้ไฟล์เสียง: {out_wav}')
     return out_wav

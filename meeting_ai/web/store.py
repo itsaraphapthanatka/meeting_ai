@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import config
+from .. import log as _log
 from ._common import (  # noqa: F401  ชื่อเหล่านี้เป็น API ของโมดูลนี้ ผู้เรียกอ้างผ่าน store.*
     ID_RE as _ID_RE,
     SNIPPET_PAD,
@@ -30,6 +31,8 @@ from ._common import (  # noqa: F401  ชื่อเหล่านี้เป
     transcript_text,
     valid_id,
 )
+
+log = _log.get(__name__)
 
 try:                      # Windows
     import msvcrt
@@ -78,7 +81,7 @@ _lock_depth = 0           # รองรับการเรียกซ้อ�
 
 def _warn(msg: str) -> None:
     # ภาษาอังกฤษล้วน: คอนโซลของเจ้าของเครื่องเป็น cp874 ข้อความ debug ภาษาไทยทำให้ล่มซ้ำซ้อน
-    print(f"meeting_ai.store: {msg}", file=sys.stderr)
+    log.warning(f'meeting_ai.store: {msg}')
 
 
 def _store_lock_path() -> Path:
