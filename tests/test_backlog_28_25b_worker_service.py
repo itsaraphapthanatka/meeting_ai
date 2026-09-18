@@ -141,6 +141,39 @@ class TestTheInstallerRendersTheUnit(unittest.TestCase):
         self.assertIn("MAI_API=https://one.example",
                       envfile.read_text(encoding="utf-8"))
 
+    def test_a_failing_daemon_reload_does_not_fail_the_install(self):
+        """เครื่องนี้ไม่มี systemd จึงต้องปลอมมันขึ้นมา ไม่งั้นอาการนี้เห็นได้แต่บน CI.
+
+        ของจริงที่ CI จับได้: รัน --install โดยไม่ใช่ root แล้ว systemctl ตอบ
+        "Interactive authentication required" ทำให้ set -e ฆ่าสคริปต์ทิ้ง
+        ทั้งที่ไฟล์ unit ถูกเขียนเรียบร้อยไปแล้ว
+        """
+        tmp = _tmp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        fakebin = tmp / "bin"
+        fakebin.mkdir()
+        fake = fakebin / "systemctl"
+        fake.write_text("#!/bin/sh\n"
+                        "echo 'Interactive authentication required.' >&2\n"
+                        "exit 1\n", encoding="utf-8", newline="\n")
+        fake.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = str(fakebin) + os.pathsep + env["PATH"]
+        env.update({
+            "MAI_SVC_USER": "bob", "MAI_SVC_GROUP": "bob", "MAI_SVC_HOME": "/h",
+            "MAI_SVC_ROOT": "/srv/mai",
+            "MAI_SVC_ENVFILE": (tmp / "mai.env").as_posix(),
+            "MAI_SVC_UNIT_DIR": (tmp / "units").as_posix(),
+        })
+        r = subprocess.run([BASH, INSTALLER.as_posix(), "--install",
+                            "--api", "https://x.example"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", env=env, cwd=str(ROOT))
+        self.assertEqual(r.returncode, 0,
+                         "daemon-reload ล้มไม่ควรทำให้การติดตั้งทั้งหมดล้ม: " + r.stderr)
+        self.assertTrue((tmp / "units" / "meeting-ai-worker.service").exists())
+        self.assertIn("daemon-reload", r.stdout)
+
     def test_running_it_twice_does_not_stack_up_api_lines(self):
         # ของที่ต่อท้ายไฟล์ตัวแปรทุกครั้งที่ติดตั้ง จะทำให้ค่าสุดท้ายชนะแบบเดาไม่ได้
         tmp = _tmp()
@@ -172,7 +205,11 @@ class _Wrapper:
         cls.block = lines[q_start:q_end + 1] + lines[here_start:here_end + 1]
 
     def _generate(self, tmp: Path, name: str, api: str = "https://x.example",
-                  max_log_mb: int = 20, py: str = "powershell") -> Path:
+                  max_log_mb: int = 20, py: str = "") -> Path:
+        # ต้องเป็นพาธเต็มของล่ามที่มีจริง: บน ubuntu มีแต่ `pwsh` ไม่มี `powershell`
+        # ถ้าเรียกชื่อที่ไม่มีอยู่ ตัวห่อจะไม่ได้เอาต์พุตอะไรเลย แล้วเทสต์การหมุน log
+        # จะเขียวทั้งที่ไม่ได้หมุนอะไร (CI จับได้ ไม่ใช่เครื่องนี้)
+        py = py or POWERSHELL
         harness = [
             '$ErrorActionPreference = "Stop"',
             f'$root = {self._lit(tmp.as_posix())}',
@@ -297,6 +334,12 @@ class TestTheLogRotates(_Wrapper, unittest.TestCase):
         generated.write_text(text, encoding="utf-8-sig", newline="\r\n")
         run = self._ps(generated)
         self.assertEqual(run.returncode, 0, run.stderr)
+        # ยืนยันว่าคำสั่งที่ตัวห่อเรียก ทำงานและเอาต์พุตไหลเข้า log จริง
+        # (เพดาน 0 ทำให้เกือบทุกบรรทัดถูกทิ้งตามตั้งใจ จะวัดด้วยขนาดไฟล์ไม่ได้)
+        seen = "".join(p.read_text(encoding="utf-8", errors="replace")
+                       for p in sorted(tmp.glob("worker.log*")))
+        self.assertRegex(seen, r"line \d+",
+                         "ไม่เจอเอาต์พุตของคำสั่งใน log — ตัวห่อเรียกอะไรไม่ได้ เทสต์จะกลวง")
 
     def test_it_rotates_while_the_worker_is_still_running(self):
         # ของเดิม: เช็คครั้งเดียวก่อนเข้าไปป์ไลน์ -> ไฟล์เดียวโตไปเรื่อย ๆ ไม่มี .1 เลย

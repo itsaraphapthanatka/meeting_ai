@@ -94,7 +94,9 @@ if [ -n "$api" ]; then
 fi
 
 command -v systemctl >/dev/null 2>&1 || { echo "ไม่มี systemctl — ข้ามการ reload"; exit 0; }
-systemctl daemon-reload
+# reload ล้มไม่ใช่เหตุให้ทั้งสคริปต์ล้ม: ไฟล์ถูกเขียนไปแล้ว และ reload ต้องสิทธิ์ root
+# (รันแบบไม่ใช่ root จะได้ "Interactive authentication required" ซึ่งไม่ได้แปลว่าติดตั้งไม่สำเร็จ)
+systemctl daemon-reload || echo "daemon-reload ไม่ผ่าน — รัน sudo systemctl daemon-reload เอง"
 echo
 echo "ขั้นต่อไป:"
 echo "  sudo systemctl enable --now $UNIT_NAME"
