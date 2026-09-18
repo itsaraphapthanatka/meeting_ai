@@ -57,6 +57,8 @@ STATUS_NAME = "bot_status.txt"   # คอนเทนเนอร์เขีย
 # แล้วเซิร์ฟเวอร์จะเห็นว่าเครื่องนี้หลุดไปเลย ทั้งที่โพรเซสยังอยู่
 DOCKER_TIMEOUT = 25
 PROBE_TIMEOUT = 60
+BUILD_TIMEOUT = 45 * 60   # build ครั้งแรกดึง base image + ติดตั้ง Chromium จริงๆ นานได้
+EXIT_TIMEOUT = 120        # รอ docker run ตัวนี้จบหลังสั่งหยุด ก่อนจะขึ้นไม้แข็ง
 
 # ไฟล์ที่ประกอบเป็น image — เปลี่ยนไฟล์พวกนี้แล้วต้อง build ใหม่
 SOURCES = ("Dockerfile", "entrypoint.sh", "join_meeting.py",
@@ -85,6 +87,54 @@ def _run(cmd: list[str], text: bool = False, timeout: int | None = None):
                               timeout=timeout or DOCKER_TIMEOUT)
     except subprocess.TimeoutExpired:
         return _Timeout(cmd)
+
+
+# ระยะผ่อนผันตอนสั่งหยุด container: docker ส่ง SIGTERM แล้วรอเท่านี้ก่อนจะ SIGKILL
+# join_meeting.py ใช้ช่วงนี้ปิด ffmpeg ให้ header ของ wav ถูกเขียนปิด — สั้นไปไฟล์เสียงเสีย
+STOP_GRACE = 20         # ปกติ (เก็บกวาดของค้าง / จบโหมดล็อกอิน)
+STOP_GRACE_INROOM = 30  # บอทที่กำลังอัดอยู่ ให้เวลาปิดไฟล์นานกว่า
+STOP_MARGIN = 30        # เผื่อเวลาที่ docker เองใช้เกินระยะผ่อนผัน
+
+
+def _stop(docker: str, container: str, grace: int = STOP_GRACE):
+    """สั่งหยุด container อย่างสุภาพ พร้อมเพดานเวลาที่ **ยาวกว่าระยะผ่อนผันเสมอ**.
+
+    จุดที่พลาดง่าย: _run() มีเพดานเริ่มต้น DOCKER_TIMEOUT = 25 วินาที ถ้าส่ง
+    `stop -t 30` เข้าไปเฉยๆ เพดานจะมาถึงก่อนระยะผ่อนผันจะหมดด้วยซ้ำ — เรายกเลิกคำสั่ง
+    หยุดของตัวเองกลางคัน ทั้งที่บอทกำลังปิดไฟล์เสียงอยู่พอดี
+    """
+    return _run([docker, "stop", "-t", str(grace), container],
+                timeout=grace + STOP_MARGIN)
+
+
+def _rm(docker: str, container: str):
+    """ลบ container ทิ้ง — ชื่อซ้ำจากรอบก่อนทำให้ docker run ตัวใหม่ไม่ขึ้น."""
+    return _run([docker, "rm", "-f", container])
+
+
+def _wait_or_kill(proc, docker: str, container: str) -> str:
+    """รอให้ `docker run` ตัวนี้จบ ถ้าไม่จบให้ขึ้นไม้แข็ง — คืนคำเตือน (ว่าง = เรียบร้อยดี).
+
+    เดิมเป็น `proc.wait(timeout=120)` เปล่าๆ นอก except: พอ container ไม่ยอมตาย
+    TimeoutExpired จะหลุดออกจาก join_and_record ทั้งดุ้น ข้ามท่อนที่ย้ายไฟล์เสียงไปปลายทาง
+    และท่อนเก็บกวาดไปทั้งหมด — **เสียงที่อัดมาทั้งชั่วโมงค้างอยู่ในโฟลเดอร์พัก** แล้วงานถูก
+    รายงานว่าล้มด้วย traceback ภาษาอังกฤษที่ไปโผล่ในการ์ดงานของเจ้าของการประชุม
+
+    ฆ่า proc เฉยๆ ไม่พอ: proc คือ docker client ไม่ใช่ container ปล่อยไว้ container จะยัง
+    เขียน /out อยู่ขณะที่เรากำลังย้ายไฟล์ ได้ wav ที่ขาดกลาง จึงต้อง `docker kill` ตัวจริงก่อน
+    """
+    try:
+        proc.wait(timeout=EXIT_TIMEOUT)
+        return ""
+    except subprocess.TimeoutExpired:
+        pass
+    _run([docker, "kill", container])
+    try:
+        proc.wait(timeout=DOCKER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    return (f"บอทไม่ยอมหยุดใน {EXIT_TIMEOUT} วินาที จึงถูกบังคับปิด — "
+            "ไฟล์เสียงอาจขาดช่วงท้าย")
 
 
 def _docker() -> str:
@@ -130,8 +180,22 @@ def build_image(force: bool = False) -> None:
         return
     why = "ยังไม่มี image" if not _image_exists(docker) else "โค้ดบอทเปลี่ยน"
     print(f"🐳 build image ของบอท ({why}) — ครั้งแรกใช้เวลาหลายนาที...")
-    subprocess.run([docker, "build", "-t", IMAGE,
-                    "--label", f"{SRC_LABEL}={want}", str(BOT_DIR)], check=True)
+    # ไม่ capture output: การ build ครั้งแรกใช้เวลาหลายนาที คนต้องเห็นความคืบหน้า
+    # แต่ต้องมีเพดานเวลา ไม่งั้น docker ที่ค้างรอเครือข่ายจะแขวน worker ไว้ทั้งวันโดยไม่มีใครรู้
+    # และต้องไม่โยน CalledProcessError ดิบๆ ออกไป — มันไปโผล่เป็น traceback ในการ์ดงาน
+    try:
+        r = subprocess.run([docker, "build", "-t", IMAGE, "--label",
+                            f"{SRC_LABEL}={want}", str(BOT_DIR)],
+                           timeout=BUILD_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"build image ของบอทไม่จบใน {BUILD_TIMEOUT // 60} นาที — "
+            "มักเป็นเน็ตช้า/ดึง base image ไม่ได้ ลองใหม่หรือรัน `docker build` เองเพื่อดูสาเหตุ"
+        ) from e
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"build image ของบอทไม่สำเร็จ (rc={r.returncode}) — "
+            "ดูข้อความของ docker ด้านบนเพื่อหาสาเหตุ")
 
 
 def _probe_run(docker: str) -> str:
@@ -233,7 +297,7 @@ def cleanup_stale(worker: str = "") -> list[str]:
     names = [x.strip() for x in r.stdout.splitlines() if x.strip()]
     for name in names:
         # stop ไม่ kill — ให้บอทออกจากห้องและปิดไฟล์เสียงให้เรียบร้อยก่อน
-        _run([exe, "stop", "-t", "20", name], timeout=50)
+        _stop(exe, name)
     # เก็บโฟลเดอร์พักที่ค้างจากรอบก่อน — ต้องทำหลังสั่ง stop ครบแล้ว เพราะ container
     # ที่ยังรันอยู่ mount โฟลเดอร์นั้นเป็น /out อยู่ ลบตอนนั้นไฟล์เสียงที่กำลังเขียนจะพัง
     # แต่ "สั่ง stop แล้ว" ไม่เท่ากับ "หยุดแล้ว": _run() กลืน timeout ไว้เงียบๆ
@@ -289,8 +353,8 @@ def login(site: str = "google") -> None:
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
     container = LOGIN_CONTAINER
-    subprocess.run([docker, "rm", "-f", container], capture_output=True)
-    subprocess.run(
+    _rm(docker, container)
+    started = _run(
         [
             docker, "run", "-d", "--name", container,
             # ผูกกับ 127.0.0.1 เท่านั้น — จอบอทตอนล็อกอินมีหน้า Google อยู่ ห้ามเปิดให้เครือข่ายเห็น
@@ -301,8 +365,10 @@ def login(site: str = "google") -> None:
             "-v", f"{_mount(PROFILE_DIR)}:/prof",
             IMAGE,
         ],
-        check=True,
+        text=True,
     )
+    if started.returncode != 0:
+        raise RuntimeError(f"เปิด container สำหรับล็อกอินไม่สำเร็จ — {started.stderr.strip()}")
     print("🔐 กำลังเปิดหน้าจอบอท...")
     time.sleep(6)  # รอ x11vnc + websockify + Chromium พร้อม
     print(f"\n  1) {_open_bot_screen()}\n"
@@ -313,8 +379,8 @@ def login(site: str = "google") -> None:
     except (EOFError, KeyboardInterrupt):
         pass
     print("💾 กำลังบันทึก profile...")
-    subprocess.run([docker, "stop", "-t", "20", container], check=False)
-    subprocess.run([docker, "rm", "-f", container], capture_output=True)
+    _stop(docker, container)
+    _rm(docker, container)
     print(f"✅ ล็อกอินเรียบร้อย — profile เก็บที่ {PROFILE_DIR}\n   ใช้ ./mai bot <ลิงก์> ได้เลย")
 
 
@@ -484,7 +550,7 @@ def join_and_record(
     container, stage = _job_slot(job_id, worker)
     # ชื่อซ้ำจากรอบก่อนที่ค้างอยู่ ต้องเก็บให้เรียบร้อยก่อน ไม่งั้น docker run จะฟ้องชื่อชนกัน
     # ต้องมาก่อนล้างโฟลเดอร์ ไม่งั้นลบ /out ใต้เท้า container เก่าที่ยังเขียนไฟล์อยู่
-    subprocess.run([docker, "rm", "-f", container], capture_output=True)
+    _rm(docker, container)
     # ล้างให้ว่างก่อนเริ่ม: งานเดิมที่ถูกสั่งรันซ้ำด้วย job id เดิมจะได้ไม่ไปอ่าน
     # bot_status.txt ของรอบก่อน แล้วรายงานว่า "อยู่ในห้อง" ทั้งที่ container ใหม่ยังไม่ทันเปิดหน้าเว็บ
     shutil.rmtree(stage, ignore_errors=True)
@@ -509,7 +575,7 @@ def join_and_record(
     # docker stop -> SIGTERM -> join_meeting.py ปิด ffmpeg ให้ wav สมบูรณ์ก่อนตาย
     # (ห้าม kill ตรงๆ ไม่งั้น header ของ wav ไม่ถูกเขียนปิด ไฟล์จะเสีย)
     def leave() -> None:
-        subprocess.run([docker, "stop", "-t", "30", container], check=False)
+        _stop(docker, container, STOP_GRACE_INROOM)
 
     # เก็บ output ของ container ไว้ด้วย ไม่ใช่ปล่อยผ่านไปหน้าจอเฉยๆ
     # เวลาบอทเข้าห้องไม่สำเร็จ บรรทัด [bot] ... คือเบาะแสเดียวที่บอกว่าพังขั้นไหน
@@ -525,6 +591,7 @@ def join_and_record(
 
     threading.Thread(target=pump, name="bot-log", daemon=True).start()
     started = time.monotonic()
+    warn = ""
     try:
         if on_tick is None:
             proc.wait()                     # โหมด CLI: รอจนบอทจบเอง
@@ -537,14 +604,14 @@ def join_and_record(
                     print("⏹  ได้รับคำสั่งให้บอทออกจากห้อง")
                     leave()
                     break
-            proc.wait(timeout=120)
+            warn = _wait_or_kill(proc, docker, container)
     except KeyboardInterrupt:
         print("\n⏹  กำลังสั่งบอทออกจากห้องอย่างสุภาพ...")
         leave()
-        try:
-            proc.wait(timeout=120)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        warn = _wait_or_kill(proc, docker, container)
+    if warn:
+        print(f"⚠️  {warn}")
+        tail.append(warn)
 
     moved = False
     try:
