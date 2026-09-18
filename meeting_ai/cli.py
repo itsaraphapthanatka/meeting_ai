@@ -41,7 +41,8 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
 def _cmd_summarize(args: argparse.Namespace) -> int:
     from . import summarizer
     text = Path(args.transcript).read_text(encoding="utf-8")
-    md = summarizer.summarize(text, meeting_title=args.title, template=args.template)
+    md = summarizer.summarize(text, meeting_title=args.title, template=args.template,
+                              target_lang=args.summary_lang)
     if args.output:
         Path(args.output).write_text(md, encoding="utf-8")
         print(f"✅ เขียนสรุป: {args.output}")
@@ -54,7 +55,7 @@ def _cmd_process(args: argparse.Namespace) -> int:
     from . import pipeline
     pipeline.process_file(args.audio, title=args.title, language=args.lang,
                           out_dir=args.out_dir, template=args.template,
-                          stt_provider=args.stt)
+                          stt_provider=args.stt, summary_lang=args.summary_lang)
     return 0
 
 
@@ -131,6 +132,21 @@ def _add_template_arg(sp: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_summary_lang_arg(sp: argparse.ArgumentParser) -> None:
+    """ภาษาของ "ตัวสรุป" — คนละอันกับ --lang ที่บอกว่า "เสียง" เป็นภาษาอะไร.
+
+    ประชุมภาษาอังกฤษแล้วอยากได้สรุปไทยเป็นเรื่องปกติ ค่าเริ่มต้นจึงเป็นไทยเสมอ
+    ไม่ได้ตามภาษาของเสียง (BACKLOG #9)
+    """
+    from . import summarizer
+    sp.add_argument(
+        "--summary-lang", default=summarizer.DEFAULT_SUMMARY_LANG,
+        choices=list(summarizer.LANGUAGE_NAMES),
+        help="ภาษาของสรุป (ไม่ใช่ภาษาของเสียง): "
+             + ", ".join(f"{k}={v}" for k, v in summarizer.LANGUAGE_NAMES.items()),
+    )
+
+
 def _add_stt_arg(sp: argparse.ArgumentParser) -> None:
     # choices เขียนเป็น string ตรงๆ ไม่ import stt มาอ่าน stt.LOCAL/stt.API
     # เพราะ build_parser() ตั้งใจไม่ import โมดูลหนักตอน parse args — `mai --help` ต้องขึ้นทันที
@@ -172,6 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-o", "--output", help="ไฟล์ผลลัพธ์ (ไม่ใส่ = พิมพ์ออกจอ)")
     sp.add_argument("--title", help="ชื่อการประชุม")
     _add_template_arg(sp)
+    _add_summary_lang_arg(sp)
     sp.set_defaults(func=_cmd_summarize)
 
     sp = sub.add_parser("process", help="ครบวงจร: ไฟล์เสียง → ถอดเสียง → สรุป → Markdown")
@@ -181,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out-dir", default="recordings", help="โฟลเดอร์ผลลัพธ์")
     _add_stt_arg(sp)
     _add_template_arg(sp)
+    _add_summary_lang_arg(sp)
     sp.set_defaults(func=_cmd_process)
 
     sp = sub.add_parser("bot", help="ส่งบอทเข้าห้องประชุมออนไลน์ (Google Meet) เพื่ออัด+สรุป")

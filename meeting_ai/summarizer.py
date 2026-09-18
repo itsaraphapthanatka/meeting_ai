@@ -13,8 +13,9 @@ from .config import config
 # โค้ด HTTP ที่ถือว่าชั่วคราว ลองใหม่ได้ (524 = Cloudflare timeout ฝั่ง origin LLM)
 _RETRY_CODES = {429, 500, 502, 503, 504, 520, 522, 524}
 
+# {language} มาจาก LANGUAGE_NAMES — ค่าเริ่มต้น th ทำให้ได้ข้อความเดิมทุกตัวอักษร
 SYSTEM_PROMPT = """คุณคือผู้ช่วยจดและสรุปการประชุมมืออาชีพ
-สรุปเป็นภาษาไทยที่กระชับ อ่านง่าย ตรงประเด็น อ้างอิงเฉพาะสิ่งที่ปรากฏใน transcript เท่านั้น
+สรุปเป็น{language}ที่กระชับ อ่านง่าย ตรงประเด็น อ้างอิงเฉพาะสิ่งที่ปรากฏใน transcript เท่านั้น
 ห้ามแต่งเติมข้อมูลที่ไม่มีในบทสนทนา ถ้าข้อมูลส่วนใดไม่มีให้ระบุว่า "ไม่ได้ระบุ"
 """
 
@@ -131,10 +132,21 @@ TEMPLATES: dict[str, dict[str, str]] = {
     "standup": {"label": "Daily standup", "body": _STANDUP_BODY},
 }
 DEFAULT_TEMPLATE = "general"
+# ภาษาของตัวสรุป — คงเป็นไทยไว้ ไม่ใช่ตามภาษาของเสียงอัตโนมัติ: ผู้ใช้ไทยที่ประชุมภาษาอังกฤษ
+# ส่วนใหญ่อยากได้สรุปไทย การเปลี่ยนค่าเริ่มต้นเป็นเรื่องของเจ้าของผลิตภัณฑ์ ไม่ใช่ผลพลอยได้ของบั๊กฟิกซ์
+DEFAULT_SUMMARY_LANG = "th"
+
+# โครงหัวข้อใน TEMPLATES เขียนเป็นภาษาไทยทั้งหมด จะทำเป็นชุดละภาษา (5 เทมเพลต x 5 ภาษา)
+# ก็บานปลายและต้องตามแก้พร้อมกันตลอดไป — ใช้โครงเดิมเป็น "สเปกโครงสร้าง" แล้วสั่งให้แปลหัวข้อ
+# แทน (วิธีเดียวกับ TRANSLATE_PROMPT ที่รักษาโครง Markdown เดิมไว้ได้อยู่แล้ว)
+_FORMAT_TH = "จงสรุปโดยใช้รูปแบบ Markdown หัวข้อภาษาไทยตามนี้เป๊ะๆ:"
+_FORMAT_OTHER = """จงสรุปโดยใช้โครง Markdown ด้านล่างนี้ — คงลำดับหัวข้อ อิโมจิ และรูปแบบ
+ตาราง/bullet ไว้เป๊ะๆ แต่ให้ **แปลชื่อหัวข้อ และเขียนเนื้อหาทั้งหมดเป็น{language}**
+รวมถึงคำแทนค่าว่างอย่าง "ไม่ได้ระบุ" / "ไม่มี" ให้ใช้คำที่เทียบเท่าใน{language}:"""
 
 USER_TEMPLATE = """ต่อไปนี้คือ transcript ของการประชุม{meta}
 {speaker_note}
-จงสรุปโดยใช้รูปแบบ Markdown หัวข้อภาษาไทยตามนี้เป๊ะๆ:
+{format_line}
 
 {body}
 
@@ -292,21 +304,31 @@ def summarize(
     meeting_title: str | None = None,
     template: str = DEFAULT_TEMPLATE,
     has_speakers: bool = False,
+    target_lang: str = DEFAULT_SUMMARY_LANG,
 ) -> str:
-    """รับข้อความ transcript คืนสรุปการประชุมเป็น Markdown ภาษาไทย.
+    """รับข้อความ transcript คืนสรุปการประชุมเป็น Markdown.
 
     template: คีย์ใน TEMPLATES — โครงหัวข้อต่างกันตามชนิดการประชุม
     has_speakers: True ถ้า transcript มีชื่อผู้พูดกำกับอยู่ (ให้ LLM ระบุผู้รับผิดชอบได้)
+    target_lang: ภาษาของ "ตัวสรุป" ไม่ใช่ภาษาของเสียง — คนละเรื่องกับ --lang/whisper_lang
+      ที่บอกว่าเสียงเป็นภาษาอะไร (ประชุมภาษาอังกฤษแล้วอยากได้สรุปไทยเป็นเรื่องปกติ)
+      **ค่าเริ่มต้นคือ th** เพื่อไม่ให้สรุปของทุกคนเปลี่ยนภาษาเองจากการอัปเกรด
+      รหัสที่ไม่รู้จักจะถูกส่งให้ LLM ตามตัว (เหมือน translate) ไม่ใช่เงียบ ๆ กลับไปเป็นไทย
     """
     body = TEMPLATES.get(template, TEMPLATES[DEFAULT_TEMPLATE])["body"]
     meta = f' หัวข้อ "{meeting_title}"' if meeting_title else ""
+    lang = (target_lang or DEFAULT_SUMMARY_LANG).strip() or DEFAULT_SUMMARY_LANG
+    language = LANGUAGE_NAMES.get(lang, lang)
+    format_line = (_FORMAT_TH if lang == DEFAULT_SUMMARY_LANG
+                   else _FORMAT_OTHER.format(language=language))
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT.format(language=language)},
         {
             "role": "user",
             "content": USER_TEMPLATE.format(
                 meta=meta,
                 speaker_note=_SPEAKER_NOTE if has_speakers else "",
+                format_line=format_line,
                 body=body,
                 transcript=transcript_text,
             ),

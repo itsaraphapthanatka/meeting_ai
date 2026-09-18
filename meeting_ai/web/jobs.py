@@ -299,6 +299,9 @@ def build_spec(job_id: str) -> dict | None:
             "title": d["title"],
             "language": d.get("language"),
             "template": d.get("template"),
+            # ภาษาของ "ตัวสรุป" ไม่ใช่ภาษาของเสียง (ดู summarizer.DEFAULT_SUMMARY_LANG) —
+            # ไม่ได้ตั้งมา = ไทยตามเดิม ฝั่ง API ยังไม่เปิดให้ตั้ง ดู BACKLOG #9 แถวต่อเนื่อง
+            "summary_lang": d.get("summary_lang"),
             "diarize": d.get("diarize"),
             "num_speakers": d.get("num_speakers"),
             "stt": d.get("stt"),
@@ -322,6 +325,7 @@ def build_spec(job_id: str) -> dict | None:
     }
     if kind == "summarize":
         spec["segments"] = meeting.get("segments_list") or []
+        spec["summary_lang"] = (job.get("_spec") or {}).get("summary_lang")
     else:
         spec["lang"] = job.get("_lang") or (job.get("_spec") or {}).get("lang")
         spec["summary"] = meeting.get("summary") or ""
