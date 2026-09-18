@@ -57,16 +57,55 @@ def available() -> bool:
     return not missing_pieces()
 
 
-def _read_wav_mono16k(path: Path) -> tuple[list[float], int]:
-    """อ่าน WAV 16-bit mono เป็น float32 -1..1 (ไฟล์ถูกแปลงมาแล้วโดย ffmpeg)."""
+# อ่านทีละก้อนแทนการดูดทั้งไฟล์เข้ามาเป็น bytes ก้อนเดียวก่อนแปลง
+READ_FRAMES = 1 << 20      # ~1M sample = 2 MB ต่อรอบ
+
+
+def _read_wav_mono16k(path: Path):
+    """อ่าน WAV 16-bit mono เป็นบัฟเฟอร์ float32 -1..1 (ไฟล์ถูกแปลงมาแล้วโดย ffmpeg).
+
+    **ห้ามคืนเป็น list ของ float** ซึ่งเป็นของเดิม: float ของ Python เป็นออบเจกต์ 24 ไบต์
+    บวกพอยน์เตอร์ในลิสต์อีก 8 วัดจริงได้ 32.8 ไบต์ต่อ sample = **3.78 GB สำหรับประชุม
+    2 ชั่วโมง** ที่ 16 kHz (BACKLOG #31) บัฟเฟอร์ float32 ใช้ 4 ไบต์ต่อ sample = 0.46 GB
+    และ sherpa-onnx รับ numpy float32 อยู่แล้วตามตัวอย่างของมันเอง จึงไม่ต้องแปลงอะไรต่อ
+
+    numpy เป็น dependency ของ sherpa-onnx อยู่แล้ว (ทางที่เรียกฟังก์ชันนี้จริงต้องมีทั้งคู่)
+    แต่ยังเผื่อทาง array.array ไว้ ให้เทสต์/เครื่องที่ไม่มี numpy ยังอ่านไฟล์ได้
+    """
     with wave.open(str(path), "rb") as wf:
         if wf.getsampwidth() != 2 or wf.getnchannels() != 1:
             raise RuntimeError("diarization ต้องใช้ WAV 16-bit mono")
         rate = wf.getframerate()
-        raw = wf.readframes(wf.getnframes())
-    ints = array.array("h")
-    ints.frombytes(raw)
-    return [s / 32768.0 for s in ints], rate
+        frames = wf.getnframes()
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
+
+        if np is not None:
+            out = np.empty(frames, dtype=np.float32)
+            pos = 0
+            while pos < frames:
+                chunk = wf.readframes(min(READ_FRAMES, frames - pos))
+                if not chunk:
+                    break
+                # "<i2" ระบุ little-endian ตรงตามสเปก WAV ไม่ใช่ฝากไว้กับ byte order ของเครื่อง
+                block = np.frombuffer(chunk, dtype="<i2")
+                out[pos:pos + block.size] = block
+                pos += block.size
+            out = out[:pos]
+            out /= 32768.0
+            return out, rate
+
+        out = array.array("f")
+        while True:
+            chunk = wf.readframes(READ_FRAMES)
+            if not chunk:
+                break
+            ints = array.array("h")
+            ints.frombytes(chunk)
+            out.extend(s / 32768.0 for s in ints)
+        return out, rate
 
 
 def _build(num_speakers: int, threshold: float):
@@ -143,15 +182,38 @@ def label_segments(
         idx = order.get(raw, raw)
         return namer(idx) if namer else f"ผู้พูด {idx + 1}"
 
-    for seg in segments:
+    # เดินสองรายการที่เรียงตามเวลาพร้อมกัน แทนการวน turns ทั้งหมดต่อหนึ่ง segment:
+    # ประชุม 2 ชั่วโมงมีราว 2,900 segment และ turn ได้เป็นพัน = สิบล้านรอบใน Python (BACKLOG #31)
+    #
+    # เงื่อนไขที่ทำให้ตัดได้: turns เรียงตาม start แล้ว ดังนั้นเมื่อเจอ turn ที่ start >= จบ segment
+    # ตัวถัด ๆ ไปก็ยิ่งเริ่มช้ากว่า ไม่มีทางทับ — หยุดได้เลย
+    # ส่วนหัวรายการเลื่อนได้เฉพาะตอนที่ turn จบก่อน segment จะเริ่ม **และ** ยังไม่เจอตัวที่ยังเปิดอยู่
+    # (turn ซ้อนกันได้เมื่อสองคนพูดพร้อมกัน ตัวที่จบเร็วอาจมาหลังตัวที่จบช้า) เลื่อนเกินนั้น = ข้ามของจริง
+    # เก็บลำดับเดิมไว้ด้วย เพราะมันเป็นตัวตัดสินตอนคะแนนเท่ากัน — และเท่ากันบ่อยมาก:
+    # segment ที่อยู่ในหลาย turn พร้อมกัน (คนพูดทับกัน) ทุก turn จะทับเท่ากับความยาว segment เป๊ะ ๆ
+    # ของเดิมวน turns ตามลำดับที่รับมาแล้วแทนที่เฉพาะตอน "มากกว่า" ผู้ชนะจึงเป็นตัวแรกในลำดับนั้น
+    # ถ้าเรียงใหม่แล้วไม่คุมจุดนี้ ผลจะเปลี่ยนไปเงียบ ๆ (วัดจริง: ต่างกัน 84 ใน 300 ชุดสุ่ม)
+    ordered = sorted(enumerate(turns), key=lambda it: it[1].start)
+    seen = sorted(segments, key=lambda sg: sg.get("start", 0.0))
+    lo = 0
+    for seg in seen:
         s_start, s_end = seg.get("start", 0.0), seg.get("end", 0.0)
-        best_overlap, best_speaker = 0.0, None
-        for turn in turns:
+        while lo < len(ordered) and ordered[lo][1].end <= s_start:
+            lo += 1
+        best_overlap, best_speaker, best_idx = 0.0, None, len(turns)
+        for idx, turn in ordered[lo:]:
+            if turn.start >= s_end:
+                break
             overlap = min(s_end, turn.end) - max(s_start, turn.start)
-            if overlap > best_overlap:
-                best_overlap, best_speaker = overlap, turn.speaker
+            if overlap > best_overlap or (overlap == best_overlap and overlap > 0
+                                          and idx < best_idx):
+                best_overlap, best_speaker, best_idx = overlap, turn.speaker, idx
         if best_speaker is None:
             # ไม่ทับกับใครเลย (เช่น whisper จับเสียงที่ diarizer มองว่าเงียบ) — ยึดคนที่ใกล้สุด
+            # ตรงนี้ยังสแกนทั้งรายการโดยตั้งใจ: ระยะที่ใช้วัดดูปลายทั้งสองข้าง จึงไม่ได้เพิ่มขึ้น
+            # ตาม start การตัดด้วยหน้าต่างรอบ ๆ จะเปลี่ยน "คนที่ใกล้สุด" ในบางเคสโดยไม่มีใครรู้
+            # และสาขานี้เกิดเฉพาะ segment ที่ไม่ทับกับใครเลย ซึ่งพบน้อย — ไม่คุ้มเสี่ยงผลเปลี่ยน
+            # วนจาก turns ตามลำดับเดิม ไม่ใช่ ordered — min() คืนตัวแรกที่น้อยสุด ลำดับจึงมีผล
             nearest = min(turns, key=lambda t: min(abs(t.start - s_start), abs(t.end - s_end)))
             best_speaker = nearest.speaker
         seg["speaker"] = name_of(best_speaker)
