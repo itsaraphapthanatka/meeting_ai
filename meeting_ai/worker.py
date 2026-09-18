@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 import signal
 import socket
 import subprocess
@@ -250,6 +251,32 @@ def _upload_playback(client: Client, job_id: str, result: dict, spec: dict | Non
     return result
 
 
+# ---------- ข้อความ error ที่ขึ้นเว็บ (BACKLOG #40) ----------
+
+MAX_ERROR_CHARS = 600
+
+# เส้นทางไฟล์ในเครื่องประมวลผล: "C:\Users\..." / "D:/a/..." และรากมาตรฐานบนยูนิกซ์
+# จงใจไม่จับ "/" ทุกอันแบบเหมารวม ไม่งั้น URL กับข้อความปกติจะโดนกินไปด้วย
+_LOCAL_PATH = re.compile(
+    r"""(?:(?<![A-Za-z])[A-Za-z]:[\\/]|(?<![\w.])/(?:home|Users|tmp|var|opt|mnt|root|srv|proc)/)[^\s"'()]*""")
+
+
+def public_error(exc: BaseException) -> str:
+    """ข้อความที่ส่งขึ้น jobs.error — เจ้าของการประชุมเป็นคนอ่าน ไม่ใช่คนดูแลเครื่อง.
+
+    ทุกอย่างที่หลุดออกจาก work() ถูกส่งขึ้นไปดิบ ๆ ด้วย str(e) ซึ่งพา path ของเครื่อง worker
+    ขึ้นเว็บได้ง่ายมาก (FileNotFoundError, PermissionError, ffmpeg, shutil ล้วนใส่ path มาให้)
+    นี่เป็นด่านสุดท้ายเฉย ๆ — ข้อความที่เราเขียนเองควรสะอาดตั้งแต่ต้นทางอยู่แล้ว
+
+    รายละเอียดเต็มไม่ได้หาย: work() เรียก traceback.print_exc() ลง stderr ของ worker ก่อนแล้ว
+    """
+    text = (str(exc) or exc.__class__.__name__).strip()
+    safe = _LOCAL_PATH.sub("(ไฟล์ในเครื่องประมวลผล)", text)
+    if len(safe) > MAX_ERROR_CHARS:
+        safe = safe[:MAX_ERROR_CHARS - 1].rstrip() + "…"
+    return safe
+
+
 # ---------- ส่งผลงานกลับ: ห้ามทิ้งของที่ถอดเสียงมาแล้ว (BACKLOG #50) ----------
 
 RESULT_RETRIES = 5
@@ -472,7 +499,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
             traceback.print_exc()
             try:
                 client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/error",
-                                 {"error": str(e)}, timeout=30)
+                                 {"error": public_error(e)}, timeout=30)
             except WorkerError:
                 pass
             print(f"❌ งานล้มเหลว: {e}", file=sys.stderr)
