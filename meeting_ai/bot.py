@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import random
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -357,6 +358,9 @@ def login(site: str = "google") -> None:
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
     container = LOGIN_CONTAINER
+    # จอที่กำลังจะเปิดคือเบราว์เซอร์ที่ผู้ใช้จะล็อกอิน Google ลงไป — เปิดโดยไม่มีรหัสไม่ได้
+    # (BACKLOG #21) สุ่มใหม่ทุกครั้ง ไม่เก็บลงดิสก์ฝั่ง host และแสดงให้ผู้ใช้เห็นครั้งเดียว
+    vnc_password = secrets.token_urlsafe(9)
     _rm(docker, container)
     started = _run(
         [
@@ -366,6 +370,7 @@ def login(site: str = "google") -> None:
             "-p", "127.0.0.1:5900:5900",   # VNC client
             "-e", "MODE=login",
             "-e", f"LOGIN_URL={LOGIN_SITES.get(site, DEFAULT_SITE_URL)}",
+            "-e", f"VNC_PASSWORD={vnc_password}",
             "-v", f"{_mount(PROFILE_DIR)}:/prof",
             IMAGE,
         ],
@@ -374,6 +379,7 @@ def login(site: str = "google") -> None:
     if started.returncode != 0:
         raise RuntimeError(f"เปิด container สำหรับล็อกอินไม่สำเร็จ — {started.stderr.strip()}")
     log.info('🔐 กำลังเปิดหน้าจอบอท...')
+    log.info(f'   รหัสผ่านสำหรับดูจอครั้งนี้: {vnc_password}')
     time.sleep(6)  # รอ x11vnc + websockify + Chromium พร้อม
     log.info(f'\n  1) {_open_bot_screen()}\n  2) ล็อกอินบัญชีของบอทให้เรียบร้อย ({site}) — แนะนำบัญชีเฉพาะบอท\n  3) เสร็จแล้วกลับมาที่นี่ กด Enter เพื่อบันทึก\n')
     try:
@@ -668,6 +674,20 @@ def join_and_record(
     stage.mkdir(parents=True, exist_ok=True)
     cout = stage / out_wav.name
 
+    # passcode ไม่ไปทาง -e (BACKLOG #21): `docker inspect` แสดง env ทั้งหมดให้ทุกคนใน
+    # กลุ่ม docker บนเครื่องนั้นเห็น และค้างอยู่กับ container ไปตลอดอายุ ไม่ใช่แค่ตอนสั่ง
+    # วางเป็นไฟล์ในโฟลเดอร์พักของงานนี้ (ซึ่ง mount เป็น /out อยู่แล้ว) แล้ว entrypoint
+    # อ่านแล้วลบทิ้งทันที — สิทธิ์ 0600 กันผู้ใช้อื่นบนเครื่อง host อ่านระหว่างนั้น
+    passcode_env: list[str] = []
+    if passcode:
+        pass_file = cout.parent / ".passcode"
+        pass_file.write_text(passcode, encoding="utf-8")
+        try:
+            pass_file.chmod(0o600)
+        except OSError:
+            pass        # Windows ไม่มีโหมดแบบ POSIX — โฟลเดอร์พักอยู่ใต้โปรไฟล์ผู้ใช้อยู่แล้ว
+        passcode_env = ["-e", f"PASSCODE_FILE=/out/{pass_file.name}"]
+
     cmd = [
         docker, "run", "--rm", "--name", container,
         "-v", f"{_mount(cout.parent)}:/out",
@@ -676,7 +696,7 @@ def join_and_record(
         "-e", f"BOT_NAME={name}",
         "-e", f"OUT_WAV=/out/{cout.name}",
         "-e", f"MAX_MINUTES={max_minutes}",
-        "-e", f"PASSCODE={passcode}",
+        *passcode_env,
         IMAGE,
     ]
 
@@ -744,6 +764,10 @@ def join_and_record(
                                "ให้ผู้ดูแลเครื่องกู้ให้") from e
         moved = True
     finally:
+        # ลบไฟล์ passcode ให้แน่ใจ: entrypoint ลบให้แล้วตอนอ่าน แต่ถ้า container ไม่ได้เริ่มเลย
+        # (docker run ล้ม) มันจะค้างอยู่ — และโฟลเดอร์พักจะถูกเก็บไว้ถ้ามี wav ที่ย้ายไม่สำเร็จ
+        if passcode:
+            (cout.parent / ".passcode").unlink(missing_ok=True)
         # ถึงตรงนี้ container จบแล้ว เสียงย้ายไปปลายทาง ภาพอยู่ใน logs/ แล้ว
         # โฟลเดอร์พักของงานนี้จึงต้องหายไปด้วย ไม่งั้น recordings/bot/ โตขึ้นหนึ่งโฟลเดอร์ต่องาน
         # (ตัวที่ค้างเพราะ worker ตายกลางคัน ให้ _prune_stages() ตอนเริ่มรอบใหม่เก็บ)

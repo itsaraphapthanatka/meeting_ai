@@ -34,4 +34,18 @@ RUN sed -i 's/\r$//' /app/entrypoint.sh /app/join_meeting.py /app/platforms.py /
 # ไฟล์เสียงที่อัดจะถูกเขียนลง /out (mount มาจากโฟลเดอร์ recordings/ ของ host)
 VOLUME ["/out"]
 
+# ---------- ไม่รันเป็น root (BACKLOG #21) ----------
+# บอทเปิดหน้าเว็บของคนอื่นด้วย Chromium ซึ่งเป็นพื้นผิวโจมตีที่ใหญ่ที่สุดในระบบนี้
+# ถ้าหลุดออกจาก Chromium มาได้ การเป็น root ใน container แปลว่าเขียนได้ทุกที่ที่ mount เข้ามา
+# — รวมถึง /prof ที่มี session ที่ล็อกอิน Google ของเจ้าของไว้
+# pwuser (uid 1000) มากับ image ของ Playwright อยู่แล้ว
+RUN mkdir -p /profwork /home/pwuser/.cache \
+    && chown -R pwuser:pwuser /app /profwork /home/pwuser
+USER pwuser
+
+# ตายแล้วต้องรู้: ไม่มี HEALTHCHECK แปลว่า container ที่ Chromium ตายไปแล้วยังขึ้นว่า Up
+# เฝ้าที่ Xvfb เพราะทุกอย่างในนี้พังทั้งหมดถ้าจอเสมือนหายไป
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD pgrep -x Xvfb >/dev/null || exit 1
+
 ENTRYPOINT ["/app/entrypoint.sh"]

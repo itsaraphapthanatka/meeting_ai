@@ -14,6 +14,13 @@ cd "$DIR"
 MODEL="${1:-large-v3-turbo-q5_0}"        # turbo-q5 = คุ้มสุด · large-v3 = แม่นสุดแต่ช้า
 WHISPER_SRC="$DIR/vendor/whisper.cpp"    # ที่เก็บ source + binary ที่ build เอง
 MODEL_DIR="$DIR/models"
+SUMS="$MODEL_DIR/SHA256SUMS"             # ลายนิ้วมือของโมเดลที่รู้จัก (BACKLOG #22)
+
+# เวอร์ชันของ whisper.cpp ที่จะ build — ปักหมุดไว้ ไม่ใช่ "master วันไหนก็ได้"
+# ปักทั้ง tag และ commit: tag ถูกย้ายไปชี้ commit อื่นได้ ส่วน commit sha ย้ายไม่ได้
+# อัปเกรด: เปลี่ยนสองค่านี้พร้อมกัน แล้วรันใหม่ (ลบ vendor/whisper.cpp ก่อนถ้าต้องการ build สะอาด)
+WHISPER_REF="${WHISPER_REF:-v1.9.4}"
+WHISPER_COMMIT="${WHISPER_COMMIT:-7d75b14994ae7f59623e2471445e2355fe506ed2}"
 
 # ---------- 1/5 ตรวจและติดตั้ง system dependency ----------
 echo "==> 1/5 ติดตั้ง system dependency (ffmpeg, cmake, build tools, git)"
@@ -54,10 +61,25 @@ fi
 echo "==> 3/5 clone + build whisper.cpp ($(uname -m))"
 mkdir -p "$DIR/vendor"
 if [ ! -d "$WHISPER_SRC/.git" ]; then
-  git clone --depth 1 https://github.com/ggml-org/whisper.cpp "$WHISPER_SRC"
+  echo "    clone $WHISPER_REF"
+  git clone --depth 1 --branch "$WHISPER_REF" \
+      https://github.com/ggml-org/whisper.cpp "$WHISPER_SRC"
 else
-  echo "    มี source อยู่แล้วที่ $WHISPER_SRC — ใช้ตัวเดิม (git pull ถ้าอยากอัปเดต)"
+  echo "    มี source อยู่แล้วที่ $WHISPER_SRC — ใช้ตัวเดิม"
 fi
+
+# ตรวจว่าที่ได้มาคือ commit ที่ปักหมุดไว้จริง — tag ถูกย้ายได้ การ clone ตาม tag เฉย ๆ
+# จึงไม่ใช่การปักหมุด เราจึง build เฉพาะโค้ดชุดที่เคยถูกตรวจแล้วเท่านั้น
+HEAD_SHA="$(git -C "$WHISPER_SRC" rev-parse HEAD)"
+if [ "$HEAD_SHA" != "$WHISPER_COMMIT" ]; then
+  echo "❌ source ของ whisper.cpp ไม่ตรงกับที่ปักหมุดไว้"
+  echo "   ต้องการ: $WHISPER_COMMIT ($WHISPER_REF)"
+  echo "   ได้:     $HEAD_SHA"
+  echo "   ถ้าตั้งใจอัปเกรด แก้ WHISPER_REF/WHISPER_COMMIT ที่หัวสคริปต์"
+  echo "   ถ้าเป็น source เก่าที่ค้างอยู่ ลบ $WHISPER_SRC แล้วรันใหม่"
+  exit 1
+fi
+echo "    ✅ source ตรงกับที่ปักหมุด: $WHISPER_REF"
 
 CMAKE_ARGS=(-B "$WHISPER_SRC/build" -DCMAKE_BUILD_TYPE=Release)
 if [ "$USE_CUDA" = "1" ]; then
@@ -78,6 +100,32 @@ echo "    ✅ ได้ไบนารี: $WHISPER_BIN"
 echo "==> 4/5 ดาวน์โหลดโมเดล whisper + VAD"
 mkdir -p "$MODEL_DIR"
 
+# ตรวจลายนิ้วมือของไฟล์ที่โหลดมา — ไฟล์โมเดลถูกโหลดจากอินเทอร์เน็ตแล้วเอาไปรันกับเสียง
+# ประชุมจริง ถ้าระหว่างทางมีใครสลับไฟล์ได้ ก็เท่ากับรันโค้ด/โมเดลของคนอื่นโดยไม่รู้ตัว
+verify() {  # $1 = path ของไฟล์
+  local name got want
+  name="$(basename "$1")"
+  if [ ! -f "$SUMS" ]; then
+    echo "    ⚠️  ไม่มี $SUMS — ข้ามการตรวจลายนิ้วมือของ $name"
+    return 0
+  fi
+  want="$(awk -v n="$name" '$2 == n { print $1 }' "$SUMS")"
+  if [ -z "$want" ]; then
+    echo "    ⚠️  ยังไม่มีลายนิ้วมือของ $name ใน $SUMS — ไฟล์นี้ไม่ถูกตรวจ"
+    echo "       เติมได้ด้วย: sha256sum \"$1\"  (เทียบกับที่ต้นทางประกาศก่อนเติม)"
+    return 0
+  fi
+  got="$(sha256sum "$1" | cut -d" " -f1)"
+  if [ "$got" != "$want" ]; then
+    echo "❌ $name ไม่ตรงลายนิ้วมือที่บันทึกไว้ — ไฟล์เสียหายหรือถูกสลับระหว่างทาง"
+    echo "   ต้องการ: $want"
+    echo "   ได้:     $got"
+    rm -f "$1"       # ลบทิ้ง ไม่ให้รอบหน้าเจอไฟล์แล้วคิดว่า "มีอยู่แล้ว"
+    exit 1
+  fi
+  echo "    ✅ ลายนิ้วมือถูกต้อง: $name"
+}
+
 download() {  # $1 = ปลายทาง, $2 = url
   if [ -f "$1" ]; then
     echo "    มีอยู่แล้ว: $1"
@@ -85,6 +133,7 @@ download() {  # $1 = ปลายทาง, $2 = url
     echo "    กำลังโหลด: $(basename "$1")"
     curl -L --fail -o "$1" "$2"
   fi
+  verify "$1"
 }
 
 WHISPER_MODEL_FILE="$MODEL_DIR/ggml-$MODEL.bin"
