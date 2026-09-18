@@ -141,6 +141,38 @@ class TestTheInstallerRendersTheUnit(unittest.TestCase):
         self.assertIn("MAI_API=https://one.example",
                       envfile.read_text(encoding="utf-8"))
 
+    def test_max_bots_can_be_carried_over_from_the_old_unit(self):
+        """unit เดิมของเครื่อง GB10 ฝัง `--max-bots 6` ไว้ แต่ไฟล์ตัวอย่างตั้ง 3.
+
+        ย้ายมาใช้ไฟล์ตัวแปรโดยไม่ส่งเลขเดิมมาด้วย = จำนวนบอทพร้อมกันลดจาก 6 เหลือ 3
+        เงียบ ๆ ไม่มีอะไรฟ้อง เพราะ worker ก็ยังทำงานได้ตามปกติ
+        """
+        tmp = _tmp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        envfile = tmp / "mai.env"
+        self._run("--install", "--api", "https://x.example", "--max-bots", "6",
+                  user="bob", group="bob", home="/h", root="/srv/mai",
+                  envfile=envfile.as_posix(), unit_dir=(tmp / "units").as_posix())
+        lines = [ln for ln in envfile.read_text(encoding="utf-8").split("\n")
+                 if ln.startswith("MAI_MAX_BOTS=")]
+        self.assertEqual(lines, ["MAI_MAX_BOTS=6"])
+
+    def test_leaving_max_bots_out_keeps_whatever_is_already_there(self):
+        # รันซ้ำเพื่อเปลี่ยนแค่ URL ต้องไม่รีเซ็ตจำนวนบอทกลับเป็นค่าตั้งต้น
+        tmp = _tmp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        envfile = tmp / "mai.env"
+        units = (tmp / "units").as_posix()
+        self._run("--install", "--api", "https://one.example", "--max-bots", "6",
+                  user="bob", group="bob", home="/h", root="/srv/mai",
+                  envfile=envfile.as_posix(), unit_dir=units)
+        self._run("--install", "--api", "https://two.example",
+                  user="bob", group="bob", home="/h", root="/srv/mai",
+                  envfile=envfile.as_posix(), unit_dir=units)
+        text = envfile.read_text(encoding="utf-8")
+        self.assertIn("MAI_MAX_BOTS=6", text)
+        self.assertIn("MAI_API=https://two.example", text)
+
     def test_a_failing_daemon_reload_does_not_fail_the_install(self):
         """เครื่องนี้ไม่มี systemd จึงต้องปลอมมันขึ้นมา ไม่งั้นอาการนี้เห็นได้แต่บน CI.
 
