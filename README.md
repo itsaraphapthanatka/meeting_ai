@@ -219,6 +219,7 @@ Vercel ไม่มี GPU และ function ของโปรเจกต์�
 ```bash
 # 1) ฐานข้อมูล — สร้าง project ที่ neon.com เอา connection string (ตัวที่มี -pooler) ใส่ .env
 ./mai db-init                       # สร้างตารางใน schema meeting_ai
+./mai db-check                      # ตรวจค่าคงที่ของข้อมูล (อ่านอย่างเดียว คืนแค่ตัวเลข)
 
 # 2) ที่เก็บไฟล์เสียง — สร้าง R2 bucket ที่ Cloudflare แล้วออก API token (Object Read & Write)
 #    ใส่ S3_ENDPOINT / S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY ใน .env

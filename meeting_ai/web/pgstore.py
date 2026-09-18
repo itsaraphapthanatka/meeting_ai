@@ -20,6 +20,7 @@ from typing import Any
 
 from pathlib import Path
 
+from .. import log as _log
 from .. import summarizer
 from ..config import WORKER_STALE_SECONDS as _WORKER_STALE_SECONDS, config
 from . import db
@@ -165,6 +166,53 @@ def purge_expired() -> dict[str, int]:
         limits = conn.execute(
             "delete from meeting_ai.rate_limits where expires_at < now()").rowcount
     return {"sessions": sessions or 0, "rate_limits": limits or 0}
+
+
+# ---------- ตรวจค่าคงที่ของข้อมูล (อ่านอย่างเดียว) ----------
+
+# (คีย์, ความร้ายแรง, SQL ที่คืนจำนวน, ทำไมถึงสำคัญ)
+#
+# ทุกข้อเป็น `select count(*)` ล้วน ไม่คืนข้อมูลของใครออกมาเลย จึงรันกับฐานจริงได้
+# โดยไม่เสี่ยงว่าจะมีเนื้อหาการประชุมหลุดไปอยู่ในหน้าจอหรือใน log
+AUDITS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "ownerless_meetings", "security",
+        "select count(*) from meeting_ai.meetings where owner_id is null",
+        "การประชุมที่ไม่มีเจ้าของ — access() ให้สิทธิ์ 'owner' กับผู้ใช้ที่ล็อกอินทุกคน "
+        "(ลบ/แชร์/เปลี่ยน visibility ได้) และมันโผล่ในรายการของทุกคนด้วย (BACKLOG #42)",
+    ),
+    (
+        "orphan_jobs", "hygiene",
+        "select count(*) from meeting_ai.jobs j where j.meeting_id is not null "
+        "and not exists (select 1 from meeting_ai.meetings m where m.id = j.meeting_id)",
+        "งานที่ชี้ไปยังการประชุมที่ไม่มีแล้ว — ตาราง jobs ไม่มี FK จึงไม่ถูกลบตาม",
+    ),
+    (
+        "expired_sessions", "hygiene",
+        "select count(*) from meeting_ai.sessions where expires_at < now()",
+        "เซสชันหมดอายุที่ยังไม่ถูกกวาด (sweep ควรเก็บให้ — ดู BACKLOG #24)",
+    ),
+    (
+        "expired_rate_limits", "hygiene",
+        "select count(*) from meeting_ai.rate_limits where expires_at < now()",
+        "ตัวนับ rate limit ที่หมดอายุแล้วและยังไม่ถูกกวาด",
+    ),
+)
+
+
+def audit() -> list[dict]:
+    """ตรวจค่าคงที่ของข้อมูลแบบ **อ่านอย่างเดียว** — ไม่แก้ ไม่ลบ ไม่คืนข้อมูลของใคร.
+
+    มีไว้ให้เจ้าของรันกับฐานจริงได้ในคำสั่งเดียว (`mai db-check`) แทนการเปิดคอนโซล SQL
+    แล้วพิมพ์คิวรีเอง ซึ่งเป็นสิ่งที่ตั๋ว BACKLOG #42 ขอไว้ตรง ๆ
+    """
+    out = []
+    with db.connect() as conn:
+        for key, severity, sql, why in AUDITS:
+            count = int(conn.execute(sql).fetchone()[0])
+            out.append({"key": key, "severity": severity, "count": count,
+                        "ok": count == 0, "why": why})
+    return out
 
 
 # ---------- จำกัดอัตราคำขอ (ตัวนับกลาง ใช้ร่วมกันทุก instance) ----------
@@ -551,7 +599,17 @@ def access(mid: str, user_id: str | None) -> str:
     if row is None:
         return "none"
     owner_id, visibility = (str(row[0]) if row[0] else None), row[1]
-    if user_id and (owner_id is None or owner_id == user_id):
+    if user_id and owner_id is None:
+        # ทางนี้ตั้งใจให้ข้อมูลที่ย้ายมาจากโหมดไฟล์ยังใช้ได้ แต่ผลคือ **ผู้ใช้ที่ล็อกอิน
+        # คนไหนก็ได้** กลายเป็นเจ้าของ — ลบ/แชร์/เปลี่ยน visibility ได้หมด
+        # และแถวแบบนี้เกิดใหม่ได้เองด้วย: `owner_id ... on delete set null` ใน schema
+        # แปลว่าลบผู้ใช้หนึ่งคนในฐาน = การประชุมทั้งหมดของเขากลายเป็นของทุกคน
+        # อย่างน้อยต้องไม่เงียบ (BACKLOG #42 · นับทั้งฐานได้ด้วย `mai db-check`)
+        _log.get(__name__).warning(
+            "การประชุม %s ไม่มีเจ้าของ จึงให้สิทธิ์เจ้าของกับผู้ใช้ที่ล็อกอินทุกคน "
+            "— ตรวจด้วย `mai db-check`", mid)
+        return "owner"
+    if user_id and owner_id == user_id:
         return "owner"
     if user_id and visibility == "team":
         return "team"
