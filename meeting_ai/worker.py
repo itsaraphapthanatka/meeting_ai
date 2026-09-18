@@ -25,13 +25,15 @@ import urllib.request
 from pathlib import Path
 
 from . import runner
-from .config import config
+from .config import (DEFAULT_MAX_BOTS as _DEFAULT_MAX_BOTS,
+                     WORKER_HEARTBEAT_SECONDS, config)
 from .web.blobstore import open_url
 
 POLL_IDLE = 3.0        # วินาที รอเมื่อคิวว่าง
 POLL_ERROR_MAX = 60.0  # เพดาน backoff เมื่อต่อเซิร์ฟเวอร์ไม่ได้
 PROGRESS_MIN_GAP = 1.5  # ไม่ยิง progress ถี่กว่านี้ (นอกจากเปลี่ยนขั้น)
-HEARTBEAT_SEC = 20.0    # เต้นบอกเซิร์ฟเวอร์ว่ายังอยู่ (ฝั่งนั้นถือว่าหลุดที่ 75 วิ)
+# เต้นบอกเซิร์ฟเวอร์ว่ายังอยู่ — คู่กับ WORKER_STALE_SECONDS ที่ฝั่งนั้นใช้ตัดสินว่าหลุด
+HEARTBEAT_SEC = WORKER_HEARTBEAT_SECONDS
 # รองานที่ค้างอยู่ให้จบก่อนออกได้นานแค่ไหน — ของเดิมตายตัวที่ 600 วิ ซึ่งสั้นกว่างานจริงมาก
 # (บอทนั่งในห้องได้ถึง 180 นาที แล้วยังต้องถอดเสียง + สรุปต่ออีก) พอครบเวลาแล้วโปรเซสออก
 # เธรดงานเป็น daemon จึงถูกฆ่ากลางคัน เซิร์ฟเวอร์เห็นแค่งานค้าง running แล้ว jobs_reap()
@@ -42,10 +44,8 @@ DRAIN_MAX_SEC = 6 * 3600
 # (เคยเจอจริง: เครื่องที่ Docker ดับไปแล้วยังคว้างานบอทมาทำ)
 CAPS_REFRESH_SEC = 60.0
 CHUNK = 1024 * 256
-# บอทหลายห้องพร้อมกันได้ — ช่วงนั่งในห้องแทบไม่ใช้ CPU (รอเฉยๆ)
-# ช่วงถอดเสียงถูกบีบให้ทำทีละงานด้วย runner.HEAVY_LOCK อยู่แล้ว
-# งานที่ไม่ใช่บอท (อัปโหลด/สรุป/แปล) ยังทำทีละงาน เพราะเข้าช่วงหนักทันที
-DEFAULT_MAX_BOTS = 3
+# นิยามอยู่ที่ config เพราะ cli.py ต้องใช้ค่าเดียวกันตอน parse args (BACKLOG #33)
+DEFAULT_MAX_BOTS = _DEFAULT_MAX_BOTS
 
 
 class WorkerError(RuntimeError):

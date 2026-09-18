@@ -70,6 +70,8 @@ class Config:
 
     # Recording
     ffmpeg_bin: str = _get("FFMPEG_BIN", "ffmpeg")
+    # ว่าง = เดาเอาจาก ffmpeg_bin (ดู ffprobe_bin()) ตั้งเองได้ถ้าสองตัวไม่ได้อยู่ด้วยกัน
+    ffprobe_bin_raw: str = _get("FFPROBE_BIN", "")
     mic_device: str = _get("MIC_DEVICE", "0")
     system_device: str = _get("SYSTEM_DEVICE", "1")
 
@@ -103,9 +105,37 @@ class Config:
         return (cls.stt_base_url_raw or cls.llm_base_url).rstrip("/")
 
     @classmethod
+    def ffprobe_bin(cls) -> str:
+        """ffprobe ที่ "คู่กับ" ffmpeg ที่ตั้งไว้ ไม่ใช่ชื่อ ffprobe ลอย ๆ บน PATH.
+
+        สองตัวนี้มาด้วยกันเสมอในแพ็กเกจเดียว คนที่ตั้ง FFMPEG_BIN เป็นพาธเต็ม (เครื่อง Windows
+        ที่ไม่ได้ใส่ ffmpeg ลง PATH เป็นเคสปกติ) จึงมี ffprobe อยู่ในโฟลเดอร์เดียวกันแน่ ๆ แต่
+        ไม่มีบน PATH — เรียก "ffprobe" ตรง ๆ แล้วไม่เจอ audio_duration จะคืน 0.0 **เงียบ ๆ**
+        ความยาวประชุมขึ้นเป็น 0 ทั้งที่ไฟล์ดีทุกอย่าง (BACKLOG #32)
+        """
+        if cls.ffprobe_bin_raw:
+            return cls.ffprobe_bin_raw
+        exe = Path(cls.ffmpeg_bin)
+        name = exe.name.replace("ffmpeg", "ffprobe", 1) if "ffmpeg" in exe.name else "ffprobe"
+        # ชื่อเปล่า ๆ (ค่าเริ่มต้น "ffmpeg") ต้องคืนชื่อเปล่า ๆ ไม่ใช่ "./ffprobe"
+        return name if str(exe.parent) == "." else str(exe.with_name(name))
+
+    @classmethod
     def stt_key(cls) -> str:
         key = cls.stt_api_key_raw or cls.llm_api_key
         return "" if "your-key" in key else key
 
 
 config = Config()
+
+# จังหวะ heartbeat ของ worker กับเพดานที่ฝั่งเซิร์ฟเวอร์ถือว่า "หลุดไปแล้ว" — ต้องอยู่ด้วยกัน
+# เพราะค่าหนึ่งกำหนดอีกค่า (หลุดเมื่อพลาดไปราวสามจังหวะ) เดิมเลข 75 เขียนซ้ำอยู่สามที่:
+# pgstore (ตัวที่ SQL ใช้จริง), server.py (ตัวที่ตอบกลับไปให้ worker) และคอมเมนต์ใน worker.py
+# แก้ที่เดียวไม่ครบ = เซิร์ฟเวอร์ตัดคนที่ยังเต้นอยู่ทิ้ง หรือเก็บคนที่ตายแล้วไว้ (BACKLOG #33)
+WORKER_HEARTBEAT_SECONDS = 20.0
+WORKER_STALE_SECONDS = 75
+
+# บอทหลายห้องพร้อมกันได้ — ช่วงนั่งในห้องแทบไม่ใช้ CPU (รอเฉย ๆ) ช่วงถอดเสียงถูกบีบให้ทำทีละงาน
+# ด้วย runner.HEAVY_LOCK อยู่แล้ว ส่วนงานที่ไม่ใช่บอทยังทำทีละงานเพราะเข้าช่วงหนักทันที
+# อยู่ที่นี่เพราะ cli.py ต้องรู้ค่านี้ตอน parse args โดยไม่ import worker (ซึ่งลาก runner มาทั้งชุด)
+DEFAULT_MAX_BOTS = 3
