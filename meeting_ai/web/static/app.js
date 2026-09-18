@@ -196,12 +196,12 @@ function renderJobs() {
 /** งาน summarize/translate/process ที่กำลังวิ่งอยู่ของการประชุมที่เปิดอยู่ (ถ้ามี).
     ใช้ job.id เทียบกับ id การประชุมแทน job.meeting_id เพราะฝั่งเซิร์ฟเวอร์ (jobs.py)
     ปล่อย meeting_id เป็น None จนกว่างานจะ done ในโหมดไฟล์ — แต่ job id ของ
-    process/summarize คือ mid ตรงๆ และของ translate คือ `${mid}.tr.<lang>` เสมอ
-    (ยืนยันจาก web/jobs.py: _enqueue(mid,...) / submit_summarize / submit_translate) */
+    process/summarize คือ mid ตรงๆ, translate คือ `${mid}.tr.<lang>` และสรุปเป็นภาษาอื่น
+    คือ `${mid}.sum.<lang>` (ยืนยันจาก web/jobs.py: submit_summarize / submit_translate) */
 function jobForMeeting(id) {
   if (!id) return null;
   return state.jobs.find((j) => (j.status === 'running' || j.status === 'queued')
-    && (j.id === id || j.id.startsWith(`${id}.tr.`))) || null;
+    && (j.id === id || j.id.startsWith(`${id}.tr.`) || j.id.startsWith(`${id}.sum.`))) || null;
 }
 
 /** ป้าย "กำลังสรุปด้วย AI" ข้าง h3 สรุป — ผูกกับ pollJobs() เดิม ไม่มี transport ใหม่ */
@@ -1826,18 +1826,29 @@ function renderSummaryView() {
   }
   $('#d-translate').disabled = lang === 'orig';
   $('#d-edit').disabled = lang !== 'orig';
+  // ปุ่มต้องบอกสิ่งที่จะเกิดขึ้นจริง: เลือกภาษาอื่นอยู่แล้วกด "สรุปใหม่" = สรุปเป็นภาษานั้น
+  // ตรงจากบทถอดเสียง ไม่ใช่แปลจากสรุปไทย (BACKLOG #9b) ถ้าปุ่มยังเขียนเหมือนเดิม
+  // ผู้ใช้จะนึกว่าไปทับสรุปต้นฉบับ
+  const langs = state.config.languages || {};
+  $('#d-resummarize').textContent = lang === 'orig'
+    ? 'สรุปใหม่ด้วย AI'
+    : `สรุปใหม่เป็น${langs[lang] || lang}`;
 }
 
 function renderLangSelect() {
   const m = state.meeting;
   const done = m.translations || {};
   const langs = state.config.languages || {};
+  // จำภาษาที่ดูอยู่ไว้ก่อนวาดใหม่: สั่งสรุปเป็นอังกฤษแล้วพองานเสร็จหน้าจะโหลดซ้ำ
+  // ถ้าตัวเลือกเด้งกลับเป็น "ต้นฉบับ" ผู้ใช้จะเห็นสรุปไทยเหมือนเดิมแล้วนึกว่าไม่มีอะไรเกิดขึ้น
+  const keep = $('#d-lang').value;
   const opts = ['<option value="orig">ต้นฉบับ</option>'];
   for (const [code, label] of Object.entries(langs)) {
     if (code === (m.language || 'th') && !done[code]) continue;
     opts.push(`<option value="${esc(code)}">${esc(label)}${done[code] ? ' ✓' : ''}</option>`);
   }
   $('#d-lang').innerHTML = opts.join('');
+  if (keep && [...$('#d-lang').options].some((o) => o.value === keep)) $('#d-lang').value = keep;
 }
 
 async function openMeeting(id) {
@@ -2027,7 +2038,9 @@ async function openMeeting(id) {
   $('#d-resummarize').onclick = async () => {
     $('#d-resummarize').disabled = true;
     try {
-      const job = await api(`/api/meetings/${id}/resummarize`, { method: 'POST' });
+      const lang = $('#d-lang').value;
+      const job = await api(`/api/meetings/${id}/resummarize`,
+                            lang === 'orig' ? { method: 'POST' } : jsonPost({ lang }));
       state.jobs = [job, ...state.jobs.filter((j) => j.id !== job.id)];
       renderJobs();
       ensurePolling();

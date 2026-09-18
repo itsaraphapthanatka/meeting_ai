@@ -23,7 +23,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from .. import runner, transcriber
+from .. import runner, summarizer, transcriber
 from ..config import config
 from . import backend, sanitize
 from .backend import cloud, store
@@ -252,16 +252,26 @@ def start(mid: str) -> dict | None:
     return _enqueue(mid, d["title"], "process")
 
 
-def submit_summarize(meeting_id: str, title: str, owner_id: str | None = None) -> dict:
+def submit_summarize(meeting_id: str, title: str, owner_id: str | None = None,
+                     lang: str | None = None) -> dict:
     """สรุปใหม่จากบทถอดเสียงที่เก็บไว้แล้ว (ไม่ต้องถอดเสียงซ้ำ).
 
     ฝัง owner_id ใน spec แบบเดียวกับ create_draft/create_bot — เดิมสองงานนี้ไม่มีเจ้าของ
     เลยหลุดตัวกรอง owner_id ของ active() ไปโผล่ในรายการของทุกคน (BACKLOG #3)
-    build_spec() อ่านจาก spec แค่ meeting/lang ฝั่ง worker จึงไม่เห็นความต่าง
+
+    lang = ภาษาของ "ตัวสรุป" (BACKLOG #9b) ไม่ใส่หรือใส่ไทย = ทางเดิมทุกประการ: job id
+    เท่ากับ id การประชุม และผลไปทับ `summary` ส่วนภาษาอื่นได้ job id ของตัวเอง
+    (`<mid>.sum.<lang>`) เพราะไม่งั้นสั่งสรุปไทยกับอังกฤษพร้อมกันจะทับกันเอง — รูปแบบเดียวกับ
+    ที่งานแปลใช้ `<mid>.tr.<lang>` และ safe_job_id() รับส่วนท้ายแบบนี้อยู่แล้ว
     """
-    return _enqueue(meeting_id, title, "summarize",
-                    spec={"kind": "summarize", "meeting": meeting_id, "owner_id": owner_id},
-                    _meeting=meeting_id)
+    if not lang or lang == summarizer.DEFAULT_SUMMARY_LANG:
+        return _enqueue(meeting_id, title, "summarize",
+                        spec={"kind": "summarize", "meeting": meeting_id, "owner_id": owner_id},
+                        _meeting=meeting_id)
+    return _enqueue(f"{meeting_id}.sum.{lang}", title, "summarize",
+                    spec={"kind": "summarize", "meeting": meeting_id, "owner_id": owner_id,
+                          "summary_lang": lang},
+                    _meeting=meeting_id, _lang=lang)
 
 
 def submit_translate(meeting_id: str, title: str, lang: str, owner_id: str | None = None) -> dict:
@@ -390,8 +400,19 @@ def apply_result(job_id: str, result: dict) -> None:
 
     elif kind == "summarize":
         meeting_id = _meeting_of(job)
-        store.set_summary(meeting_id, sanitize.text(result.get("summary")),
-                          error=summary_error)
+        # ภาษาปลายทางอ่านจาก spec เท่านั้น ห้ามอ่านจาก result ด้วยเหตุผลเดียวกับงานแปล
+        # (BUG-048): ใครถือ WORKER_TOKEN ก็ยัด key อะไรก็ได้ลง translations ของคนอื่นได้
+        lang = str(job.get("_lang") or (job.get("_spec") or {}).get("summary_lang") or "").strip()
+        text = sanitize.text(result.get("summary"))
+        if lang and lang != summarizer.DEFAULT_SUMMARY_LANG:
+            # สรุปภาษาอื่นอยู่ช่องเดียวกับคำแปล (BACKLOG #9b) — ผู้ใช้เลือกดูจาก #d-lang ตัวเดิม
+            if not text.strip():
+                raise RuntimeError("ไม่ได้รับสรุปกลับมาจากเครื่องประมวลผล — กดสรุปใหม่อีกครั้ง")
+            store.set_translation(meeting_id, lang, text)
+            # ไม่แตะ summary_error ของการประชุม: มันเป็นช่องของสรุปต้นฉบับ เขียนลงไปจะเหมือน
+            # สรุปภาษาไทยพัง ทั้งที่พังคือรอบภาษาอื่น ความล้มเหลวรายงานผ่านการ์ดงานอยู่แล้ว
+        else:
+            store.set_summary(meeting_id, text, error=summary_error)
     else:
         meeting_id = _meeting_of(job)
         # ภาษาปลายทางถูกเลือกไว้ตั้งแต่ submit_translate() และส่งให้ worker ผ่าน build_spec()
