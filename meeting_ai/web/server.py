@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .. import diarize, stt, summarizer
-from ..config import config
+from ..config import WORKER_STALE_SECONDS, config
 from . import backend, exports, jobs, ratelimit
 from .backend import store
 
@@ -1295,7 +1295,8 @@ class Handler(BaseHTTPRequestHandler):
                 store.worker_seen(name, str(body.get("status") or "idle")[:16],
                                   body.get("job") or None,
                                   str(body.get("gpu") or "")[:120] or None, caps)
-            return self._json({"ok": True, "stale_after": 75})
+            # ค่าเดียวกับที่ pgstore ใช้ตัดสินว่าใครหลุด — เดิมเป็นเลข 75 เขียนซ้ำไว้ตรงนี้
+            return self._json({"ok": True, "stale_after": WORKER_STALE_SECONDS})
 
         if rest == ["claim"] and self.command == "POST":
             body = self._body_json()

@@ -109,8 +109,15 @@ def _cmd_db_init(args: argparse.Namespace) -> int:
 
 
 def worker_default_bots() -> int:
-    """ค่าเริ่มต้นของ --max-bots (แยกออกมาไม่ให้ต้อง import worker ตอน parse args)."""
-    return 3
+    """ค่าเริ่มต้นของ --max-bots — อ่านจาก config ไม่ใช่เขียนเลขซ้ำ.
+
+    เหตุผลที่ไม่ import worker ตรงนี้คือไม่อยากลาก runner มาทั้งชุดตอน parse args
+    แต่เดิมแก้ด้วยการเขียนเลข 3 ซ้ำไว้ ซึ่งแยกจาก worker.DEFAULT_MAX_BOTS ได้เงียบ ๆ
+    (BACKLOG #33) — config ถูก import อยู่แล้วและเบา
+    """
+    from .config import DEFAULT_MAX_BOTS
+
+    return DEFAULT_MAX_BOTS
 
 
 def _cmd_worker(args: argparse.Namespace) -> int:

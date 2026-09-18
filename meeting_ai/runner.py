@@ -77,7 +77,9 @@ def audio_duration(path: Path) -> float:
     """ความยาวไฟล์เสียงเป็นวินาที — 0.0 ถ้าอ่านไม่ได้."""
     try:
         proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            # ห้ามเขียน "ffprobe" ตรง ๆ: คนที่ตั้ง FFMPEG_BIN เป็นพาธเต็มจะไม่มีตัวนี้บน PATH
+            # แล้วความยาวประชุมจะกลายเป็น 0 เงียบ ๆ (BACKLOG #32)
+            [config.ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
              "-of", "json", str(path)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )

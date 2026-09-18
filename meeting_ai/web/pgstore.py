@@ -21,7 +21,7 @@ from typing import Any
 from pathlib import Path
 
 from .. import summarizer
-from ..config import config
+from ..config import WORKER_STALE_SECONDS as _WORKER_STALE_SECONDS, config
 from . import db
 
 # ที่เก็บไฟล์เสียง — ตอนนี้ยังเป็นดิสก์ในเครื่องเหมือนโหมดไฟล์
@@ -911,8 +911,9 @@ def job_active(owner_id: str | None = None, meeting_id: str | None = None) -> li
 
 # ---------- เครื่องประมวลผล ----------
 
-# ไม่ได้ยิน heartbeat เกินนี้ = ถือว่าหลุดไป (worker เต้นทุก ~20 วิ)
-WORKER_STALE_SECONDS = 75
+# ไม่ได้ยิน heartbeat เกินนี้ = ถือว่าหลุดไป — นิยามอยู่ที่ config เพราะ server.py กับ worker.py
+# ต้องใช้ค่าเดียวกัน (BACKLOG #33) ชื่อนี้คงไว้เพราะ SQL กับเทสต์อ้างถึงผ่านโมดูลนี้
+WORKER_STALE_SECONDS = _WORKER_STALE_SECONDS
 
 
 def worker_seen(name: str, status: str = "idle", job_id: str | None = None,
