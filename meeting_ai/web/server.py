@@ -561,6 +561,19 @@ class Handler(BaseHTTPRequestHandler):
             return owner == self.user_id
         return self._may_write(job.get("meeting_id") or job["id"])
 
+    def _job_is_mine(self, job: dict) -> bool:
+        """งานนี้เป็นของคนที่กำลังดูไหม — กติกาเดียวกับคนทั่วไป **โดยไม่นับสิทธิ์แอดมิน**.
+
+        แยกออกมาจาก _may_read_job() เพราะแอดมินต้องได้คำตอบที่ต่างกันคนละเรื่อง:
+        "เปิดดูได้ไหม" (ได้ทุกงาน ใช้ไล่ปัญหา) กับ "เป็นงานของฉันไหม" (หน้าจอเป็นของเขาเอง)
+        """
+        spec = job.get("_spec") or jobs.draft(job["id"]) or {}
+        owner = spec.get("owner_id")
+        # ห้ามเทียบตรงๆ: คนถือลิงก์แชร์ไม่ได้ล็อกอิน user_id เป็น None จะไปตรงกับงานที่ไม่มีเจ้าของ
+        if owner and owner == self.user_id:
+            return True
+        return self._may_read(job.get("meeting_id") or job["id"])
+
     def _may_read_job(self, job: dict) -> bool:
         """ดูสถานะงานนี้ได้ไหม — เดิมใครก็เปิด /api/jobs/{id} ของคนอื่นได้ถ้ารู้ id.
 
@@ -572,12 +585,24 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if self.user and self.user.get("is_admin"):
             return True
-        spec = job.get("_spec") or jobs.draft(job["id"]) or {}
-        owner = spec.get("owner_id")
-        # ห้ามเทียบตรงๆ: คนถือลิงก์แชร์ไม่ได้ล็อกอิน user_id เป็น None จะไปตรงกับงานที่ไม่มีเจ้าของ
-        if owner and owner == self.user_id:
-            return True
-        return self._may_read(job.get("meeting_id") or job["id"])
+        return self._job_is_mine(job)
+
+    def _jobs_view(self) -> list[dict]:
+        """คิวงานที่ผู้เรียกเห็น — ติดธง mine ให้แอดมินเท่านั้น (BACKLOG #41).
+
+        แอดมินเห็นคิวทั้งระบบ (ตั้งใจ ใช้ไล่ปัญหา) แต่รายการการประชุมมีแค่ของตัวเอง
+        หน้าเว็บจึงเคยเห็นงานของคนอื่นจบ แล้วสั่ง openMeeting() ไปที่การประชุมที่ตัวเองเปิดไม่ได้
+        เด้งแบนเนอร์ 403 ใส่หน้าจอ และเอา error ของงานคนอื่นมาขึ้นให้อ่าน
+
+        ไม่ติดธงให้คนอื่น เพราะทุกงานที่เขาเห็นเป็นของเขาอยู่แล้ว — ฝั่งหน้าเว็บจึงอ่านว่า
+        "ไม่มีฟิลด์นี้ = ของฉัน" ซึ่งเข้ากันได้กับหน้าเว็บ/เซิร์ฟเวอร์คนละรุ่นด้วย
+        ราคา: job_get() หนึ่งครั้งต่องานที่ยังค้าง เฉพาะตอนแอดมินเรียก (คิวที่ค้างสั้นเสมอ)
+        """
+        out = jobs.active(**self._job_scope())
+        if backend.auth_required() and self.user and self.user.get("is_admin"):
+            for job in out:
+                job["mine"] = self._job_is_mine(job)
+        return out
 
     def _may_write_draft(self, spec: dict) -> bool:
         """อัปโหลดแทร็ก/สั่งประมวลผล draft นี้ได้ไหม.
@@ -902,10 +927,10 @@ class Handler(BaseHTTPRequestHandler):
                     # ต้องคืนงานของการประชุมนั้นด้วย ไม่ใช่ [] — คนแชร์แบบแก้ได้สั่งแปล/สรุปใหม่ได้
                     # ถ้าไม่เห็นงานเลย หน้าเว็บจะไม่เริ่ม poll แล้วงานที่เพิ่งสั่งเหมือนหายไปเฉยๆ
                     return self._json({"meetings": [one] if one else [],
-                                       "jobs": jobs.active(**self._job_scope())})
+                                       "jobs": self._jobs_view()})
                 return self._json({
                     "meetings": store.search(self._query().get("q", ""), user_id=self.user_id),
-                    "jobs": jobs.active(**self._job_scope()),
+                    "jobs": self._jobs_view(),
                 })
             if self.command == "POST":
                 return self._create_draft()
@@ -915,7 +940,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if parts == ["jobs"] and get:
             # เดิมคืนคิวของทั้งระบบให้ทุกคน — ชื่องานคือชื่อการประชุมของคนอื่น (BACKLOG #3)
-            out = {"jobs": jobs.active(**self._job_scope())}
+            out = {"jobs": self._jobs_view()}
             # รายชื่อเครื่องประมวลผลเป็นข้อมูลระดับระบบ คนถือลิงก์แชร์ไม่ต้องเห็น (BACKLOG #2)
             if backend.cloud and self.user:
                 out["workers"] = self._workers_view()

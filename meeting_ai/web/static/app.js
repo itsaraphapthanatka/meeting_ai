@@ -19,6 +19,7 @@ const state = {
   meeting: null,       // ข้อมูลเต็มของการประชุมที่เปิดอยู่
   query: '',
   polling: null,
+  pollMs: 0,         // จังหวะ poll ที่ใช้อยู่ — งานของเรา 1.5 วิ คิวระบบของแอดมิน 10 วิ
   config: {},
   workers: [],       // เครื่องประมวลผลที่รายงานตัวเข้ามา
   user: null,        // ผู้ใช้ที่ล็อกอิน (โหมด cloud)
@@ -177,7 +178,8 @@ function renderJobs() {
     // ช่วงนี้จึงโชว์เป็นแถบวิ่งแทน แล้วให้ข้อความบอกเวลาที่อยู่ในห้องเป็นตัวชี้
     const inRoom = j.kind === 'bot' && j.status === 'running' && (j.progress || 0) < 0.35;
     return `<div class="job ${failed ? 'err' : ''}">
-      <div class="jt">${j.kind === 'bot' ? '🤖 ' : ''}${esc(j.title)}</div>
+      <div class="jt">${j.kind === 'bot' ? '🤖 ' : ''}${esc(j.title)}${
+        isMine(j) ? '' : '<span class="job-sys">คิวระบบ</span>'}</div>
       <div class="js">${esc(failed ? j.error : j.step)}</div>
       ${failed ? '' : inRoom
         ? '<div class="bar rec"><div></div></div>'
@@ -544,17 +546,32 @@ function showAuth(mode) {
 
 /* ---------------- job polling ---------------- */
 
+/* งานของฉัน — เซิร์ฟเวอร์ติดธงนี้ให้เฉพาะแอดมิน ซึ่งเห็นคิวของทั้งระบบ
+   ไม่มีฟิลด์ = ของฉัน (คนทั่วไปเห็นเฉพาะงานตัวเองอยู่แล้ว และเซิร์ฟเวอร์รุ่นก่อนไม่ส่งมา) */
+const isMine = (j) => j.mine !== false;
+
+const POLL_MINE_MS = 1500;
+const POLL_SYSTEM_MS = 10000;   // คิวระบบของแอดมิน: สดพอจะไล่ปัญหา ไม่ถี่จนเปลืองฟังก์ชัน
+
 function ensurePolling() {
-  const busy = state.jobs.some((j) => j.status === 'queued' || j.status === 'running');
-  if (busy && !state.polling) state.polling = setInterval(pollJobs, 1500);
-  else if (!busy && state.polling) { clearInterval(state.polling); state.polling = null; }
+  const busy = state.jobs.filter((j) => j.status === 'queued' || j.status === 'running');
+  // แอดมินเคยโดน poll ทุก 1.5 วิตลอดเวลาที่ "มีใครสักคนในระบบ" มีงานเดินอยู่
+  const ms = busy.some(isMine) ? POLL_MINE_MS : busy.length ? POLL_SYSTEM_MS : 0;
+  if (ms === state.pollMs) return;
+  if (state.polling) { clearInterval(state.polling); state.polling = null; }
+  state.pollMs = ms;
+  if (ms) state.polling = setInterval(pollJobs, ms);
 }
 
 async function pollJobs() {
   let data;
   try { data = await api('/api/jobs'); } catch (e) { return; }
 
-  const before = state.jobs.filter((j) => j.status === 'running' || j.status === 'queued');
+  // เฉพาะงานของเราเท่านั้นที่มีสิทธิ์เปลี่ยนหน้าจอ/ขึ้นแบนเนอร์ — งานของคนอื่นที่แอดมินเห็น
+  // ในคิวระบบยังแสดงในรายการตามปกติ แต่ห้ามสั่ง openMeeting() ไปที่ประชุมที่เราเปิดไม่ได้
+  // (เดิมเด้งแบนเนอร์ 403 ใส่หน้าจอแอดมินทุกครั้งที่งานของ tenant อื่นจบ — BACKLOG #41)
+  const before = state.jobs.filter(
+    (j) => (j.status === 'running' || j.status === 'queued') && isMine(j));
   state.jobs = data.jobs || [];
   renderJobs();
   updateStreamingIndicator();

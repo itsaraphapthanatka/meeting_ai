@@ -192,6 +192,19 @@ body.has-floatbar .panel { padding-bottom: 96px; }
 }
 
 .job .jt { font-weight: 600; }
+/* ป้ายบนงานที่ไม่ใช่ของผู้ที่กำลังดู — เห็นได้เฉพาะแอดมินที่ดูคิวทั้งระบบ (BACKLOG #41)
+   ต้องแยกออกจากงานของตัวเองด้วยตา ไม่งั้นแอดมินนั่งรองานที่ไม่ใช่ของตัวเอง */
+.job .job-sys {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: 1px;
+}
 .job .js { color: var(--muted); }
 .job.err { border-color: color-mix(in srgb, var(--rec) 50%, var(--border)); }
 .job.err .js { color: var(--rec); }
