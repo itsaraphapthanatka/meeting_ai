@@ -23,47 +23,26 @@ from pathlib import Path
 from .. import summarizer
 from ..config import WORKER_STALE_SECONDS as _WORKER_STALE_SECONDS, config
 from . import db
+from ._common import (  # noqa: F401  ชื่อเหล่านี้เป็น API ของโมดูลนี้ ผู้เรียกอ้างผ่าน store.*
+    ID_RE as _ID_RE,
+    SNIPPET_PAD,
+    fmt_time,
+    new_id,
+    snippet as _snippet,
+    timestamped,
+    transcript_text,
+    valid_id,
+)
 
 # ที่เก็บไฟล์เสียง — ตอนนี้ยังเป็นดิสก์ในเครื่องเหมือนโหมดไฟล์
 # บน Vercel เขียนดิสก์ไม่ได้ ต้องสลับไปที่เก็บภายนอก (ดู README หัวข้อ deploy)
 WEB_DIR = config.root / "recordings" / "web"
 
-_ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}")
-SNIPPET_PAD = 70
 SESSION_DAYS = 30
 # โอกาสที่คำขอหนึ่งจะพ่วงงานเก็บกวาดแถว rate_limits ที่หมดอายุไปด้วย (ดู rate_hit)
 RATE_PURGE_CHANCE = 0.01
 
 # ---------- helpers ที่ใช้ร่วมกับแบ็กเอนด์แบบไฟล์ ----------
-
-def new_id() -> str:
-    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
-
-
-def valid_id(mid: str) -> bool:
-    # fullmatch ด้วยเหตุผลเดียวกับ store.valid_id (`$` ปล่อยให้มีตัวขึ้นบรรทัดใหม่ท้ายสุดผ่านได้)
-    return bool(_ID_RE.fullmatch(mid or ""))
-
-
-def fmt_time(sec: float) -> str:
-    m, s = divmod(int(sec or 0), 60)
-    h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
-
-
-def transcript_text(detail: dict) -> str:
-    return " ".join((s.get("text") or "").strip() for s in detail.get("segments", [])).strip()
-
-
-def timestamped(detail: dict) -> str:
-    parts = []
-    for s in detail.get("segments", []):
-        head = f"[{fmt_time(s.get('start', 0))} - {fmt_time(s.get('end', 0))}]"
-        if s.get("speaker"):
-            head += f" {s['speaker']}:"
-        parts.append(f"{head} {(s.get('text') or '').strip()}")
-    return "\n".join(parts)
-
 
 def _hash(token: str) -> bytes:
     return hashlib.sha256(token.encode("utf-8")).digest()
@@ -604,15 +583,6 @@ def audio_path(meta: dict) -> Path | None:
         return None
     # ใช้แค่ basename กัน path ที่หลุดออกนอกโฟลเดอร์
     return WEB_DIR / Path(name).name
-
-
-def _snippet(text: str, query: str) -> str:
-    pos = (text or "").lower().find(query.lower())
-    if pos < 0:
-        return ""
-    start = max(0, pos - SNIPPET_PAD)
-    end = min(len(text), pos + len(query) + SNIPPET_PAD)
-    return ("…" if start else "") + text[start:end].replace("\n", " ") + ("…" if end < len(text) else "")
 
 
 def search(query: str = "", user_id: str | None = None) -> list[dict]:

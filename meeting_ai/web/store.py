@@ -12,7 +12,6 @@ import contextlib
 import json
 import os
 import re
-import secrets
 import sys
 import threading
 import time
@@ -21,6 +20,16 @@ from pathlib import Path
 from typing import Any
 
 from ..config import config
+from ._common import (  # noqa: F401  ชื่อเหล่านี้เป็น API ของโมดูลนี้ ผู้เรียกอ้างผ่าน store.*
+    ID_RE as _ID_RE,
+    SNIPPET_PAD,
+    fmt_time,
+    new_id,
+    snippet as _snippet,
+    timestamped,
+    transcript_text,
+    valid_id,
+)
 
 try:                      # Windows
     import msvcrt
@@ -51,9 +60,6 @@ _detail_cache: dict[str, tuple[float, dict]] = {}
 # กติกา: แคชได้เฉพาะไฟล์ที่นิ่งมานานกว่าความละเอียดของ timestamp แล้ว — การเขียนครั้งต่อไป
 # (โพรเซสไหนก็ตาม เพราะ CLI กับ mai web ใช้โฟลเดอร์เดียวกันได้) จะได้ mtime ใหม่เสมอ
 _CACHE_MIN_AGE = 2.0
-
-_ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}")
-SNIPPET_PAD = 70
 
 
 def _ensure_dir() -> None:
@@ -166,19 +172,6 @@ def _guard():
         yield
 
 
-def new_id() -> str:
-    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
-
-
-def valid_id(mid: str) -> bool:
-    """กัน path traversal — id ต้องตรงรูปแบบที่เราสร้างเท่านั้น.
-
-    fullmatch ไม่ใช่ match: `$` ของ re ยอมให้มีตัวขึ้นบรรทัดใหม่ปิดท้ายได้
-    "<id>" กับ "<id>ขึ้นบรรทัดใหม่" จึงเคยผ่านทั้งคู่ ทั้งที่ชื่อไฟล์ไม่เหมือนกัน
-    """
-    return bool(_ID_RE.fullmatch(mid or ""))
-
-
 def _detail_path(mid: str) -> Path:
     return WEB_DIR / f"{mid}.json"
 
@@ -267,28 +260,6 @@ def load_detail(mid: str) -> dict:
         # เพิ่งถูกแก้ — mtime ยังชนกับการเขียนครั้งถัดไปได้ ห้ามแคช
         _detail_cache.pop(mid, None)
     return detail
-
-
-def fmt_time(sec: float) -> str:
-    m, s = divmod(int(sec), 60)
-    h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
-
-
-def transcript_text(detail: dict) -> str:
-    """ข้อความล้วนสำหรับค้นหา."""
-    return " ".join(s.get("text", "").strip() for s in detail.get("segments", [])).strip()
-
-
-def timestamped(detail: dict) -> str:
-    parts = []
-    for s in detail.get("segments", []):
-        head = f"[{fmt_time(s.get('start', 0))} - {fmt_time(s.get('end', 0))}]"
-        speaker = s.get("speaker")
-        if speaker:
-            head += f" {speaker}:"
-        parts.append(f"{head} {s.get('text', '').strip()}")
-    return "\n".join(parts)
 
 
 def create(
@@ -450,15 +421,6 @@ def audio_path(meta: dict) -> Path | None:
         return None
     # ใช้แค่ basename กัน path ที่หลุดออกนอกโฟลเดอร์
     return WEB_DIR / Path(name).name
-
-
-def _snippet(text: str, query: str) -> str:
-    pos = text.lower().find(query.lower())
-    if pos < 0:
-        return ""
-    start = max(0, pos - SNIPPET_PAD)
-    end = min(len(text), pos + len(query) + SNIPPET_PAD)
-    return ("…" if start else "") + text[start:end].replace("\n", " ") + ("…" if end < len(text) else "")
 
 
 def search(query: str = "", user_id: str | None = None) -> list[dict]:
