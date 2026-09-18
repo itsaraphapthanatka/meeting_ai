@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import log
+
 
 def _cmd_devices(args: argparse.Namespace) -> int:
     from . import recorder
@@ -256,6 +258,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ตั้งค่า logging ที่ขอบนอกสุดเท่านั้น — ไลบรารีแค่ขอ logger มาใช้ ไม่ตั้งค่าเอง
+    # (BACKLOG #35) รูปแบบเป็นข้อความล้วน ผลที่ออกจอจึงเหมือนตอนยังใช้ print() ทุกตัวอักษร
+    log.setup()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

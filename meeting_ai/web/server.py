@@ -28,6 +28,9 @@ from .. import diarize, stt, summarizer
 from ..config import WORKER_STALE_SECONDS, config
 from . import backend, db, exports, jobs, ratelimit
 from .backend import store
+from .. import log as _log
+
+log = _log.get(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -260,9 +263,10 @@ def _warn_rate_db(exc: Exception) -> None:
     if _rate_db_warned:
         return
     _rate_db_warned = True
-    print("⚠️  ตัวนับ rate limit ในฐานข้อมูลใช้ไม่ได้ (rate limit ของ /api/auth/* "
-          f"เหลือเฉพาะตัวนับในหน่วยความจำของแต่ละ process): {exc} — รัน `mai db-init` "
-          "เพื่อสร้างตาราง meeting_ai.rate_limits", file=sys.stderr, flush=True)
+    log.warning(
+        f"⚠️  ตัวนับ rate limit ในฐานข้อมูลใช้ไม่ได้ (rate limit ของ /api/auth/* "
+        f"เหลือเฉพาะตัวนับในหน่วยความจำของแต่ละ process): {exc} — "
+        "รัน `mai db-init` เพื่อสร้างตาราง meeting_ai.rate_limits")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -294,7 +298,7 @@ class Handler(BaseHTTPRequestHandler):
         # request line (คอนเนกชันเงียบจนหมดเวลา) ตอนนั้นยังไม่มี self.path/self.command
         path = getattr(self, "path", "")
         if path and not path.startswith(("/static/", "/api/jobs", "/api/live")):
-            print(f"  {getattr(self, 'command', '?')} {path}", flush=True)
+            log.info(f"  {getattr(self, 'command', '?')} {path}")
 
     def log_error(self, fmt: str, *args) -> None:
         """คอนเนกชัน keep-alive ที่เงียบจนครบ timeout เป็นเรื่องปกติ ไม่ใช่ error ที่ต้องรก console."""
@@ -313,7 +317,7 @@ class Handler(BaseHTTPRequestHandler):
         ref = secrets.token_hex(3)
         # path อย่างเดียว ไม่เอา query — โทเคนแชร์/พารามิเตอร์ค้นหาไม่ควรไปนอนใน log
         path = urllib.parse.urlparse(self.path or "").path
-        print(f"!! [{ref}] {getattr(self, 'command', '?')} {path}", file=sys.stderr, flush=True)
+        log.warning(f"!! [{ref}] {getattr(self, 'command', '?')} {path}")
         traceback.print_exc(file=sys.stderr)
         self._error(status, f"{message} (รหัสอ้างอิง {ref})")
 
@@ -1869,9 +1873,9 @@ def _start_sweeper() -> None:
             try:
                 removed = store.sweep()
                 if removed and any(removed.values()):
-                    print(f"🧹 เก็บกวาด: {removed}", file=sys.stderr, flush=True)
+                    log.warning(f'🧹 เก็บกวาด: {removed}')
             except Exception as e:
-                print(f"⚠️  เก็บกวาดไม่สำเร็จ: {e}", file=sys.stderr, flush=True)
+                log.warning(f'⚠️  เก็บกวาดไม่สำเร็จ: {e}')
 
     threading.Thread(target=loop, name="mai-sweeper", daemon=True).start()
 
@@ -1882,25 +1886,24 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
     httpd.bound_host = host
     url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}/"
 
-    print(f"🌐 meeting_ai web  →  {url}")
-    print(f"   เก็บข้อมูลแบบ: {backend.mode()}"
-          + ("  (มีระบบล็อกอิน)" if backend.auth_required() else "  (ไม่มีล็อกอิน)"),
-          flush=True)  # flush ก่อน เพราะบรรทัดของที่เก็บไฟล์ออกทาง stderr — เวลา redirect จะได้เรียงถูก
+    log.info(f'🌐 meeting_ai web  →  {url}')
+    log.info(f"   เก็บข้อมูลแบบ: {backend.mode()}"
+             + ("  (มีระบบล็อกอิน)" if backend.auth_required() else "  (ไม่มีล็อกอิน)"))
     # เลือกที่เก็บไฟล์เสียงตั้งแต่ตอนเริ่ม เพื่อให้บรรทัดบอกสถานะ S3/ดิสก์ โผล่ก่อนรับ request แรก
     backend.storage()
     if host not in ("127.0.0.1", "localhost", "::1") and not backend.auth_required():
-        print("⚠️  ผูกกับ interface ภายนอก และไม่มีระบบล็อกอิน — ใครในเครือข่ายก็เปิดได้")
+        log.info('⚠️  ผูกกับ interface ภายนอก และไม่มีระบบล็อกอิน — ใครในเครือข่ายก็เปิดได้')
     if not (config.llm_api_key and "your-key" not in config.llm_api_key):
-        print("⚠️  ยังไม่ได้ตั้ง LLM_API_KEY ใน .env — ถอดเสียงได้แต่จะสรุปไม่ได้")
+        log.info('⚠️  ยังไม่ได้ตั้ง LLM_API_KEY ใน .env — ถอดเสียงได้แต่จะสรุปไม่ได้')
     if not diarize.available():
-        print("ℹ️  แยกผู้พูดยังใช้ไม่ได้ ขาด: " + "; ".join(diarize.missing_pieces()))
+        log.info('ℹ️  แยกผู้พูดยังใช้ไม่ได้ ขาด: ' + '; '.join(diarize.missing_pieces()))
     if config.remote_worker:
-        print("ℹ️  REMOTE_WORKER=1 — งานหนักรอ `mai worker` มารับ ไม่ประมวลผลในโพรเซสนี้")
+        log.info('ℹ️  REMOTE_WORKER=1 — งานหนักรอ `mai worker` มารับ ไม่ประมวลผลในโพรเซสนี้')
     elif backend.cloud:
         # คิวอยู่ใน DB ต้องมีเธรดคอย poll ไม่ใช่รอ notify ในโพรเซส
         jobs._ensure_worker()
     # flush เอง — เวลา redirect output ลงไฟล์ stdout จะเป็น block-buffered แล้ว URL ไม่โผล่ให้เห็น
-    print("   กด Ctrl+C เพื่อปิด\n", flush=True)
+    log.info('   กด Ctrl+C เพื่อปิด\n')
 
     if open_browser:
         webbrowser.open(url)
@@ -1908,7 +1911,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n👋 ปิดเซิร์ฟเวอร์แล้ว")
+        log.info('\n👋 ปิดเซิร์ฟเวอร์แล้ว')
     finally:
         httpd.server_close()
         # ปิด connection pool ให้เรียบร้อย ไม่ใช่ปล่อยให้โพรเซสตายคาการเชื่อมต่อที่เปิดค้าง

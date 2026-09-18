@@ -508,6 +508,7 @@ meeting_ai/
 │   └── login.py        #   โหมดล็อกอินครั้งเดียว เก็บ session ไว้ใน bot/profile/
 └── meeting_ai/
     ├── config.py       # โหลด .env
+    ├── log.py          # logger ของไลบรารี (CLI ยังพิมพ์ข้อความของตัวเองตรง ๆ)
     ├── bot.py          # ฝั่ง host: สั่ง Docker รันบอท → ต่อ pipeline
     ├── recorder.py     # อัดเสียงสด (ffmpeg: avfoundation/dshow)
     ├── stt.py          # เลือกตัวถอดเสียง: whisper.cpp ในเครื่อง หรือ API

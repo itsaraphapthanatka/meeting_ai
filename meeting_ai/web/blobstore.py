@@ -20,6 +20,9 @@ import urllib.request
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
+from .. import log as _log
+
+log = _log.get(__name__)
 
 ALGORITHM = "AWS4-HMAC-SHA256"
 UNSIGNED = "UNSIGNED-PAYLOAD"
@@ -292,20 +295,14 @@ def configured() -> bool:
 
 
 def _notice(msg: str) -> None:
-    """บอกสถานะที่เก็บไฟล์ทาง stderr — ห้ามทำให้ผู้เรียกพังไม่ว่ากรณีใด
+    """บอกสถานะที่เก็บไฟล์ — ห้ามทำให้ผู้เรียกพังไม่ว่ากรณีใด.
 
     การเลือกที่เก็บเกิดได้ทั้งตอนสตาร์ตและใน request thread แรก (Vercel cold start)
-    คอนโซล cp874 เขียนภาษาไทยไม่ได้ ถ้าปล่อย UnicodeEncodeError ขึ้นไปจะกลายเป็น 500
-    จากบรรทัดเตือน — ยอมเสียอักษรไทยดีกว่า และถ้า stderr ใช้ไม่ได้เลยก็เงียบไป
+    เดิมต้องลองเขียนสองรอบ (ไทย แล้วค่อย ascii) เพราะคอนโซล cp874 เขียนภาษาไทยไม่ได้
+    และ UnicodeEncodeError จากบรรทัดเตือนเคยกลายเป็น 500 ทั้งคำขอ (BUG-045)
+    ตั้งแต่ย้ายมาใช้ logging (BACKLOG #35) handler จัดการข้อยกเว้นของตัวเอง จึงเหลือบรรทัดเดียว
     """
-    for text in (msg, msg.encode("ascii", "replace").decode("ascii")):
-        try:
-            print(text, file=sys.stderr, flush=True)
-            return
-        except UnicodeEncodeError:
-            continue
-        except Exception:
-            return
+    log.warning(msg)
 
 
 def get_storage(local_root: Path, *, allow_remote: bool = False) -> Storage:
