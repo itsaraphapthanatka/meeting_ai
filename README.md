@@ -326,6 +326,22 @@ worker จะ: รับงาน → ดาวน์โหลดไฟล์เ
 → อัปโหลดไฟล์เสียงผสมกลับ → ส่งผลลัพธ์เข้าคลัง รายงาน % ตลอดทาง ให้หน้าเว็บเห็นเหมือนกัน
 ไฟล์เสียงที่ดาวน์โหลดมาอยู่ในโฟลเดอร์ชั่วคราวและถูกลบเมื่อจบงาน
 
+**ให้ worker ขึ้นเองหลังบูต:**
+```bash
+# Linux (systemd) — เติมชื่อผู้ใช้/พาธของเครื่องนี้ให้อัตโนมัติ
+./install-worker-service.sh                     # ดูก่อนว่า unit ที่จะได้หน้าตาแบบไหน
+sudo ./install-worker-service.sh --install --api https://xxx.vercel.app
+sudo systemctl enable --now meeting-ai-worker.service
+```
+```powershell
+# Windows (Task Scheduler)
+.\worker-service.ps1 install -Api https://xxx.vercel.app -Name "เครื่องหลัก"
+.\worker-service.ps1 status
+```
+ค่าที่ต่างกันทุกเครื่องอยู่ใน `/etc/default/meeting-ai-worker` (ดูตัวอย่างที่
+`meeting-ai-worker.env.example`) ฝั่ง Windows log อยู่ที่ `logs\worker.log` และหมุนเองเมื่อ
+เกินขนาด เก็บย้อนหลังสามรุ่น
+
 `WORKER_TOKEN` ว่าง = ปิด worker API ทั้งชุด (กันเปิดช่องไว้เฉยๆ) เทียบ token แบบ constant-time
 ทั้งสองโหมดใช้ตัวประมวลผลตัวเดียวกัน (`meeting_ai/runner.py`) ผลลัพธ์จึงเหมือนกัน
 

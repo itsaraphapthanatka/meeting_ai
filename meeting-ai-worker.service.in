@@ -1,0 +1,39 @@
+# สร้างจาก meeting-ai-worker.service.in โดย install-worker-service.sh — แก้ที่ต้นทาง
+#
+# ค่าที่ต่างกันทุกเครื่อง (ผู้ใช้ กลุ่ม HOME โฟลเดอร์โปรเจกต์ ไฟล์ตัวแปร) ถูกเติมตอนติดตั้ง
+# เดิมไฟล์นี้ถูก commit พร้อมชื่อผู้ใช้ของเครื่องเจ้าของและ URL ของ production ไว้ตรง ๆ
+# ใครก็ตามที่ก็อปไปใช้จะได้ unit ที่ชี้ไปเครื่องคนอื่น (BACKLOG #28)
+
+[Unit]
+Description=meeting_ai worker — รับงานถอดเสียง/แยกผู้พูด/บอท
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+# ให้เข้าถึง Docker ได้ (บอทเข้าห้องประชุม)
+SupplementaryGroups=docker
+WorkingDirectory=@ROOT@
+# HOME ให้ python เจอ ~/.local (sherpa-onnx สำหรับแยกผู้พูด)
+Environment=HOME=@HOME@
+Environment=PYTHONUNBUFFERED=1
+
+# ค่าตั้งต้น — ตรงกับค่าเริ่มต้นของ `mai worker` เพื่อไม่ให้ unit เดาแทนคนติดตั้ง
+# ไฟล์ข้างล่างเขียนทับค่าพวกนี้ได้ (`-` = ไม่มีไฟล์ก็ยังสตาร์ตได้)
+Environment=MAI_API=http://127.0.0.1:8765
+Environment=MAI_MAX_BOTS=3
+EnvironmentFile=-@ENVFILE@
+
+# กัน worker เก่าที่รันค้างอยู่ (เช่น nohup) ให้เหลือตัวเดียว — ไม่มีก็ไม่เป็นไร
+ExecStartPre=-/usr/bin/pkill -f "python3 -m meeting_ai worker"
+# token อ่านจาก .env (WORKER_TOKEN) จึงไม่ต้องใส่ในไฟล์นี้
+# ชื่อเครื่องไม่ต้องส่ง — `mai worker` ใช้ hostname เมื่อไม่ได้ระบุ --name
+ExecStart=@ROOT@/mai worker --api ${MAI_API} --max-bots ${MAI_MAX_BOTS}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

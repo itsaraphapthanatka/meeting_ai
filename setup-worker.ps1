@@ -19,7 +19,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$WorkerToken,
     [Parameter(Mandatory = $true)][string]$LlmApiKey,
-    [string]$Api = "https://meeting-ai-swart.vercel.app",
+    # ที่อยู่เซิร์ฟเวอร์ — ต้องระบุ ไม่มีค่าตั้งต้นเป็นของ production ของใครคนหนึ่ง
+    # (BACKLOG #28: สคริปต์ที่ commit ไว้ห้ามชี้ไปเครื่องของเจ้าของ)
+    [Parameter(Mandatory = $true)][string]$Api,
     [string]$LlmBaseUrl = "https://consoletoken.aunjai.org/api/v1",
     [string]$LlmModel = "gemma-4-12b",
     [string]$Lang = "th",
