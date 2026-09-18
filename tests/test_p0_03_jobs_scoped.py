@@ -150,7 +150,7 @@ class TestPgstoreJobActiveSqlShape(unittest.TestCase):
     เหมือน job_claim ไม่งั้น Postgres ฟ้อง "could not determine data type of parameter"
     """
 
-    def test_sql_has_four_placeholders_and_owner_cast(self):
+    def test_placeholders_match_params_and_nulls_are_cast(self):
         calls = []
 
         class FakeCursor:
@@ -172,11 +172,15 @@ class TestPgstoreJobActiveSqlShape(unittest.TestCase):
         self.assertEqual(result, [])
         self.assertEqual(len(calls), 1)
         sql, params = calls[0]
-        self.assertEqual(sql.count("%s"), 4)
-        self.assertEqual(len(params), 4)
-        self.assertEqual(params, ("u", "u", "m", "m"))
+        # invariant ที่สำคัญคือ "จำนวน %s เท่ากับจำนวนพารามิเตอร์" ไม่ใช่ตัวเลขตายตัว —
+        # ผูกกับเลขทำให้ทุกครั้งที่เพิ่มเงื่อนไขต้องมาแก้เทสต์โดยไม่ได้ตรวจอะไรเพิ่ม
+        self.assertEqual(sql.count("%s"), len(params))
+        self.assertEqual(params, ("u", "u", "u", "m", "m"))
         self.assertIn("spec->>'owner_id'", sql)
         self.assertIn("::text is null", sql)
+        # สาขาที่เพิ่มใน BACKLOG #37 — งานบนการประชุมที่คนนี้อ่านได้ ต้องยังอยู่
+        self.assertIn("visibility", sql)
+        self.assertIn("meeting_ai.meetings", sql)
 
 
 _REAL_DB_URL = os.environ.get("MAI_TEST_DATABASE_URL")
