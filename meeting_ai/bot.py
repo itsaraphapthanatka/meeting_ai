@@ -466,6 +466,98 @@ def _prune_stages(worker: str, live: frozenset[str] = frozenset()) -> list[Path]
     return removed
 
 
+# ชื่อไฟล์ภาพที่ _keep_debug_shot() สร้าง: "<stem ของ SHOTS>_<job id>.png"
+# จำกัดขอบเขตการลบด้วยรายการนี้เท่านั้น — logs/ มีของอื่นอยู่ด้วย (worker.log ที่ service เขียน)
+# กวาดทั้งโฟลเดอร์แบบเหมารวมคือลบ log ที่คนกำลังใช้ไล่ปัญหาอยู่
+_SHOT_STEMS = tuple(Path(n).stem for n in SHOTS)
+
+
+def _newest_mtime(path: Path) -> float:
+    """เวลาที่ถูกแตะล่าสุดของโฟลเดอร์ นับรวมไฟล์ข้างใน.
+
+    mtime ของตัวโฟลเดอร์เปลี่ยนตอนเพิ่ม/ลบไฟล์เท่านั้น ไม่เปลี่ยนตอนไฟล์ข้างในถูกเขียนทับ
+    ใช้ค่าของโฟลเดอร์อย่างเดียวจึงตัดสินว่า "เก่า" ได้ทั้งที่ ffmpeg เพิ่งเขียน wav ไปเมื่อกี้
+    """
+    newest = path.stat().st_mtime
+    for child in path.rglob("*"):
+        try:
+            newest = max(newest, child.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+def _live_containers(docker: str | None = None) -> frozenset[str] | None:
+    """ชื่อ container ของบอทที่กำลังรันอยู่ **ของทุก worker บนเครื่องนี้** — None = ถามไม่ได้.
+
+    ไม่กรองด้วย worker tag ของเราเหมือน cleanup_stale() โดยตั้งใจ: ตรงนี้กำลังจะลบไฟล์ทิ้ง
+    ถาวร โฟลเดอร์ของ worker ตัวอื่นที่ยังประชุมอยู่ต้องไม่โดนด้วย
+    """
+    exe = docker or shutil.which("docker")
+    if not exe:
+        return None
+    r = _run([exe, "ps", "--filter", f"name={PREFIX}", "--format", "{{.Names}}"], text=True)
+    if r.returncode != 0:
+        return None
+    return frozenset(x.strip() for x in r.stdout.splitlines() if x.strip())
+
+
+def prune_old_artifacts(days: int | None = None, now: float | None = None) -> dict[str, int]:
+    """ลบภาพหน้าจอและโฟลเดอร์พักที่เก่าเกินกำหนด คืนจำนวนที่ลบและไบต์ที่คืนมา.
+
+    ของสองกองนี้ไม่มีใครลบให้เลย (BACKLOG #25) และไม่ใช่แค่เรื่องพื้นที่ดิสก์:
+
+    * `logs/bot_*.png` คือภาพหน้าจอ **ห้องประชุมจริง** — เห็นชื่อผู้เข้าร่วม แชท สไลด์
+    * `recordings/bot/<tag>_<job>/` ที่เหลือรอดจาก _prune_stages() คือโฟลเดอร์ที่มี wav
+      ขนาดไม่ใช่ศูนย์ = **เสียงประชุมจริงที่กำพร้า** (ย้ายไปปลายทางไม่สำเร็จ หรือ worker ตาย
+      กลางคัน) เดิมเก็บไว้ "ให้คนตัดสินใจ" ซึ่งแปลว่าตลอดไป เพราะไม่มีใครมานั่งดู
+
+    days = 0 หรือติดลบ -> ไม่ลบอะไรเลย (คนที่อยากเก็บตลอดไปต้องเลือกเอง ไม่ใช่ได้เพราะลืม)
+
+    ความปลอดภัยสองชั้นก่อนลบเสียง: ต้องเก่าเกินกำหนด **และ** ต้องไม่ใช่โฟลเดอร์ของ container
+    ที่ยังรันอยู่ ถ้าถาม docker ไม่ได้ = ไม่รู้ว่าใครยังอยู่ ก็ไม่แตะโฟลเดอร์พักเลย (ภาพยังลบได้
+    เพราะไม่ใช่ไฟล์ที่ใครกำลังเขียน)
+    """
+    days = config.bot_retention_days if days is None else days
+    out = {"shots": 0, "stages": 0, "bytes": 0}
+    if days <= 0:
+        return out
+    cutoff = (time.time() if now is None else now) - days * 86400
+
+    for shot in sorted(DEBUG_DIR.glob("*.png")) if DEBUG_DIR.exists() else []:
+        if not shot.name.startswith(_SHOT_STEMS):
+            continue
+        try:
+            stat = shot.stat()
+            if stat.st_mtime >= cutoff:
+                continue
+            shot.unlink()
+        except OSError:
+            continue
+        out["shots"] += 1
+        out["bytes"] += stat.st_size
+
+    live = _live_containers()
+    if live is None:
+        return out
+    for stage in sorted(STAGE_DIR.glob("*")) if STAGE_DIR.exists() else []:
+        if not stage.is_dir() or PREFIX + stage.name in live:
+            continue
+        try:
+            if _newest_mtime(stage) >= cutoff:
+                continue
+            size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file())
+        except OSError:
+            continue
+        # ดังหน่อยตั้งใจ: นี่คือเสียงประชุมที่อาจไม่มีสำเนาที่อื่น ต้องมีร่องรอยว่าใครลบไปเมื่อไร
+        print(f"🗑  ลบโฟลเดอร์พักที่กำพร้าเกิน {days} วัน: {stage.name} "
+              f"({size / 1e6:.1f} MB)", file=sys.stderr, flush=True)
+        shutil.rmtree(stage, ignore_errors=True)
+        out["stages"] += 1
+        out["bytes"] += size
+    return out
+
+
 def _stage_removable(stage: Path, moved: bool) -> bool:
     """ลบโฟลเดอร์พักของงานนี้ได้ไหม — ย้ายไม่สำเร็จ = เสียงประชุมยังอยู่ที่นี่ที่เดียว ห้ามลบ.
 

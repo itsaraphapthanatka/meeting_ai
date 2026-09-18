@@ -251,6 +251,38 @@ def _upload_playback(client: Client, job_id: str, result: dict, spec: dict | Non
     return result
 
 
+# ---------- เก็บกวาดของเก่าตามอายุ (BACKLOG #25) ----------
+
+PRUNE_EVERY_SECONDS = 24 * 3600
+_last_prune = 0.0
+
+
+def prune_artifacts_if_due(force: bool = False) -> dict[str, int]:
+    """เรียกจากลูปหลักได้ทุกงวด — ของจริงเกิดวันละครั้ง.
+
+    แยกจาก cleanup_stale() เพราะคนละเรื่อง: อันนั้นคือ "บอทของรอบก่อนยังค้างอยู่ ปิดซะ"
+    ส่วนอันนี้คือ "ของที่เก็บไว้เป็นเดือนแล้ว ไม่มีใครมาดู ลบทิ้ง"
+    ล้มเหลวเมื่อไรต้องไม่ลากงานของ worker ล้มตาม — เก็บกวาดไม่ใช่งานหลัก
+    """
+    global _last_prune
+    now = time.monotonic()
+    if not force and _last_prune and now - _last_prune < PRUNE_EVERY_SECONDS:
+        return {}
+    _last_prune = now
+    try:
+        from . import bot as _bot
+
+        removed = _bot.prune_old_artifacts()
+        if removed.get("shots") or removed.get("stages"):
+            print(f"🧹 ลบของเก่าเกิน {config.bot_retention_days} วัน: "
+                  f"ภาพ {removed['shots']} ไฟล์, โฟลเดอร์พัก {removed['stages']} รายการ "
+                  f"({removed['bytes'] / 1e6:.1f} MB)")
+        return removed
+    except Exception as e:
+        print(f"⚠️  ลบของเก่าไม่สำเร็จ: {e}", file=sys.stderr)
+        return {}
+
+
 # ---------- ข้อความ error ที่ขึ้นเว็บ (BACKLOG #40) ----------
 
 MAX_ERROR_CHARS = 600
@@ -406,6 +438,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
                 print(f"🧹 ปิดบอทที่ค้างจากรอบก่อน: {name}")
         except Exception as e:
             print(f"⚠️  เก็บกวาดบอทที่ค้างไม่สำเร็จ: {e}", file=sys.stderr)
+        prune_artifacts_if_due(force=True)
 
     print(f"🛠️  worker พร้อม — เซิร์ฟเวอร์: {client.api}")
     print(f"   ชื่อเครื่อง: {worker_name}" + (f"   GPU: {gpu}" if gpu else "   (ไม่มี GPU)"))
@@ -509,6 +542,8 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
 
     backoff = poll
     while not stopping["flag"]:
+        # worker ที่รันยาวเป็นสัปดาห์ต้องไม่รอรีสตาร์ตถึงจะเก็บกวาด — ตัวมันเองกันความถี่ไว้แล้ว
+        prune_artifacts_if_due()
         wanted = kinds_wanted()
         if not wanted:
             time.sleep(poll)          # เต็มทุกช่อง รอให้งานใดงานหนึ่งจบก่อน
