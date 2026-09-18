@@ -444,6 +444,9 @@ def claim(worker: str | None = None, kinds: list[str] | None = None) -> dict | N
     if cloud:
         # คืนงานที่ worker เก่าหลุดไปกลางทางกลับเข้าคิวก่อน
         store.jobs_reap(30)
+        # และเก็บกวาดแถวหมดอายุตามรอบ — ตัวมันเองกันความถี่ไว้แล้ว เรียกทุกครั้งได้ (BACKLOG #24)
+        # เกาะทางนี้เพราะเป็นจังหวะที่วิ่งสม่ำเสมอบน serverless ที่ไม่มีโพรเซสค้างให้ตั้งเวลา
+        store.sweep_if_due()
         while True:
             job = store.job_claim(worker, kinds)
             if job is None:
