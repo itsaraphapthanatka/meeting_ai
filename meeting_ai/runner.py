@@ -236,6 +236,7 @@ def _transcribe_all(spec: dict, paths: dict, names: list[str],
             meeting_title=title,
             template=spec.get("template") or summarizer.DEFAULT_TEMPLATE,
             has_speakers=bool(speakers),
+            target_lang=spec.get("summary_lang") or summarizer.DEFAULT_SUMMARY_LANG,
         )
     except Exception as e:
         summary_error = str(e)
@@ -400,6 +401,7 @@ def summarize_job(spec: dict, progress: ProgressFn) -> dict:
         meeting_title=spec.get("title"),
         template=spec.get("template") or summarizer.DEFAULT_TEMPLATE,
         has_speakers=any(s.get("speaker") for s in segments),
+        target_lang=spec.get("summary_lang") or summarizer.DEFAULT_SUMMARY_LANG,
     )
     return {"summary": summary, "summary_error": None}
 

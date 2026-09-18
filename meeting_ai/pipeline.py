@@ -57,6 +57,7 @@ def process_file(
     out_dir: str | Path = "recordings",
     template: str = summarizer.DEFAULT_TEMPLATE,
     stt_provider: str | None = None,
+    summary_lang: str = summarizer.DEFAULT_SUMMARY_LANG,
 ) -> dict:
     """รันทั้ง pipeline กับไฟล์เสียงหนึ่งไฟล์. คืน dict ของ path ผลลัพธ์."""
     audio_path = Path(audio_path)
@@ -71,7 +72,9 @@ def process_file(
     print(f"   ได้ {len(transcript.segments)} ช่วงประโยค")
 
     print("🧠 กำลังสรุปด้วย LLM ...")
-    summary = summarizer.summarize(transcript.text, meeting_title=title, template=template)
+    # language = ภาษาของ "เสียง" (ส่งให้ whisper), summary_lang = ภาษาของ "ตัวสรุป" คนละอัน
+    summary = summarizer.summarize(transcript.text, meeting_title=title, template=template,
+                                   target_lang=summary_lang)
 
     report = build_report(title, transcript, summary)
 
