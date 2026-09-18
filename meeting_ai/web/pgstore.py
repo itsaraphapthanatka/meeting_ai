@@ -878,17 +878,28 @@ def job_active(owner_id: str | None = None, meeting_id: str | None = None) -> li
     จะได้ไม่ต้อง migrate ฐานข้อมูลที่ deploy ไปแล้ว (วิธีเดียวกับธง stop ใน job_request_stop)
     %s::text ต้อง cast เหมือน job_claim เพราะ psycopg ส่ง NULL มาโดยไม่ระบุชนิด
     แล้ว Postgres จะฟ้อง "could not determine data type of parameter"
+
+    owner_id ที่ส่งมาคือ "คนที่กำลังดู" ไม่ใช่ตัวกรองเจ้าของงานอย่างเดียว (BACKLOG #37):
+    ดูเฉพาะ spec->>'owner_id' ทำให้เห็นแค่งานที่ตัวเองเป็นคนสั่ง งานที่เพื่อนร่วมทีมสั่ง
+    บนการประชุมแบบ team จึงหายไปจากสายตาเจ้าของการประชุมเอง (หน้าเว็บนิ่งทั้งที่มีงานเดินอยู่
+    กดสั่งซ้ำก็ไม่รู้ว่าซ้ำ) และงานเก่าที่สร้างก่อนจะมี owner_id ใน spec ไม่มีใครเห็นเลย
+    นอกจากแอดมิน — จึงเพิ่มสาขา "งานบนการประชุมที่คนนี้อ่านได้" เข้ามา โดยใช้กติกา
+    เดียวกับที่ใช้ตัดสินว่าเห็นการประชุมไหม (เจ้าของ หรือ visibility = team)
     """
     with db.connect() as conn:
         rows = conn.execute(
-            """select id, meeting_id, kind, status, step, progress, title, error, warning,
-                      created_at, worker
-               from meeting_ai.jobs
-               where status in ('queued','running')
-                 and (%s::text is null or spec->>'owner_id' = %s)
-                 and (%s::text is null or meeting_id = %s)
-               order by created_at""",
-            (owner_id, owner_id, meeting_id, meeting_id),
+            """select j.id, j.meeting_id, j.kind, j.status, j.step, j.progress, j.title,
+                      j.error, j.warning, j.created_at, j.worker
+               from meeting_ai.jobs j
+               where j.status in ('queued','running')
+                 and (%s::text is null
+                      or j.spec->>'owner_id' = %s
+                      or exists (select 1 from meeting_ai.meetings m
+                                  where m.id = j.meeting_id
+                                    and (m.owner_id::text = %s or m.visibility = 'team')))
+                 and (%s::text is null or j.meeting_id = %s)
+               order by j.created_at""",
+            (owner_id, owner_id, owner_id, meeting_id, meeting_id),
         ).fetchall()
     return [
         {"id": r[0], "meeting_id": r[1], "kind": r[2], "status": r[3], "step": r[4],
