@@ -251,6 +251,56 @@ def _upload_playback(client: Client, job_id: str, result: dict, spec: dict | Non
     return result
 
 
+# ---------- เก็บกวาดของเก่าตามอายุ (BACKLOG #25) ----------
+
+PRUNE_EVERY_SECONDS = 24 * 3600
+_last_prune = 0.0
+
+
+def prune_artifacts_if_due(force: bool = False) -> dict[str, int]:
+    """เรียกจากลูปหลักได้ทุกงวด — ของจริงเกิดวันละครั้ง.
+
+    แยกจาก cleanup_stale() เพราะคนละเรื่อง: อันนั้นคือ "บอทของรอบก่อนยังค้างอยู่ ปิดซะ"
+    ส่วนอันนี้คือ "ของที่เก็บไว้เป็นเดือนแล้ว ไม่มีใครมาดู ลบทิ้ง"
+    ล้มเหลวเมื่อไรต้องไม่ลากงานของ worker ล้มตาม — เก็บกวาดไม่ใช่งานหลัก
+    """
+    global _last_prune
+    now = time.monotonic()
+    if not force and _last_prune and now - _last_prune < PRUNE_EVERY_SECONDS:
+        return {}
+    _last_prune = now
+    try:
+        from . import bot as _bot
+
+        removed = _bot.prune_old_artifacts()
+        if removed.get("shots") or removed.get("stages"):
+            print(f"🧹 ลบของเก่าเกิน {config.bot_retention_days} วัน: "
+                  f"ภาพ {removed['shots']} ไฟล์, โฟลเดอร์พัก {removed['stages']} รายการ "
+                  f"({removed['bytes'] / 1e6:.1f} MB)")
+        return removed
+    except Exception as e:
+        print(f"⚠️  ลบของเก่าไม่สำเร็จ: {e}", file=sys.stderr)
+        return {}
+
+
+def _start_pruner() -> None:
+    """เธรดเก็บกวาดของ worker — ทำทันทีหนึ่งรอบ แล้ววันละครั้ง (BACKLOG #25).
+
+    **ห้ามวางบนลูปรับงาน** ซึ่งเป็นสิ่งที่ผมทำรอบแรกแล้ว CI ฝั่ง Windows จับได้:
+    prune_old_artifacts() ถาม docker (รอได้ถึง DOCKER_TIMEOUT) แล้วเดินไล่โฟลเดอร์ทั้งชุด
+    เอาไปคั่นทางหยิบงาน = หน่วงทุกงาน และทำให้ตอนสั่งปิดช้าลงจนชนเพดาน drain ของ BACKLOG #20
+
+    เป็น daemon จึงถูกฆ่าทันทีตอนโพรเซสจบ ระหว่าง rmtree อาจเหลือโฟลเดอร์ลบค้างได้
+    ไม่เป็นไร — รอบหน้าเก็บต่อเอง (ignore_errors=True อยู่แล้ว)
+    """
+    def loop() -> None:
+        while True:
+            prune_artifacts_if_due()
+            time.sleep(PRUNE_EVERY_SECONDS)
+
+    threading.Thread(target=loop, name="mai-bot-pruner", daemon=True).start()
+
+
 # ---------- ข้อความ error ที่ขึ้นเว็บ (BACKLOG #40) ----------
 
 MAX_ERROR_CHARS = 600
@@ -406,6 +456,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
                 print(f"🧹 ปิดบอทที่ค้างจากรอบก่อน: {name}")
         except Exception as e:
             print(f"⚠️  เก็บกวาดบอทที่ค้างไม่สำเร็จ: {e}", file=sys.stderr)
+        _start_pruner()
 
     print(f"🛠️  worker พร้อม — เซิร์ฟเวอร์: {client.api}")
     print(f"   ชื่อเครื่อง: {worker_name}" + (f"   GPU: {gpu}" if gpu else "   (ไม่มี GPU)"))
