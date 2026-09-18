@@ -3,6 +3,8 @@
 bin/
 models/
 recordings/
+# บอทรันใน Docker บนเครื่อง worker เท่านั้น ฝั่ง Vercel ไม่มีทางเรียกใช้
+bot/
 
 # ความลับ — env vars ตั้งบน Vercel dashboard ไม่ใช่ในไฟล์
 .env
