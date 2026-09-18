@@ -105,10 +105,17 @@ class TestNoContradictoryStatus(unittest.TestCase):
         self.assertNotIn("uncommitted", self.text)
 
     def test_no_stale_test_counts(self):
-        # เคยมีสแนปช็อตจำนวนเทสต์สามรุ่นซ้อนกัน (64 / 76 / 81) ซึ่งล้าสมัยทั้งหมด
-        for count in ("64 tests OK", "68 tests OK", "73 tests OK", "76 tests OK", "81 tests OK"):
+        """เคยมีสแนปช็อตจำนวนเทสต์สามรุ่นซ้อนกัน (64 / 76 / 81) ซึ่งล้าสมัยทั้งหมด.
+
+        ต้องเทียบแบบทั้งตัวเลข ไม่ใช่ substring: `768 tests OK` มี `68 tests OK` อยู่ข้างใน
+        สวีทที่โตจนจำนวนลงท้ายด้วยเลขเก่าจึงทำให้เทสต์นี้แดงทั้งที่ไม่มีอะไรล้าสมัยเลย
+        (CI จับได้ตอน BACKLOG #42 — เครื่องที่พัฒนาไม่ได้รันเทสต์ตัวนี้ซ้ำหลังแก้เลข)
+        """
+        import re
+
+        for count in (64, 68, 73, 76, 81):
             with self.subTest(count=count):
-                self.assertNotIn(count, self.text)
+                self.assertNotRegex(self.text, rf"(?<!\d){count} tests OK")
 
     def test_it_points_at_the_backlog_for_current_status(self):
         # สถานะของงานเปลี่ยนทุกวัน เอกสารบริบทไม่ควรพยายามเป็นเจ้าของข้อมูลนั้น
