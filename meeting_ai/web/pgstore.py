@@ -173,10 +173,19 @@ def drop_session(token: str) -> None:
             conn.execute("delete from meeting_ai.sessions where token_hash = %s", (_hash(token),))
 
 
-def purge_expired() -> None:
+def purge_expired() -> dict[str, int]:
+    """ลบแถวที่หมดอายุแล้ว คืนจำนวนที่ลบไปแต่ละตาราง.
+
+    เดิมไม่มีใครเรียกเลย (BACKLOG #24) ผลคือ `sessions` โตขึ้นหนึ่งแถวต่อการล็อกอินหนึ่งครั้ง
+    ตลอดอายุระบบ — ไม่ใช่ช่องโหว่ (คิวรีกรอง expires_at > now() อยู่แล้ว) แต่เป็นตารางที่
+    ไม่มีวันหยุดโต บนฐานที่คิดค่าตามพื้นที่
+    """
     with db.connect() as conn:
-        conn.execute("delete from meeting_ai.sessions where expires_at < now()")
-        conn.execute("delete from meeting_ai.rate_limits where expires_at < now()")
+        sessions = conn.execute(
+            "delete from meeting_ai.sessions where expires_at < now()").rowcount
+        limits = conn.execute(
+            "delete from meeting_ai.rate_limits where expires_at < now()").rowcount
+    return {"sessions": sessions or 0, "rate_limits": limits or 0}
 
 
 # ---------- จำกัดอัตราคำขอ (ตัวนับกลาง ใช้ร่วมกันทุก instance) ----------
@@ -1047,3 +1056,64 @@ def jobs_reap(stale_minutes: int = 30) -> int:
             (stale_minutes,),
         )
         return cur.rowcount + failed
+
+
+# ---------- เก็บกวาดตามรอบ (BACKLOG #24) ----------
+
+SWEEP_EVERY_SECONDS = 3600
+SWEEP_KEY = "last_sweep_at"
+WORKER_FORGET_DAYS = 7
+
+# กันยิงซ้ำในโพรเซสเดียวกัน — ด่านแรกที่ไม่แตะฐานเลย ด่านที่สองคือ _claim_sweep() ซึ่งกัน
+# "หลาย instance สวีปพร้อมกัน" ได้ด้วย (บน Vercel ทุก request อาจไปคนละ instance)
+_last_sweep = 0.0
+
+
+def _claim_sweep(every: int = SWEEP_EVERY_SECONDS) -> bool:
+    """จองสิทธิ์สวีปรอบนี้ — True เมื่อเราเป็นคนได้ทำ.
+
+    ใช้นาฬิกาของฐานข้อมูลเป็นตัวตัดสิน ไม่ใช่นาฬิกาของแต่ละ instance และจองด้วยคำสั่งเดียว
+    (upsert ที่มี where บน do update) เพื่อให้สองคนที่ยิงพร้อมกันได้ไปคนเดียว — ถ้าเผลอได้
+    ทั้งคู่ก็แค่ลบซ้ำ ไม่มีอะไรเสียหาย แต่ไม่มีเหตุให้ต้องยอมตั้งแต่แรก
+    """
+    with db.connect() as conn:
+        row = conn.execute(
+            """insert into meeting_ai.settings (key, value, updated_at)
+                 values (%s, to_jsonb(now()), now())
+               on conflict (key) do update
+                 set value = to_jsonb(now()), updated_at = now()
+               where settings.updated_at
+                     < now() - make_interval(secs => %s::double precision)
+               returning key""",
+            (SWEEP_KEY, every),
+        ).fetchone()
+    return row is not None
+
+
+def sweep(force: bool = False) -> dict[str, int]:
+    """ลบ session/rate limit ที่หมดอายุ และ worker ที่หายไปนานแล้ว.
+
+    คืน {} ถ้ายังไม่ถึงรอบ — ผู้เรียกจึงเรียกถี่แค่ไหนก็ได้ ของจริงเกิดชั่วโมงละครั้ง
+
+    force = "ข้ามตารางเวลา" ไม่ใช่ "ไม่ต้องจดว่าทำไปแล้ว" — ยังประทับนาฬิกาเหมือนรอบปกติ
+    ไม่งั้นรอบที่ตั้งเวลาไว้จะวิ่งซ้ำทันทีทั้งที่เพิ่งกวาดไปเมื่อกี้
+    """
+    if not _claim_sweep(0 if force else SWEEP_EVERY_SECONDS):
+        return {}
+    out = purge_expired()
+    out["workers"] = workers_forget(WORKER_FORGET_DAYS)
+    return out
+
+
+def sweep_if_due() -> dict[str, int]:
+    """เรียกได้จากทางที่วิ่งบ่อย — ด่านในโพรเซสกันไม่ให้ไปแตะฐานทุกครั้ง."""
+    global _last_sweep
+    now = time.monotonic()
+    if _last_sweep and now - _last_sweep < SWEEP_EVERY_SECONDS:
+        return {}
+    _last_sweep = now
+    try:
+        return sweep()
+    except Exception:
+        # เก็บกวาดล้มเหลวต้องไม่ทำให้ทางที่มันเกาะอยู่ (หยิบงาน/หน้าเว็บ) พังตาม
+        return {}

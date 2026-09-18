@@ -15,6 +15,7 @@ import re
 import secrets
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import urllib.parse
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from .. import diarize, stt, summarizer
 from ..config import WORKER_STALE_SECONDS, config
-from . import backend, exports, jobs, ratelimit
+from . import backend, db, exports, jobs, ratelimit
 from .backend import store
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -68,8 +69,8 @@ SOCKET_TIMEOUT = 30
 SESSION_COOKIE = "mai_session"
 # endpoint ที่เข้าได้ก่อนล็อกอิน (ไม่งั้นจะล็อกอินไม่ได้เลย)
 # ("auth", "share") = ยืนยันเปิดลิงก์แชร์ ต้องเรียกได้ทั้งที่ยังไม่มีคุกกี้อะไรเลย (BACKLOG #16)
-PUBLIC_API = {("config",), ("auth", "me"), ("auth", "login"), ("auth", "signup"),
-              ("auth", "share")}
+PUBLIC_API = {("config",), ("health",), ("auth", "me"), ("auth", "login"),
+              ("auth", "signup"), ("auth", "share")}
 
 _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
 # Content-Length ต้องเป็นเลขล้วนตาม RFC 9110 — int() ยอมรับ "1_0", "+10", " 10 " ซึ่ง
@@ -879,6 +880,15 @@ class Handler(BaseHTTPRequestHandler):
         if backend.auth_required() and not self.user and tuple(parts) not in PUBLIC_API:
             if not (self.share and self._share_may_call(parts)):
                 return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อน")
+
+        if parts == ["health"] and get:
+            # backend.health() มีมานานแต่ไม่มีใครเรียก (BACKLOG #24) — ต่อให้เป็นเส้นตรวจสถานะ
+            # ที่ใช้ได้จริงตอนไล่ปัญหา "เว็บขึ้นแต่ฐานล่ม" ซึ่งเดิมดูได้จากการลองล็อกอินเท่านั้น
+            info = backend.health()
+            # รายชื่อสิ่งที่ยังขาด บอกโครงสร้างระบบให้คนนอกฟรี ๆ — ให้เฉพาะแอดมิน
+            if not (self.user and self.user.get("is_admin")):
+                info.pop("db_missing", None)
+            return self._json({"ok": True, **info})
 
         if parts == ["config"] and get:
             # โหมด worker แยกเครื่อง: คนทำงานจริงคือ worker ไม่ใช่เซิร์ฟเวอร์นี้
@@ -1841,6 +1851,29 @@ class Server(ThreadingHTTPServer):
     bound_host = "127.0.0.1"
 
 
+def _start_sweeper() -> None:
+    """เธรดเก็บกวาดของโพรเซสที่รันยาว (`mai web`) — ชั่วโมงละครั้ง (BACKLOG #24).
+
+    บน serverless ไม่มีโพรเซสค้างให้ตั้งเวลา จึงไปเกาะทางหยิบงานของ worker แทน (jobs.claim)
+    ทั้งสองทางใช้ store.sweep() ตัวเดียวกันซึ่งจองสิทธิ์ผ่านฐานข้อมูล ต่อให้ทำงานพร้อมกัน
+    ก็สวีปจริงแค่รอบเดียว
+    """
+    if not backend.cloud:
+        return      # โหมดไฟล์ไม่มีตาราง session/worker ให้กวาด
+
+    def loop() -> None:
+        while True:
+            time.sleep(store.SWEEP_EVERY_SECONDS)
+            try:
+                removed = store.sweep()
+                if removed and any(removed.values()):
+                    print(f"🧹 เก็บกวาด: {removed}", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"⚠️  เก็บกวาดไม่สำเร็จ: {e}", file=sys.stderr, flush=True)
+
+    threading.Thread(target=loop, name="mai-sweeper", daemon=True).start()
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
     mimetypes.add_type("application/javascript", ".js")
     httpd = Server((host, port), Handler)
@@ -1869,9 +1902,16 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
 
     if open_browser:
         webbrowser.open(url)
+    _start_sweeper()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n👋 ปิดเซิร์ฟเวอร์แล้ว")
     finally:
         httpd.server_close()
+        # ปิด connection pool ให้เรียบร้อย ไม่ใช่ปล่อยให้โพรเซสตายคาการเชื่อมต่อที่เปิดค้าง
+        # (Neon นับ connection เป็นทรัพยากรที่มีเพดาน) — ล้มก็ไม่ต้องทำให้การปิดพัง
+        try:
+            db.close()
+        except Exception:
+            pass
