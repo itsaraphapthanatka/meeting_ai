@@ -112,6 +112,28 @@ def _stop(docker: str, container: str, grace: int = STOP_GRACE):
                 timeout=grace + STOP_MARGIN)
 
 
+def _sandbox_flags() -> list[str]:
+    """ธงของ `docker run` ที่ต้องมาคู่กับการเปิด sandbox ของ Chromium (BACKLOG #21b).
+
+    sandbox ของ Chromium ใช้ user namespace ซึ่ง seccomp profile มาตรฐานของ Docker บล็อกไว้
+    การถอด `--no-sandbox` ออกเฉย ๆ จึงไม่พอ — ต้องให้ container ทำสิ่งนั้นได้ด้วย ไม่งั้น
+    Chromium ไม่เปิดเลย และอาการที่ผู้ใช้เห็นคือ "บอทไม่เข้าห้อง" ซึ่งไล่สาเหตุยากมาก
+
+    สองฝั่งต้องตรงกันเสมอ: env `CHROMIUM_SANDBOX` บอกสคริปต์ในคอนเทนเนอร์ว่าจะไม่ส่ง
+    `--no-sandbox` (ดู `bot/platforms.py` -> `sandbox_args()`) ที่นี่จึงเป็นที่เดียวที่ตั้งทั้งคู่
+    """
+    if config.bot_seccomp:
+        profile = Path(config.bot_seccomp)
+        if not profile.is_file():
+            raise RuntimeError(
+                "MAI_BOT_SECCOMP ชี้ไปที่ไฟล์ที่ไม่มีอยู่ — docker จะปฏิเสธคำสั่ง run "
+                "และบอทจะไม่ได้เข้าห้อง (ตั้งเป็นค่าว่างเพื่อกลับไปใช้ --cap-add=SYS_ADMIN)")
+        return ["--security-opt", f"seccomp={profile}", "-e", "CHROMIUM_SANDBOX=1"]
+    if config.bot_sandbox:
+        return ["--cap-add=SYS_ADMIN", "-e", "CHROMIUM_SANDBOX=1"]
+    return []
+
+
 def _rm(docker: str, container: str):
     """ลบ container ทิ้ง — ชื่อซ้ำจากรอบก่อนทำให้ docker run ตัวใหม่ไม่ขึ้น."""
     return _run([docker, "rm", "-f", container])
@@ -365,6 +387,7 @@ def login(site: str = "google") -> None:
     started = _run(
         [
             docker, "run", "-d", "--name", container,
+            *_sandbox_flags(),
             # ผูกกับ 127.0.0.1 เท่านั้น — จอบอทตอนล็อกอินมีหน้า Google อยู่ ห้ามเปิดให้เครือข่ายเห็น
             "-p", "127.0.0.1:6080:6080",   # noVNC (เบราว์เซอร์)
             "-p", "127.0.0.1:5900:5900",   # VNC client
@@ -690,6 +713,7 @@ def join_and_record(
 
     cmd = [
         docker, "run", "--rm", "--name", container,
+        *_sandbox_flags(),
         "-v", f"{_mount(cout.parent)}:/out",
         "-v", f"{_mount(PROFILE_DIR)}:/prof",
         "-e", f"MEET_URL={url}",

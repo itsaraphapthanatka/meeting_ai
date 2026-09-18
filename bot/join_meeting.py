@@ -210,7 +210,7 @@ async def run() -> int:
             user_data_dir=PROFILE_DIR,   # สำเนาของ profile ที่ล็อกอินไว้ (ดู entrypoint.sh)
             headless=False,
             args=[
-                "--no-sandbox",
+                *platforms.sandbox_args(),
                 "--disable-dev-shm-usage",
                 "--use-fake-ui-for-media-stream",      # ตอบ allow ให้ prompt ไมค์/กล้องอัตโนมัติ
                 # ไม่ใช้ --use-fake-device-for-media-stream: มันสร้างลำโพงปลอมด้วย

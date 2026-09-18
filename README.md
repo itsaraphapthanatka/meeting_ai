@@ -161,6 +161,11 @@ profile เดียวเก็บได้ทุกเจ้า (`bot/profile/
 > (รันแม้ไม่ได้ล็อกอิน) `docker run` จะตอบ `Access is denied` ติดตั้งเป็นโหมด Interactive แทน:
 > `worker-service.ps1 uninstall` แล้ว `worker-service.ps1 install`
 
+> **sandbox ของ Chromium ในคอนเทนเนอร์บอทยังปิดอยู่โดยตั้งใจ** (`--no-sandbox`)
+> เปิดได้ด้วย `MAI_BOT_SANDBOX=1` หรือ `MAI_BOT_SECCOMP=<ไฟล์>` แต่ถ้าเครื่องไม่รองรับ
+> Chromium จะไม่เปิดเลยและบอทจะไม่เข้าห้อง — ทำตาม
+> [runbook](docs/runbooks/enable-bot-sandbox.md) แล้วลองกับห้องทดสอบก่อน
+
 ใช้จาก CLI ได้ด้วย:
 ```bash
 ./mai bot "https://meet.google.com/xxx-yyyy-zzz" --title "Sprint Review"
