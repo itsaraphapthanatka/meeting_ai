@@ -47,6 +47,11 @@ class Config:
     # ถ้าโดนตัด summarizer จะขยายเพดานเป็นเท่าตัวแล้วลองใหม่ จนถึง llm_max_tokens_ceiling
     llm_max_tokens: int = _get_int("LLM_MAX_TOKENS", 4000, minimum=256)
     llm_max_tokens_ceiling: int = _get_int("LLM_MAX_TOKENS_CEILING", 16000, minimum=256)
+    # บทถอดเสียงยาวเกินนี้ (ตัวอักษร) จะถูกแบ่งเป็นก้อนแล้วสรุปแบบ map-reduce — ดู
+    # docs/adr/ADR-001-transcript-chunking.md ว่าทำไมนับเป็น "ตัวอักษร" ไม่ใช่ "โทเคน"
+    # 24,000 ตัวไทย ~ 12,000-24,000 โทเคน + เทมเพลต + งบ output ยังอยู่ในกรอบโมเดล 32k
+    # โมเดล context ใหญ่ตั้งให้สูงขึ้นได้ = ถูกลงและสรุปดีขึ้น
+    llm_chunk_chars: int = _get_int("LLM_CHUNK_CHARS", 24000, minimum=2000)
 
     # ตัวถอดเสียงที่ใช้เป็นค่าเริ่มต้น: local (whisper.cpp) หรือ api (OpenAI-compatible)
     stt_provider: str = _get("STT_PROVIDER", "local").strip().lower()

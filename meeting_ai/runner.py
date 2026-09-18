@@ -239,6 +239,9 @@ def _transcribe_all(spec: dict, paths: dict, names: list[str],
             template=spec.get("template") or summarizer.DEFAULT_TEMPLATE,
             has_speakers=bool(speakers),
             target_lang=spec.get("summary_lang") or summarizer.DEFAULT_SUMMARY_LANG,
+            # ประชุมยาวถูกแบ่งเป็นก้อน (ADR-001) ซึ่งกินเวลาหลายนาที — ต้องบอกว่าถึงไหนแล้ว
+            # ไม่งั้นหน้าเว็บค้างอยู่ที่ "สรุปด้วย AI" เฉย ๆ จนคนคิดว่าแฮงก์
+            progress=lambda i, n: progress(f"สรุปด้วย AI (ช่วงที่ {i} จาก {n})", DIARIZE_END),
         )
     except Exception as e:
         summary_error = str(e)
@@ -404,6 +407,7 @@ def summarize_job(spec: dict, progress: ProgressFn) -> dict:
         template=spec.get("template") or summarizer.DEFAULT_TEMPLATE,
         has_speakers=any(s.get("speaker") for s in segments),
         target_lang=spec.get("summary_lang") or summarizer.DEFAULT_SUMMARY_LANG,
+        progress=lambda i, n: progress(f"สรุปด้วย AI (ช่วงที่ {i} จาก {n})", 0.4),
     )
     return {"summary": summary, "summary_error": None}
 
