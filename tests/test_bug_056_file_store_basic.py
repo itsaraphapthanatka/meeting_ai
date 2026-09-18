@@ -14,6 +14,7 @@ SETTINGS_PATH เหมือนที่ tests/_harness.py ทำให้ Loca
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import unittest
@@ -136,6 +137,37 @@ class FileStoreWritePathTests(unittest.TestCase):
         with mock.patch.object(filestore, "_try_lock", _broken):
             with self.assertRaises(AttributeError):
                 filestore.create(mid, "t", "a.wav", "upload", "th", 1.0, [], "s")
+
+
+class LockKindTests(unittest.TestCase):
+    """กลไกล็อกถูกเลือกตอน import ด้วย hasattr() — เลือกพลาดแล้วเงียบกว่าบั๊กเดิมมาก.
+
+    วัดไว้ตอนตรวจตั๋ว #57: ใส่บั๊กจริง (`LK_NBLCK` -> `LOCK_NBLCK`) กลับเข้าไปใน
+    `_try_lock` ทำให้สวีททั้งชุดแดง 62 ตัว แต่พิมพ์ผิดชื่อเดียวกันบน **บรรทัดที่เลือกกลไก**
+    แดงแค่ 1 ตัว เพราะ `hasattr()` คืน False เฉย ๆ แล้วตกไปสาขาอื่นแบบไม่มีใครบ่น
+    ถ้าตกไปจนได้ `_LOCK_KIND == ""` จะไม่มีล็อกข้ามโพรเซสเลย ซึ่งคือสภาพก่อน BUG-056
+    ทั้งที่โค้ดดูเหมือนมีล็อก
+    """
+
+    def test_a_lock_mechanism_was_actually_chosen(self):
+        self.assertIn(filestore._LOCK_KIND, ("msvcrt", "fcntl"),
+                      "ไม่มีกลไกล็อกข้ามโพรเซส = กลับไปเป็น BUG-056 โดยไม่มีอะไรเตือน")
+
+    def test_it_matches_the_platform(self):
+        # บน Windows สาขา fcntl เป็นโค้ดตาย และกลับกันบน Linux — เทสต์นี้จึงเป็นตัวเดียว
+        # ที่จับการพิมพ์ผิดบนบรรทัดเลือกกลไกได้จากทั้งสองฝั่ง
+        expected = "msvcrt" if os.name == "nt" else "fcntl"
+        self.assertEqual(filestore._LOCK_KIND, expected)
+
+    def test_the_constant_it_selects_on_really_exists(self):
+        if filestore._LOCK_KIND == "msvcrt":
+            for name in ("LK_NBLCK", "LK_UNLCK"):
+                with self.subTest(const=name):
+                    self.assertTrue(hasattr(filestore.msvcrt, name))
+        else:
+            for name in ("LOCK_EX", "LOCK_NB", "LOCK_UN"):
+                with self.subTest(const=name):
+                    self.assertTrue(hasattr(filestore.fcntl, name))
 
 
 if __name__ == "__main__":

@@ -100,7 +100,7 @@ def _cmd_db_init(args: argparse.Namespace) -> int:
     from .web import db
     gaps = db.missing_pieces()
     if gaps:
-        print("❌ ยังขาด: " + "; ".join(gaps), file=sys.stderr)
+        _db_gaps(gaps)
         return 2
     tables = db.init()
     print("✅ สร้าง/อัปเดต schema `meeting_ai` เรียบร้อย")
@@ -108,6 +108,20 @@ def _cmd_db_init(args: argparse.Namespace) -> int:
         print(f"   - {t}")
     print("\nเปิดเว็บด้วย `mai web` แล้วสมัครบัญชีแรก — คนแรกจะเป็นแอดมินอัตโนมัติ")
     return 0
+
+
+def _db_gaps(gaps: list[str]) -> None:
+    """บอกด้วยว่า **ต้องรันที่เครื่องไหน** ไม่ใช่แค่ว่าขาดอะไร.
+
+    เครื่อง worker ไม่มีทั้ง DATABASE_URL และ psycopg โดยตั้งใจ — มันรับงานถอดเสียง
+    ไม่ได้ต่อฐานข้อมูล ข้อความเดิมบอกแค่ "ยังขาด ..." คนจึงอ่านว่าเป็นของที่ต้องติดตั้ง
+    เพิ่มบนเครื่องนั้น ซึ่งจะพา DATABASE_URL ของ production ไปวางบนเครื่องที่ไม่ควรมี
+    """
+    print("❌ ยังขาด: " + "; ".join(gaps), file=sys.stderr)
+    print("   คำสั่งนี้ต้องรันจากเครื่องที่ตั้งค่าโหมด cloud ไว้ (มี DATABASE_URL ใน .env)",
+          file=sys.stderr)
+    print("   เครื่อง worker ไม่มีสองอย่างนี้โดยตั้งใจ — อย่าเอา DATABASE_URL ไปวางที่นั่น",
+          file=sys.stderr)
 
 
 def _cmd_db_check(args: argparse.Namespace) -> int:
@@ -119,7 +133,7 @@ def _cmd_db_check(args: argparse.Namespace) -> int:
     from .web import db
     gaps = db.missing_pieces()
     if gaps:
-        print("❌ ยังขาด: " + "; ".join(gaps), file=sys.stderr)
+        _db_gaps(gaps)
         return 2
     from .web import pgstore
 
