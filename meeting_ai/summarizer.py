@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import time
 import urllib.error
@@ -166,6 +167,37 @@ TRANSLATE_PROMPT = """แปลเอกสารสรุปการประ�
 {text}
 """
 
+# ---- สรุปประชุมยาว: แบ่งก้อน -> สกัดข้อเท็จจริง -> รวม (ADR-001, BACKLOG #8) ----
+
+# ขั้น map ขอ "ข้อเท็จจริง" ไม่ใช่ "สรุปย่อย": ถ้าให้แต่ละก้อนสรุปตามเทมเพลต จะได้ TL;DR
+# หลายอันมาต่อกัน ซึ่งรวมกลับเป็นสรุปเดียวที่ดีไม่ได้ ข้อเท็จจริงดิบรวมง่ายกว่าและไม่บีบอัดซ้ำสองชั้น
+NOTES_PROMPT = """ต่อไปนี้คือ transcript **ช่วงที่ {part} จาก {total}** ของการประชุมเดียวกัน{meta}
+
+อย่าเพิ่งสรุปทั้งการประชุม — ช่วงนี้เป็นแค่ส่วนหนึ่ง จงบันทึกสิ่งที่เกิดขึ้น**เฉพาะในช่วงนี้**
+เป็น bullet สั้น ๆ ภายใต้สี่หัวข้อนี้ ใช้คำเดิมของผู้พูดเท่าที่ทำได้ ห้ามเติมสิ่งที่ไม่มีใน transcript
+หัวข้อไหนไม่มีให้ใส่ "- ไม่มี"
+
+## ประเด็นที่คุยกัน
+## ข้อสรุป/มติ
+## งานที่มีคนรับไป (ระบุชื่อผู้รับผิดชอบและกำหนดเสร็จถ้ามี)
+## คำถามที่ยังไม่มีคำตอบ
+
+--- TRANSCRIPT ช่วงที่ {part} ---
+{transcript}
+--- จบช่วงที่ {part} ---
+"""
+
+# ขั้น reduce ส่งบันทึกย่อยเข้า USER_TEMPLATE ตัวเดียวกับที่ประชุมสั้นใช้ เทมเพลต/ภาษา/กติกา
+# ชื่อผู้พูดจึงทำงานเหมือนเดิมโดยไม่ต้องดูแลสองทาง — ต่างแค่บอกว่าของที่ให้มาเป็นบันทึกย่อย
+# พื้นก้อนตอนถอยไปแบ่งใหม่ — เล็กกว่านี้ได้บันทึกย่อยที่สั้นจนไร้ประโยชน์ และยิงถี่โดยไม่จำเป็น
+MIN_CHUNK_CHARS = 2000
+
+MERGE_NOTE = """ข้อมูลด้านล่างไม่ใช่ transcript ดิบ แต่เป็น**บันทึกประเด็นของแต่ละช่วง**ที่สกัดมาแล้ว
+ตามลำดับเวลา จงรวมเป็นสรุปฉบับเดียวของการประชุมทั้งหมด: รวมเรื่องเดียวกันที่โผล่หลายช่วงเข้าด้วยกัน
+ตัดของซ้ำ และเรียงตามความสำคัญ ไม่ใช่เรียงตามช่วง
+
+"""
+
 LANGUAGE_NAMES = {
     "th": "ภาษาไทย",
     "en": "ภาษาอังกฤษ (English)",
@@ -299,12 +331,54 @@ def _stream_chat(req: urllib.request.Request, timeout: int) -> tuple[str, str]:
     return "".join(parts).strip(), finish_reason
 
 
+def _split_lines(text: str, budget: int) -> list[str]:
+    """แบ่งข้อความเป็นก้อนละไม่เกิน budget ตัวอักษร โดยตัดที่ขอบบรรทัดเสมอ.
+
+    หนึ่งบรรทัด = หนึ่ง segment ของ whisper = ช่วงที่คนหยุดพูด จึงไม่ตัดกลางประโยค
+    บรรทัดเดียวที่ยาวเกิน budget เองจะอยู่ก้อนของมันคนเดียว (ยอมให้เกิน) ดีกว่าตัดกลางคำ
+    ซึ่งจะทำให้ประโยคเสียความหมายทั้งสองข้าง
+    """
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in text.split(chr(10)):
+        add = len(line) + 1
+        if current and size + add > budget:
+            chunks.append(chr(10).join(current))
+            current, size = [], 0
+        current.append(line)
+        size += add
+    if current:
+        chunks.append(chr(10).join(current))
+    return chunks
+
+
+def _map_notes(chunks: list[str], meta: str, progress=None) -> str:
+    """สกัดบันทึกประเด็นจากแต่ละก้อน คืนข้อความที่ต่อกันแล้วพร้อมส่งเข้าขั้น reduce.
+
+    ทำทีละก้อนแบบเรียงกัน ไม่ขนาน — ยิงพร้อมกันหลาย request ไป endpoint เดียวเสี่ยง 429
+    ซึ่งจะกลายเป็นเรื่องยุ่งกว่าเดิม (ต้อง backoff รายก้อน) ดู ADR-001 ข้อ 4.4
+    """
+    notes = []
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, 1):
+        if progress:
+            progress(i, total)
+        text = _chat([{"role": "system", "content": SYSTEM_PROMPT.format(
+            language=LANGUAGE_NAMES[DEFAULT_SUMMARY_LANG])},
+            {"role": "user", "content": NOTES_PROMPT.format(
+                part=i, total=total, meta=meta, transcript=chunk)}])
+        notes.append(f"### ช่วงที่ {i} จาก {total}{chr(10)}{text.strip()}")
+    return (chr(10) * 2).join(notes)
+
+
 def summarize(
     transcript_text: str,
     meeting_title: str | None = None,
     template: str = DEFAULT_TEMPLATE,
     has_speakers: bool = False,
     target_lang: str = DEFAULT_SUMMARY_LANG,
+    progress=None,
 ) -> str:
     """รับข้อความ transcript คืนสรุปการประชุมเป็น Markdown.
 
@@ -321,20 +395,55 @@ def summarize(
     language = LANGUAGE_NAMES.get(lang, lang)
     format_line = (_FORMAT_TH if lang == DEFAULT_SUMMARY_LANG
                    else _FORMAT_OTHER.format(language=language))
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT.format(language=language)},
-        {
-            "role": "user",
-            "content": USER_TEMPLATE.format(
-                meta=meta,
-                speaker_note=_SPEAKER_NOTE if has_speakers else "",
-                format_line=format_line,
-                body=body,
-                transcript=transcript_text,
-            ),
-        },
-    ]
-    return _chat(messages)
+    def ask(source: str, merged: bool) -> str:
+        return _chat([
+            {"role": "system", "content": SYSTEM_PROMPT.format(language=language)},
+            {
+                "role": "user",
+                "content": (MERGE_NOTE if merged else "") + USER_TEMPLATE.format(
+                    meta=meta,
+                    speaker_note="" if merged else (_SPEAKER_NOTE if has_speakers else ""),
+                    format_line=format_line,
+                    body=body,
+                    transcript=source,
+                ),
+            },
+        ])
+
+    budget = config.llm_chunk_chars
+    if len(transcript_text) > budget:
+        chunks = _split_lines(transcript_text, budget)
+        return ask(_map_notes(chunks, meta, progress), merged=True)
+
+    try:
+        return ask(transcript_text, merged=False)
+    except RuntimeError as e:
+        # งบตัวอักษรเป็นการประมาณ มันผิดได้ (ภาษาที่กินโทเคนมากกว่าไทย / โมเดล context เล็กกว่าที่คิด)
+        # ยิงตรงแล้วโดนปฏิเสธ = ลอง map-reduce หนึ่งครั้งก่อนยอมแพ้ ดีกว่าล้มถาวรทั้งที่แก้ได้
+        # จงใจไม่อ่านข้อความ error เพื่อเดาว่า "ใช่ context เกินไหม" — ข้อความต่างกันไปตาม
+        # ผู้ให้บริการและเปลี่ยนได้ทุกเมื่อ จับคำเมื่อไรก็กลายเป็นจุดพังที่ไม่มีใครเห็น (ADR-001 ข้อ 2.4)
+        if not _worth_chunking(e, transcript_text):
+            raise
+        # ต้องแบ่งด้วยงบที่ **เล็กกว่าเดิม**: งบเดิมคือตัวที่เพิ่งพิสูจน์ว่าใหญ่เกินสำหรับโมเดลนี้
+        # แบ่งด้วยค่าเดิมจะได้ก้อนเดียวเสมอ (เพราะข้อความสั้นกว่างบอยู่แล้ว) = โค้ดที่ไม่มีวันทำงาน
+        retry_budget = max(MIN_CHUNK_CHARS, min(budget, len(transcript_text) // 2))
+        chunks = _split_lines(transcript_text, retry_budget)
+        if len(chunks) < 2:
+            raise           # สั้นเกินกว่าจะแบ่ง = ปัญหาไม่ได้อยู่ที่ความยาว ยิงซ้ำก็ได้ผลเดิม
+        return ask(_map_notes(chunks, meta, progress), merged=True)
+
+
+def _worth_chunking(err: Exception, text: str) -> bool:
+    """ล้มแบบนี้ ลองแบ่งก้อนแล้วมีหวังไหม.
+
+    เอาเฉพาะ 4xx ที่ไม่ใช่เรื่องสิทธิ์/โควตา: 401/403 แบ่งกี่ก้อนก็ไม่ผ่าน ส่วน 429 คือโดน
+    จำกัดอัตรา ซึ่งการยิงเพิ่มหกก้อนมีแต่จะแย่ลง 5xx ถูก _request() ลองใหม่ให้แล้ว
+    """
+    m = re.search(r"HTTP (\d{3})", str(err))
+    if not m:
+        return False
+    code = int(m.group(1))
+    return 400 <= code < 500 and code not in (401, 403, 429)
 
 
 def translate(text: str, target_lang: str) -> str:
