@@ -107,12 +107,19 @@ class TestBotStagingPerJob(unittest.TestCase):
         self.assertTrue((dir_b / "bot_debug.png").exists())
         self.assertEqual((dir_b / "bot_debug.png").read_bytes(), b"shot-b")
 
+    # ชื่อโฟลเดอร์พักคือ "<worker tag>_<job id>" ไม่ใช่ "<ชื่อเครื่อง>_<job id>" — ตั้งแต่
+    # BACKLOG #38 worker_tag() ต่อ hash ของชื่อเต็มไว้เสมอ เทสต์จึงต้องถาม worker_tag()
+    # ไม่ใช่เดาเอาว่าเท่ากับชื่อเครื่อง ไม่งั้น glob ไม่เจออะไรแล้ว "ไม่ลบอะไรเลย" จะกลายเป็น
+    # ผลที่ผ่านทั้งที่ไม่ได้ทดสอบอะไร (เทสต์ live/ไม่ลบ ด้านล่างเป็นแบบนั้นได้ง่ายที่สุด)
+    def _stage(self, worker: str, job: str) -> Path:
+        d = self.stage_dir / f"{bot.worker_tag(worker)}_{job}"
+        d.mkdir(parents=True)
+        return d
+
     def test_prune_stages_removes_only_own_worker_screenshot_only_dirs(self) -> None:
-        gb10_j1 = self.stage_dir / "gb10_j1"     # ของ worker gb10 มีแต่ภาพ -> ลบ
-        other_j2 = self.stage_dir / "other_j2"    # worker อื่น -> ห้ามแตะ
-        gb10_j3 = self.stage_dir / "gb10_j3"      # ของ worker gb10 แต่มี wav จริง -> เก็บไว้
-        for d in (gb10_j1, other_j2, gb10_j3):
-            d.mkdir(parents=True)
+        gb10_j1 = self._stage("gb10", "j1")       # ของ worker gb10 มีแต่ภาพ -> ลบ
+        other_j2 = self._stage("other", "j2")     # worker อื่น -> ห้ามแตะ
+        gb10_j3 = self._stage("gb10", "j3")       # ของ worker gb10 แต่มี wav จริง -> เก็บไว้
         (gb10_j1 / "bot_debug.png").write_bytes(b"shot")
         (other_j2 / "bot_debug.png").write_bytes(b"other-shot")
         (gb10_j3 / "audio.wav").write_bytes(b"x" * 10)
@@ -121,7 +128,7 @@ class TestBotStagingPerJob(unittest.TestCase):
 
         removed = bot._prune_stages("gb10")
 
-        self.assertEqual({p.name for p in removed}, {"gb10_j1"})
+        self.assertEqual({p.name for p in removed}, {gb10_j1.name})
         self.assertFalse(gb10_j1.exists())
         self.assertTrue(other_j2.exists())
         self.assertTrue((other_j2 / "bot_debug.png").exists())
@@ -130,12 +137,10 @@ class TestBotStagingPerJob(unittest.TestCase):
         self.assertTrue(loose.exists())
         # _prune_stages ตัด worker tag ออกจากชื่อไฟล์ที่กู้มา (d.name.split("_", 1)[-1])
         # ให้ตรงกับรูปแบบเดียวกับทางปกติ: logs/bot_debug_<job id>.png (ไม่ใช่ <worker>_<job id>)
-        # "gb10_j1".split("_", 1)[-1] == "j1"
         self.assertTrue((self.debug_dir / "bot_debug_j1.png").exists())
 
     def test_prune_stages_without_worker_name_deletes_nothing(self) -> None:
-        d = self.stage_dir / "gb10_j1"
-        d.mkdir(parents=True)
+        d = self._stage("gb10", "j1")
         (d / "bot_debug.png").write_bytes(b"shot")
 
         removed = bot._prune_stages("")
@@ -146,10 +151,15 @@ class TestBotStagingPerJob(unittest.TestCase):
 
     def test_prune_stages_skips_dirs_still_live(self) -> None:
         """live = ชื่อ container ที่ยังรันอยู่จริง — ห้ามแตะทั้งลบและเก็บภาพ (ffmpeg อาจกำลังเขียน)."""
-        d = self.stage_dir / "gb10_j1"
-        d.mkdir(parents=True)
+        d = self._stage("gb10", "j1")
         (d / "bot_debug.png").write_bytes(b"shot")
         container_name = bot.PREFIX + d.name
+        # กันเทสต์ผ่านแบบว่างเปล่า: ถ้าไม่มี live โฟลเดอร์นี้ต้องเข้าข่ายถูกลบจริง
+        self.assertEqual({p.name for p in bot._prune_stages("gb10", live=frozenset())},
+                         {d.name})
+        d = self._stage("gb10", "j1")
+        (d / "bot_debug.png").write_bytes(b"shot")
+        (self.debug_dir / "bot_debug_j1.png").unlink()
 
         removed = bot._prune_stages("gb10", live=frozenset({container_name}))
 
@@ -161,12 +171,11 @@ class TestBotStagingPerJob(unittest.TestCase):
 
     def test_prune_stages_default_live_behaves_as_before(self) -> None:
         """ไม่ส่ง live มา (ค่าเริ่มต้น frozenset ว่าง) ต้องลบเหมือนก่อนมีพารามิเตอร์นี้."""
-        d = self.stage_dir / "gb10_j1"
-        d.mkdir(parents=True)
+        d = self._stage("gb10", "j1")
 
         removed = bot._prune_stages("gb10")
 
-        self.assertEqual({p.name for p in removed}, {"gb10_j1"})
+        self.assertEqual({p.name for p in removed}, {d.name})
         self.assertFalse(d.exists())
 
     # ---------- _stage_removable ----------
