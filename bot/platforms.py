@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from urllib.parse import urlparse, urlunparse
 
@@ -293,3 +294,22 @@ ADAPTERS = {
 }
 
 LABELS = {MEET: "Google Meet", TEAMS: "Microsoft Teams", ZOOM: "Zoom"}
+
+
+# ---------- sandbox ของ Chromium (BACKLOG #21b) ----------
+
+SANDBOX_ENV = "CHROMIUM_SANDBOX"
+
+
+def sandbox_args() -> list[str]:
+    """อาร์กิวเมนต์เรื่อง sandbox ของ Chromium — จุดเดียวที่ตัดสินเรื่องนี้ทั้งสองโหมด.
+
+    `--no-sandbox` ปิดกำแพงชั้นที่กันไม่ให้ renderer ที่ถูกเจาะ ออกมาถึงสิ่งที่ mount เข้ามา
+    ใน container ซึ่งรวม `/prof` ที่มี session ที่ล็อกอิน Google ของเจ้าของ
+
+    **ฝั่ง host เป็นคนตัดสิน ไม่ใช่ที่นี่** เพราะการเปิด sandbox ต้องมีของคู่กันบน
+    `docker run` ด้วย (`--cap-add=SYS_ADMIN` หรือ seccomp profile ของ Chromium)
+    ถ้าสองฝั่งไม่ตรงกัน Chromium จะไม่เปิดเลย และบอทจะไม่ได้เข้าห้อง — ดู
+    `meeting_ai/bot.py` -> `_sandbox_flags()` ซึ่งตั้ง env ตัวนี้มาให้
+    """
+    return [] if os.environ.get(SANDBOX_ENV) == "1" else ["--no-sandbox"]

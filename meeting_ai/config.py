@@ -78,6 +78,19 @@ class Config:
     # ไม่ใช่แค่เรื่องพื้นที่ดิสก์ การเก็บไว้ตลอดกาลจึงเป็นการตัดสินใจ ไม่ใช่ค่าเริ่มต้นที่ควรเป็น
     bot_retention_days: int = _get_int("BOT_RETENTION_DAYS", 30, minimum=0)
 
+    # เปิด sandbox ของ Chromium ในคอนเทนเนอร์บอท (BACKLOG #21b)
+    #
+    # ค่าเริ่มต้นยังเป็นปิด (= ส่ง --no-sandbox เหมือนเดิม) **โดยตั้งใจ** เพราะการเปิดโดยที่
+    # host ไม่มีของคู่กัน ทำให้ Chromium ไม่เปิดเลย = บอทไม่ได้เข้าห้อง = ประชุมหาย
+    # ซึ่งแย่กว่าความเสี่ยงที่เรากำลังลด และยืนยันได้ทางเดียวคือส่งบอทเข้าห้องจริง
+    #
+    # เปิดได้สองทาง เลือกอย่างใดอย่างหนึ่ง:
+    #   MAI_BOT_SANDBOX=1                    -> docker run --cap-add=SYS_ADMIN
+    #   MAI_BOT_SECCOMP=/path/chrome.json    -> docker run --security-opt seccomp=...
+    # ทาง seccomp แคบกว่าจึงดีกว่า ถ้าตั้งมาจะใช้ทางนั้นแทน SYS_ADMIN
+    bot_sandbox: bool = _get("MAI_BOT_SANDBOX", "0").lower() in ("1", "true", "yes", "on")
+    bot_seccomp: str = _get("MAI_BOT_SECCOMP", "").strip()
+
     # Recording
     ffmpeg_bin: str = _get("FFMPEG_BIN", "ffmpeg")
     # ว่าง = เดาเอาจาก ffmpeg_bin (ดู ffprobe_bin()) ตั้งเองได้ถ้าสองตัวไม่ได้อยู่ด้วยกัน

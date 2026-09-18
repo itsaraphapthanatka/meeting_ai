@@ -14,6 +14,9 @@ import sys
 
 from playwright.async_api import async_playwright
 
+# อยู่ใน /app เดียวกันตอนรันใน container (ดู Dockerfile)
+from platforms import sandbox_args
+
 # หน้าล็อกอินของแต่ละเจ้า — profile เดียวเก็บได้หลาย session
 LOGIN_URL = os.environ.get("LOGIN_URL", "https://accounts.google.com/")
 
@@ -36,7 +39,7 @@ async def run() -> int:
             user_data_dir="/prof",
             headless=False,
             args=[
-                "--no-sandbox",
+                *sandbox_args(),
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--disable-blink-features=AutomationControlled",  # ลดร่องรอย automation กัน Google บล็อกล็อกอิน
