@@ -1160,18 +1160,30 @@ const devices = { list: [], asked: false };
    เดสก์ท็อปจำลองจอมือถือ (DevTools) หรือ Chrome เต็มตัวบนแท็บเล็ตที่ยังมี API นี้จริง
    แต่ผู้ใช้จอแคบไม่มีทางแชร์แท็บได้อย่างมีความหมาย จึงต้องเช็ค viewport เพิ่มด้วย (BACKLOG #47) */
 const MOBILE_BREAKPOINT_PX = 560;
+/* ต้องเป็น MediaQueryList ตัวเดียวที่ฟัง change ได้ ไม่ใช่ matchMedia() ใหม่ทุกครั้งที่เรียก:
+   ความกว้างเปลี่ยนระหว่างใช้งานได้จริง — หมุนแท็บเล็ต ย่อหน้าต่าง หรือสลับโหมดอุปกรณ์ใน
+   DevTools ซึ่งเป็นกรณีที่ตั๋วยกมาเอง ถ้าเช็คแค่ตอนโหลดหน้า ตัวเลือกจะค้างอยู่ตามจอตอนนั้น */
+const TAB_MODE_Q = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`);
 
 function updateTabModeAvailability() {
   const tab = $('#rec-modes input[value="tab"]');
   if (!tab) return;
   const mode = tab.closest('.mode');
   const supported = !!navigator.mediaDevices?.getDisplayMedia;
-  const narrow = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
-  const hide = !supported || narrow;
+  const hide = !supported || TAB_MODE_Q.matches;
   mode.hidden = hide;
   tab.disabled = hide;
-  if (hide && tab.checked) $('#rec-modes input[value="room"]').checked = true;
+  if (hide && tab.checked) {
+    // เคยเลือกไว้ตอนจอกว้างแล้วย่อ/หมุนเครื่อง — ต้องย้ายไปโหมดที่ใช้ได้จริง จำค่าใหม่
+    // (ไม่งั้นครั้งหน้าจะโหลดโหมดที่ซ่อนอยู่กลับมาอีก) แล้ววาดแผงแหล่งเสียงใหม่ตามโหมด
+    const room = $('#rec-modes input[value="room"]');
+    room.checked = true;
+    store.set(REC_MODE_KEY, room.value);
+    renderSources();
+  }
 }
+
+TAB_MODE_Q.addEventListener('change', updateTabModeAvailability);
 
 function setupSources() {
   const saved = store.get(REC_MODE_KEY);
