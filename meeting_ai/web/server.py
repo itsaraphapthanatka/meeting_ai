@@ -1516,16 +1516,7 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["resummarize"]:
             if self.command != "POST":
                 return self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ต้องใช้ POST")
-            meeting = store.get(mid)
-            if meeting is None:
-                return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมนี้")
-            # คนถือลิงก์แชร์แบบแก้ได้ไม่มี user_id — ถ้าปล่อยเป็น None งานจะไม่มีเจ้าของ
-            # แล้วหายจาก /api/jobs ของเจ้าของการประชุมเอง (และทับ owner_id เดิมของแถวนี้
-            # เพราะงาน summarize ใช้ job id = id การประชุม) จึงตกไปใช้เจ้าของการประชุมแทน
-            return self._json(
-                jobs.submit_summarize(mid, meeting["title"],
-                                      owner_id=self.user_id or meeting.get("owner_id")),
-                HTTPStatus.ACCEPTED)
+            return self._resummarize(mid)
         if rest == ["translate"]:
             if self.command != "POST":
                 return self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ต้องใช้ POST")
@@ -1621,6 +1612,31 @@ class Handler(BaseHTTPRequestHandler):
         if store.set_visibility(mid, value) is None:
             return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมนี้")
         self._json(store.get(mid))
+
+    def _resummarize(self, mid: str) -> None:
+        """สั่งสรุปใหม่จากบทถอดเสียงเดิม — เลือกภาษาของตัวสรุปได้ (BACKLOG #9b).
+
+        ไม่ส่ง lang มา = ไทย ซึ่งเป็นทางเดิมทุกประการ ผลไปทับ `summary` ของการประชุม
+        ส่งภาษาอื่นมา = สรุปเป็นภาษานั้น**ตรงจากบทถอดเสียง** (ไม่ใช่แปลจากสรุปไทย ซึ่งจะ
+        บีบอัดสองชั้นและเพี้ยนมากกว่า) แล้วเก็บในช่องเดียวกับคำแปล
+        """
+        lang = str(self._body_json().get("lang") or "").strip()
+        # lang ไหลไปเป็นส่วนหนึ่งของ job id (`<mid>.sum.<lang>`) และเข้า prompt ของ LLM
+        # จึงรับเฉพาะรหัสใน allow-list เหมือน _translate ไม่ใช่สตริงอะไรก็ได้จากผู้ใช้
+        if lang and lang not in summarizer.LANGUAGE_NAMES:
+            return self._error(HTTPStatus.BAD_REQUEST,
+                               "lang ต้องเป็นหนึ่งใน " + ", ".join(summarizer.LANGUAGE_NAMES))
+        meeting = store.get(mid)
+        if meeting is None:
+            return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมนี้")
+        # คนถือลิงก์แชร์แบบแก้ได้ไม่มี user_id — ถ้าปล่อยเป็น None งานจะไม่มีเจ้าของ
+        # แล้วหายจาก /api/jobs ของเจ้าของการประชุมเอง (และทับ owner_id เดิมของแถวนี้
+        # เพราะงาน summarize ภาษาไทยใช้ job id = id การประชุม) จึงตกไปใช้เจ้าของการประชุมแทน
+        self._json(
+            jobs.submit_summarize(mid, meeting["title"],
+                                  owner_id=self.user_id or meeting.get("owner_id"),
+                                  lang=lang or None),
+            HTTPStatus.ACCEPTED)
 
     def _translate(self, mid: str) -> None:
         lang = str(self._body_json().get("lang") or "").strip()
