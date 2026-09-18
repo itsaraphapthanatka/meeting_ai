@@ -363,12 +363,28 @@ async function toggleLiveRecording() {
 
 /* แผ่นบัญชีของจอแคบ — แพตเทิร์นเดียวกับ action sheet ของหน้ารายละเอียด:
    ไม่ได้ทำปุ่มชุดใหม่ ให้ CSS ย้าย #userbox เดิมลงมาเป็นแผ่นล่างจอ ปุ่มทุกปุ่มจึงยังเป็นของเดิม */
+/* .topbar เป็น position: sticky + z-index: 10 ซึ่ง "สร้าง stacking context" —
+   z-index ของลูกทุกตัวถูกตีความข้างในบริบทนั้น ไม่ใช่เทียบกับทั้งหน้า แผ่นบัญชีที่ตั้ง
+   z-index: 60 จึงไม่ได้อยู่เหนือม่านที่ 55 จริง ทั้ง topbar (z 10) อยู่ใต้ม่านทั้งก้อน
+   ผลคือกดปุ่มไม่โดน (elementFromPoint ได้ #sheet-scrim) แล้วแผ่นปิดทันทีเพราะโดนม่านแทน
+   ย้าย #userbox ออกมาไว้ใต้ body ตอนเปิด แล้วคืนที่เดิมตอนปิด — ตัวปุ่มเป็นก้อนเดิม
+   ตัวจัดการเหตุการณ์ที่ผูกไว้จึงติดไปด้วย ไม่ต้องผูกใหม่ */
+let _userboxHome = null;
+
 function openAccountSheet() {
+  const box = $('#userbox');
+  if (!box) return;
+  if (!_userboxHome) _userboxHome = { parent: box.parentElement, next: box.nextSibling };
+  document.body.appendChild(box);
   document.body.classList.add('account-open');
   $('#sheet-scrim').hidden = false;
 }
 
 function closeAccountSheet() {
+  const box = $('#userbox');
+  if (box && _userboxHome && box.parentElement === document.body) {
+    _userboxHome.parent.insertBefore(box, _userboxHome.next);
+  }
   document.body.classList.remove('account-open');
   if (!document.body.classList.contains('sheet-open')) $('#sheet-scrim').hidden = true;
 }
