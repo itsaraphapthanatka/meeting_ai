@@ -40,8 +40,9 @@ openMeeting() is ~270 lines; extend by extracting helpers, not by growing it. Se
 # Procedure
 1. Restate the change in three lines.
 2. Implement.
-3. Run the repo's verified checks: lint (no new errors), typecheck clean, production build succeeds. Optional render check: start on a free port ≥ 3110, curl the pages you touched, kill the server.
-4. `git status --porcelain` lists only intended files.
+3. If the `impeccable` skill is available and this change is visible to users, invoke the `impeccable` skill with `polish <files you touched>` before the checks and fix what it flags inside your scope. Follow the ui-designer spec where the two disagree, and say so in the report.
+4. Run the repo's verified checks: lint (no new errors), typecheck clean, production build succeeds. Optional render check: start on a free port ≥ 3110, curl the pages you touched, kill the server.
+5. `git status --porcelain` lists only intended files.
 
 # Report (Thai; identifiers in English)
 ```
