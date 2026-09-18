@@ -48,7 +48,11 @@ DEFAULT_MAX_BOTS = 3
 
 
 class WorkerError(RuntimeError):
-    pass
+    """status = รหัส HTTP ถ้ามี (None = ต่อไม่ติด/หมดเวลา ซึ่งลองใหม่แล้วมีโอกาสสำเร็จ)."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class AuthError(WorkerError):
@@ -83,15 +87,20 @@ class Client:
                     f"เซิร์ฟเวอร์ปฏิเสธ (HTTP {e.code}): {detail}\n"
                     "   ตรวจว่า WORKER_TOKEN ในเครื่องนี้ตรงกับที่ตั้งไว้ฝั่งเซิร์ฟเวอร์"
                 ) from e
-            raise WorkerError(f"HTTP {e.code} จาก {path}: {detail}") from e
+            raise WorkerError(f"HTTP {e.code} จาก {path}: {detail}", e.code) from e
         except urllib.error.URLError as e:
             raise WorkerError(f"ต่อเซิร์ฟเวอร์ไม่ได้ ({path}): {e.reason}") from e
+        except TimeoutError as e:
+            raise WorkerError(f"หมดเวลารอเซิร์ฟเวอร์ ({path})") from e
 
     def get_json(self, path: str):
         return self._request("GET", path)[1]
 
     def post_json(self, path: str, payload: dict, timeout: int | None = None):
-        return self._request("POST", path, data=json.dumps(payload).encode("utf-8"),
+        # ensure_ascii=False: ภาษาไทยที่ถูก escape เป็น \uXXXX กินพื้นที่ 6 ไบต์
+        # ต่อตัวอักษร เทียบกับ 3 ไบต์ของ utf-8 — บทถอดเสียงยาว ๆ ต่างกันเท่าตัว (BACKLOG #50)
+        return self._request("POST", path,
+                             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                              ctype="application/json", timeout=timeout)[1]
 
     def claim(self, worker: str, kinds: list[str] | None = None) -> dict | None:
@@ -241,6 +250,95 @@ def _upload_playback(client: Client, job_id: str, result: dict, spec: dict | Non
     return result
 
 
+# ---------- ส่งผลงานกลับ: ห้ามทิ้งของที่ถอดเสียงมาแล้ว (BACKLOG #50) ----------
+
+RESULT_RETRIES = 5
+RESULT_BACKOFF = 4.0          # วินาที คูณสองไปเรื่อย ๆ: 4, 8, 16, 32
+# ผลงานที่ส่งไม่สำเร็จรออยู่ตรงนี้ ไม่ใช่ temp dir ของงานซึ่งถูกลบทันทีที่ออกจาก with
+PENDING_DIR = config.root / "recordings" / "pending-results"
+
+
+def _transient(err: WorkerError) -> bool:
+    """ลองใหม่แล้วมีโอกาสสำเร็จไหม — ต่อไม่ติด/หมดเวลา/เซิร์ฟเวอร์ล่ม/โดนจำกัดอัตรา
+
+    4xx อื่น ๆ (เช่น 413 payload ใหญ่เกิน, 400 ข้อมูลไม่ผ่านการตรวจ) ลองกี่ครั้งก็ได้ผลเดิม
+    """
+    return err.status is None or err.status in (408, 429) or err.status >= 500
+
+
+def _save_pending(job_id: str, result: dict, reason: str) -> Path | None:
+    """เก็บผลงานลงดิสก์เมื่อส่งไม่สำเร็จ — ถอดเสียงประชุมสองชั่วโมงใหม่แพงกว่านี้หลายเท่า."""
+    try:
+        PENDING_DIR.mkdir(parents=True, exist_ok=True)
+        path = PENDING_DIR / f"{job_id}.json"
+        path.write_text(
+            json.dumps({"job_id": job_id, "reason": reason, "saved_at": time.time(),
+                        "result": result}, ensure_ascii=False),
+            encoding="utf-8")
+        return path
+    except OSError as e:
+        print(f"⚠️  เก็บผลงานลงดิสก์ไม่ได้ด้วย: {e}", file=sys.stderr)
+        return None
+
+
+def post_result(client: "Client", job_id: str, result: dict) -> None:
+    """ส่งผลงานพร้อมลองใหม่ ถ้าสุดท้ายยังไม่ได้ก็เก็บลงดิสก์ก่อนแล้วค่อยโยนต่อ.
+
+    ของเดิมยิงครั้งเดียว พลาดเมื่อไรก็เข้า except ที่ไปแจ้ง /error แล้วบทถอดเสียงทั้งไฟล์
+    หายถาวร — เน็ตสะดุดวินาทีเดียวก็เสียเวลา GPU เป็นชั่วโมง
+    """
+    path = f"/api/worker/jobs/{urllib.parse.quote(job_id)}/result"
+    delay = RESULT_BACKOFF
+    last: WorkerError | None = None
+    for attempt in range(1, RESULT_RETRIES + 1):
+        try:
+            client.post_json(path, result, timeout=180)
+            return
+        except WorkerError as e:
+            last = e
+            if not _transient(e) or attempt == RESULT_RETRIES:
+                break
+            print(f"⚠️  ส่งผลงานไม่สำเร็จ (ครั้งที่ {attempt}/{RESULT_RETRIES}): {e}"
+                  f" — ลองใหม่ใน {delay:.0f} วินาที", file=sys.stderr)
+            time.sleep(delay)
+            delay *= 2
+
+    saved = _save_pending(job_id, result, str(last))
+    if saved:
+        # path เต็มพิมพ์ไว้ที่เครื่องนี้เท่านั้น ไม่ส่งไปกับข้อความ error — เส้นทางในเครื่อง
+        # worker ไม่ใช่ข้อมูลที่เจ้าของการประชุมควรเห็นในหน้าเว็บ (BACKLOG #40)
+        print(f"💾 เก็บผลงานไว้ที่ {saved} — จะส่งใหม่อัตโนมัติเมื่อ worker เริ่มรอบหน้า",
+              file=sys.stderr)
+        raise WorkerError(f"ส่งผลงานกลับไม่สำเร็จ ({last}) — "
+                          "เก็บไว้ที่เครื่องประมวลผลแล้ว จะส่งใหม่เมื่อ worker เริ่มรอบหน้า",
+                          getattr(last, "status", None))
+    raise WorkerError(f"ส่งผลงานกลับไม่สำเร็จ: {last}", getattr(last, "status", None))
+
+
+def flush_pending(client: "Client") -> int:
+    """ส่งผลงานที่ค้างในดิสก์ซ้ำ — เรียกตอน worker เริ่มทำงาน คืนจำนวนที่ส่งสำเร็จ."""
+    if not PENDING_DIR.exists():
+        return 0
+    sent = 0
+    for path in sorted(PENDING_DIR.glob("*.json")):
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            job_id, result = saved["job_id"], saved["result"]
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            print(f"⚠️  อ่านผลงานค้าง {path.name} ไม่ได้: {e}", file=sys.stderr)
+            continue
+        try:
+            client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/result",
+                             result, timeout=180)
+        except WorkerError as e:
+            print(f"⚠️  ส่งผลงานค้าง {path.name} ไม่สำเร็จ: {e}", file=sys.stderr)
+            continue
+        path.unlink(missing_ok=True)
+        sent += 1
+        print(f"📤 ส่งผลงานที่ค้างไว้สำเร็จ: {job_id}")
+    return sent
+
+
 def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
         name: str | None = None, max_bots: int = DEFAULT_MAX_BOTS) -> int:
     client = Client(api, token)
@@ -253,6 +351,14 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
     # เก็บใน dict เพื่อให้เธรด heartbeat อัปเดตแล้ว loop หลักเห็นค่าใหม่ด้วย
     state = {"caps": runner.machine_caps(), "caps_at": time.monotonic()}
     caps = state["caps"]
+
+    # ผลงานที่ค้างจากรอบก่อน (เน็ตล่ม/เซิร์ฟเวอร์ดับตอนส่ง) ต้องได้ออกก่อนรับงานใหม่
+    try:
+        flushed = flush_pending(client)
+        if flushed:
+            print(f"📤 ส่งผลงานที่ค้างไว้ {flushed} งาน")
+    except Exception as e:
+        print(f"⚠️  ส่งผลงานค้างไม่สำเร็จ: {e}", file=sys.stderr)
 
     def on_signal(signum, frame):
         stopping["flag"] = True
@@ -359,8 +465,7 @@ def run(api: str, token: str, once: bool = False, poll: float = POLL_IDLE,
             with tempfile.TemporaryDirectory(prefix="mai-worker-") as tmpdir:
                 result = _run_one(client, spec, Path(tmpdir), worker_name)
                 result["worker"] = worker_name
-                client.post_json(f"/api/worker/jobs/{urllib.parse.quote(job_id)}/result",
-                                 result, timeout=120)
+                post_result(client, job_id, result)
             print(f"✅ เสร็จใน {time.monotonic() - started:.1f}s: {spec.get('title') or job_id}")
             print()
         except Exception as e:
