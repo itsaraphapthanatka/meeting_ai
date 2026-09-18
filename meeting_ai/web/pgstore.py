@@ -1094,9 +1094,11 @@ def sweep(force: bool = False) -> dict[str, int]:
     """ลบ session/rate limit ที่หมดอายุ และ worker ที่หายไปนานแล้ว.
 
     คืน {} ถ้ายังไม่ถึงรอบ — ผู้เรียกจึงเรียกถี่แค่ไหนก็ได้ ของจริงเกิดชั่วโมงละครั้ง
-    force ไว้ให้คนสั่งเองและให้เทสต์เรียกโดยไม่ต้องรอนาฬิกา
+
+    force = "ข้ามตารางเวลา" ไม่ใช่ "ไม่ต้องจดว่าทำไปแล้ว" — ยังประทับนาฬิกาเหมือนรอบปกติ
+    ไม่งั้นรอบที่ตั้งเวลาไว้จะวิ่งซ้ำทันทีทั้งที่เพิ่งกวาดไปเมื่อกี้
     """
-    if not force and not _claim_sweep():
+    if not _claim_sweep(0 if force else SWEEP_EVERY_SECONDS):
         return {}
     out = purge_expired()
     out["workers"] = workers_forget(WORKER_FORGET_DAYS)

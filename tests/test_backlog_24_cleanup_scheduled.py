@@ -213,6 +213,11 @@ class TestSweepAgainstPostgres(unittest.TestCase):
         self.assertFalse(self.pgstore._claim_sweep(),
                          "รอบที่สองต้องไม่ได้สิทธิ์ ไม่งั้นทุก claim จะยิง DELETE")
 
+    def test_a_forced_sweep_still_counts_as_this_rounds_sweep(self):
+        # ไม่ประทับนาฬิกา = สั่งเองทีหนึ่งแล้วรอบที่ตั้งเวลาไว้วิ่งซ้ำทันที
+        self.pgstore.sweep(force=True)
+        self.assertFalse(self.pgstore._claim_sweep())
+
     def test_the_gate_uses_the_database_clock_not_the_process(self):
         # สอง instance บน serverless ไม่เห็นนาฬิกาของกันและกัน — ต้องแพ้ที่ฐานข้อมูล
         self.pgstore.sweep(force=True)
