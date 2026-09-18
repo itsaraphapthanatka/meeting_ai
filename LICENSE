@@ -1,0 +1,61 @@
+Copyright (c) 2026 itsaraphap (itsaraphapthanatka). All rights reserved.
+สงวนลิขสิทธิ์ทั้งหมด
+
+================================================================================
+ภาษาไทย
+================================================================================
+
+ซอร์สโค้ดในที่เก็บนี้เปิดให้ "อ่าน" ได้เท่านั้น ไม่ได้เปิดให้ใช้งาน
+
+ไม่อนุญาตให้บุคคลใดทำสิ่งต่อไปนี้ โดยไม่ได้รับอนุญาตเป็นลายลักษณ์อักษรจากเจ้าของลิขสิทธิ์
+ก่อนล่วงหน้า:
+
+  - ใช้ ติดตั้ง หรือรันซอฟต์แวร์นี้ ไม่ว่าเพื่อการค้าหรือไม่ก็ตาม
+  - ทำสำเนา ดัดแปลง แก้ไข หรือสร้างงานต่อยอด
+  - เผยแพร่ ส่งต่อ ขาย ให้เช่า หรือให้สิทธิ์ช่วง
+  - นำไปให้บริการแก่บุคคลที่สาม ไม่ว่าในรูปแบบใด
+
+การที่ที่เก็บนี้เปิดเป็นสาธารณะบน GitHub **ไม่ได้** แปลว่าอนุญาตให้ใช้งาน การเปิดสาธารณะ
+มีไว้เพื่อความโปร่งใสและเพื่อให้อ้างอิงถึงได้เท่านั้น
+
+ต้องการขออนุญาต: ติดต่อเจ้าของที่เก็บผ่าน https://github.com/itsaraphapthanatka
+
+ซอฟต์แวร์นี้ให้ไว้ "ตามสภาพที่เป็น" โดยไม่มีการรับประกันใด ๆ ทั้งสิ้น เจ้าของลิขสิทธิ์
+ไม่รับผิดต่อความเสียหายใด ๆ ที่เกิดจากซอฟต์แวร์นี้
+
+================================================================================
+English
+================================================================================
+
+The source code in this repository is made available for reading only. No licence
+to use it is granted.
+
+No person may do any of the following without prior written permission from the
+copyright holder:
+
+  - use, install, or run this software, commercially or otherwise
+  - copy, adapt, modify, or create derivative works
+  - publish, distribute, sell, rent, or sublicense
+  - provide it as a service to any third party
+
+The fact that this repository is public on GitHub does NOT grant any licence to
+use it. It is public for transparency and reference only.
+
+To request permission, contact the repository owner via
+https://github.com/itsaraphapthanatka
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES,
+OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+================================================================================
+Third-party components / ส่วนประกอบของผู้อื่น
+================================================================================
+
+ข้อสงวนสิทธิ์ข้างต้นครอบคลุมเฉพาะโค้ดในที่เก็บนี้ ซอฟต์แวร์และโมเดลของผู้อื่นที่โปรเจกต์นี้
+เรียกใช้หรือดาวน์โหลดมา (whisper.cpp, sherpa-onnx, Playwright, ffmpeg, PulseAudio,
+psycopg, โมเดล ggml ต่าง ๆ และอื่น ๆ) อยู่ภายใต้สัญญาอนุญาตของตนเอง ไม่ใช่ของไฟล์นี้
+
+The reservation above covers only the code in this repository. Third-party
+software and models that this project invokes or downloads remain under their own
+licences.
