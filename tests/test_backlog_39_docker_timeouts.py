@@ -198,7 +198,10 @@ class TestTheRecordingSurvivesAStuckBot(unittest.TestCase):
     """จุดที่บั๊กทำร้ายจริง: เสียงอัดมาครบแล้ว แต่ container ไม่ยอมตาย."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="mai-b39-"))
+        # .resolve() ไม่ใช่ของประดับ: บน Windows บางเครื่อง tempfile คืนชื่อย่อ 8.3
+        # ("RUNNER~1") ส่วน join_and_record เรียก .resolve() กับปลายทางเสมอ
+        # ไม่ทำให้ตรงกันตั้งแต่ต้น เทสต์จะล้มที่ CI ทั้งที่โค้ดถูก (เจอจริงใน windows-latest)
+        self.tmp = Path(tempfile.mkdtemp(prefix="mai-b39-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.stage = self.tmp / "stage"
         self.logs = self.tmp / "logs"
