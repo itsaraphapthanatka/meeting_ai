@@ -5,8 +5,6 @@
 หน้ายาวขึ้นโดยไม่ได้อะไรกลับมา — คนก็เลือกทางเดียวอยู่ดี
 
 สิ่งที่ **ไม่** เปลี่ยน และมีเทสต์ปักหมุดไว้:
-- แท็บของหน้ารายละเอียด (`#d-seg`) ยังเป็นของจอแคบล้วน `setupDetailTabs()` ยังเช็ค
-  `isMobile()` อยู่ — เจ้าของพูดถึงฟอร์ม "ประชุมใหม่" ไม่ใช่ทั้งเว็บ
 - คำอธิบายใต้หัวข้อการ์ด (`p.muted`) ยัง **ซ่อนเฉพาะจอแคบ** จอกว้างมีที่พอและข้อความ
   นั้นมีประโยชน์จริง
 - เหลือทางเดียวเมื่อไร แถบแท็บซ่อนตัว แล้วการ์ดต้อง **ได้กรอบกับหัวข้อคืน** เพราะกฎถอด
@@ -99,11 +97,9 @@ class TestALoneCardStillLooksLikeACard(unittest.TestCase):
 
 class TestWhatDeliberatelyDidNotChange(unittest.TestCase):
 
-    def test_the_detail_view_tabs_are_still_mobile_only(self):
-        start = APP_JS.index("function setupDetailTabs()")
-        body = APP_JS[start:APP_JS.index("function setupCapturePicker()")]
-        self.assertIn("if (!isMobile())", body,
-                      "เจ้าของขอเฉพาะฟอร์มประชุมใหม่ ไม่ใช่ทั้งเว็บ")
+    # เดิมที่นี่มีเทสต์ว่า "แท็บหน้ารายละเอียดยังเป็นของจอแคบล้วน" — ตอนทำ #79 เจ้าของ
+    # พูดถึงฟอร์มประชุมใหม่อย่างเดียว วันเดียวกันนั้นเขาสั่งต่อให้ทำหน้ารายละเอียดด้วย
+    # กติกานั้นจึงไม่จริงแล้ว ย้ายไปเป็นของ test_backlog_80_detail_tabs_everywhere
 
     def test_the_card_blurb_is_still_hidden_only_on_narrow_screens(self):
         rule = ".seg:not([hidden]) ~ .cards .card > p.muted { display: none; }"

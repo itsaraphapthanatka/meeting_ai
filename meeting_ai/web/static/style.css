@@ -849,8 +849,8 @@ body.auth-only #stats { display: none; }
 /* ---- แท็บ "เอาเสียงเข้ามายังไง" — ใช้ทั้งสองจอ (BACKLOG #79) ----
    เดิมจอกว้างกางการ์ดทั้งสามใบพร้อมกัน ซึ่งกลายเป็นกริดสองคอลัมน์ที่ใบที่สามตกไปแถวล่าง
    เหลือที่ว่างข้าง ๆ หนึ่งช่อง และหน้ายาวขึ้นโดยไม่ได้อะไรกลับมา — คนเลือกทางเดียวอยู่ดี
-   `.seg` ยังถูกซ่อนด้วย attribute `hidden` ตอนเหลือทางเดียว และแท็บของหน้ารายละเอียด
-   (`#d-seg`) ยังเป็นของจอแคบล้วน เพราะ setupDetailTabs() สั่ง hidden เองบนจอกว้าง */
+   `.seg` ยังถูกซ่อนด้วย attribute `hidden` ตอนเหลือทางเดียว
+   แท็บของหน้ารายละเอียด (`#d-seg`) ใช้กฎชุดเดียวกันนี้ ตั้งแต่ BACKLOG #80 */
 #cap-label:not([hidden]) {
   display: block;
   margin: 0 0 8px;
@@ -894,6 +894,13 @@ body.auth-only #stats { display: none; }
 /* แถบอัดลอยด้านล่างมีความหมายเฉพาะตอนอยู่แท็บ "อัดสด" */
 body:not(.cap-rec) .floatbar { display: none; }
 body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
+
+/* หน้ารายละเอียดก็แบ่งเป็นแท็บทั้งสองจอ (BACKLOG #80) — สรุปกับบทถอดเสียงยาวมากทั้งคู่
+   วางต่อกันแล้วต้องเลื่อนผ่านสรุปทั้งอันกว่าจะถึงบทถอดเสียง ซึ่งจริงบนจอกว้างพอ ๆ กัน */
+.dtab.tab-off { display: none; }
+/* ชื่อส่วนอยู่บนปุ่มแท็บที่เพิ่งกดมาแล้ว ไม่ต้องเขียนซ้ำใต้ปุ่ม */
+.dtab > .section-head > h3,
+.dtab > .section-head > div > h3 { display: none; }
 
 /* กล่องตัวเลือกเพิ่มเติม — ใช้ทั้งสองจอ ต่างกันแค่เปิด/ปิดตั้งต้น (ตั้งจาก JS) */
 .adv { margin: 0 0 16px; }
@@ -1122,11 +1129,7 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
   .drop-formats { margin: 4px 0 0; font-size: 12.5px; }
   #drop { cursor: pointer; }
 
-  /* --- หน้ารายละเอียด --- */
-  .dtab.tab-off { display: none; }
-  /* ชื่อส่วนอยู่บนปุ่มแท็บที่เพิ่งกดมาแล้ว ไม่ต้องเขียนซ้ำใต้ปุ่ม */
-  .dtab > .section-head > h3,
-  .dtab > .section-head > div > h3 { display: none; }
+  /* --- หน้ารายละเอียด (เฉพาะของจอแคบ — ตัวแท็บย้ายไปอยู่ระดับบนสุดแล้ว #80) --- */
   /* ปุ่มชุดบนหัวข้อ ("แก้ไข/แปล/สรุปใหม่" ฯลฯ) ตกบรรทัดได้ ไม่ต้องอัดให้อยู่แถวเดียว */
   .section-head { flex-wrap: wrap; gap: 8px; }
   .detail-head { flex-direction: column; align-items: flex-start; gap: 10px; }
