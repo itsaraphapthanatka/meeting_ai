@@ -55,6 +55,9 @@ MAX_JSON_BODY = 64 * 1024     # 64 KB
 MAX_JSON_TRANSCRIPT = 8 * 1024**2  # 8 MB
 # segments ที่ผู้ใช้แก้แล้วส่งกลับมา: 50,000 ≈ 17 เท่าของ 2,905 รายการที่มากที่สุดวันนี้
 MAX_SEGMENTS = 50_000
+# รหัสรายการ action item — สร้างจาก secrets.token_hex(6) ใน web/actionitems.py
+# ตรวจรูปแบบก่อนเอาไปค้น เพราะมันมาจาก URL เหมือน mid (กติกาเดียวกับ store.valid_id)
+_ITEM_ID_RE = re.compile(r"[0-9a-f]{12}")
 MAX_SEGMENT_TEXT = 5_000      # ตัวอักษรต่อ segment (ประโยคพูดจริงยาวหลักร้อยตัว)
 CHUNK = 1024 * 256
 # Range ที่อ่านออกแต่สนองไม่ได้ — ต้องแยกจาก "ไม่มี/อ่านไม่ออก" ที่ต้องเสิร์ฟทั้งไฟล์ (BACKLOG #46)
@@ -1535,6 +1538,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.command != "POST":
                 return self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ต้องใช้ POST")
             return self._translate(mid)
+        if len(rest) == 2 and rest[0] == "action-items":
+            return self._action_item(mid, rest[1])
         if rest:
             return self._error(HTTPStatus.NOT_FOUND, "ไม่พบ endpoint นี้")
 
@@ -1559,6 +1564,43 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"deleted": mid})
 
         self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ใช้ method นี้กับ path นี้ไม่ได้")
+
+    def _action_item(self, mid: str, item_id: str) -> None:
+        """ติ๊ก/แก้ผู้รับผิดชอบ/ลบ รายการเดียว (BACKLOG #53).
+
+        อยู่หลังบล็อกตรวจสิทธิ์ของ `_meeting()` จึงใช้ `_may_write()` ตัวเดียวกับการเกลาสรุป
+        โดยอัตโนมัติ — ซึ่งเป็นคำตอบของ PRD 6.3 (คนถือลิงก์แชร์แบบแก้ได้ ติ๊กได้)
+        ถ้าวันหนึ่งอยากให้เข้มกว่านั้น ต้องแยกเงื่อนไขที่บล็อกนั้น ไม่ใช่ที่นี่
+
+        อ้างด้วย `id` ของระเบียน ไม่ใช่ลำดับในลิสต์ — ลำดับขยับทุกครั้งที่สรุปถูกเขียนใหม่
+        ถ้าผู้ใช้เปิดหน้าค้างไว้แล้วงานสรุปใหม่เพิ่งจบ การกดติ๊กจะไปโดนคนละรายการ
+        """
+        if not _ITEM_ID_RE.fullmatch(item_id):
+            return self._error(HTTPStatus.BAD_REQUEST, "รหัสรายการไม่ถูกต้อง")
+
+        if self.command == "DELETE":
+            out = store.delete_action_item(mid, item_id)
+            if out is None:
+                return self._error(HTTPStatus.NOT_FOUND, "ไม่พบรายการนี้")
+            return self._json({"action_items": out.get("action_items", [])})
+
+        if self.command != "PATCH":
+            return self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ใช้ได้เฉพาะ PATCH กับ DELETE")
+
+        body = self._body_json()          # เพดาน MAX_JSON_BODY ตามปกติ — ที่นี่ส่งมาไม่กี่ไบต์
+        done = body.get("done")
+        assignee = body.get("assignee")
+        if done is None and assignee is None:
+            return self._error(HTTPStatus.BAD_REQUEST, "ต้องส่ง done หรือ assignee")
+        if done is not None and not isinstance(done, bool):
+            return self._error(HTTPStatus.BAD_REQUEST, "done ต้องเป็น true หรือ false")
+        if assignee is not None and not isinstance(assignee, str):
+            return self._error(HTTPStatus.BAD_REQUEST, "assignee ต้องเป็นข้อความ")
+
+        out = store.set_action_item(mid, item_id, done=done, assignee=assignee)
+        if out is None:
+            return self._error(HTTPStatus.NOT_FOUND, "ไม่พบรายการนี้")
+        self._json({"action_items": out.get("action_items", [])})
 
     def _patch(self, mid: str) -> None:
         # ผู้ใช้แก้ transcript แล้วส่ง segments ทั้งชุดกลับมา — เพดานเท่ากับ worker result
