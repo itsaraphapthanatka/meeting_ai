@@ -1240,12 +1240,27 @@ async function unlockDeviceNames() {
 }
 
 /* เตือนตอนอัดไปแล้วแต่ยังไม่ได้ยินเสียง — สาเหตุต่างกันตามโหมด */
+
+// RMS ที่ถือว่า "มีเสียง" (~-48 dBFS) ต่ำกว่านี้คือเงียบจริง ไม่ใช่แค่พูดเบา
+const HEARD_LEVEL = 0.004;
+// ไม่เคยได้ยินอะไรเลยนานเท่านี้ = น่าจะตั้งค่าผิดตั้งแต่ต้น
+const SILENT_START_SEC = 6;
+// เคยได้ยินแล้วอยู่ ๆ เงียบยาวเท่านี้ = ไมค์อาจหลุด/ถูกปิดกลางทาง
+// ยาวกว่าแบบแรกมาก เพราะประชุมเงียบกันเป็นนาทีเป็นเรื่องปกติ และคำเตือนนี้หายเองเมื่อมีเสียงกลับมา
+const SILENT_LOST_SEC = 45;
+
 const SILENT_WARN = {
   room: 'ยังไม่ได้ยินเสียงเลย — ตรวจว่าเลือกไมค์ถูกตัว ไมค์ไม่ได้ปิด (mute) และเสียงประชุมเปิดออกลำโพงอยู่',
   device: 'ยังไม่ได้ยินเสียงเลย — อุปกรณ์วนเสียงกลับมักเงียบถ้าเสียงระบบถูกปิด '
     + 'ลองเปิดเพลงทดสอบ หรือสลับไปโหมดไมค์เดียว',
   tab: 'ยังไม่ได้ยินเสียงเลย — ตรวจว่าติ๊ก “แชร์เสียงแท็บ” และเสียงประชุมไม่ได้ปิดอยู่',
 };
+
+/* คนละกรณีกับข้างบน: เคยได้ยินแล้วเงียบยาว — ของเดิมเตือนกรณีนี้ไม่ได้เลย เพราะเทียบกับ
+   ค่าพีคสูงสุดตลอดกาล พอได้ยินเสียงครั้งเดียวก็ปิดปากตัวเองถาวร ไมค์ที่หลุดตอนนาทีที่ 5
+   จึงอัดเป็นความเงียบไปจนจบโดยไม่มีอะไรบอก */
+const LOST_WARN = 'เงียบมานานแล้ว — ถ้ายังประชุมกันอยู่ ให้ตรวจว่าไมค์ยังต่ออยู่และไม่ได้ถูกปิด '
+  + '(ข้อความนี้จะหายเองเมื่อได้ยินเสียงอีกครั้ง)';
 
 const REC_HINTS = {
   room: 'เปิดลำโพงไว้ ไมค์จะได้ทั้งเสียงคุณและอีกฝ่าย '
@@ -1373,6 +1388,8 @@ const rec = {
   liveRecorder: null, liveTimer: null, liveBusy: false, liveText: [],
   timer: null, raf: null, started: 0, peak: 0, level: 0, recording: false,
   muted: false,
+  // เวลาที่ 'ได้ยินเสียง' ครั้งล่าสุด (0 = ยังไม่เคยได้ยินเลยตั้งแต่เริ่มอัด)
+  heardAt: 0,
 };
 
 /* คลื่นเสียงสด (waveform) — สร้างแท่งไว้ครั้งเดียวตอนเปิดหน้า "ประชุมใหม่" แล้วอัปเดต
@@ -1396,6 +1413,9 @@ function toggleMute() {
   if (!rec.recording) return;
   rec.muted = !rec.muted;
   rec.streams.forEach((s) => s.getAudioTracks().forEach((t) => { t.enabled = !rec.muted; }));
+  // เพิ่งเปิดไมค์กลับมา = เริ่มนับความเงียบใหม่ ไม่งั้นคำเตือน "เงียบมานานแล้ว" เด้งทันที
+  // ทั้งที่ยังไม่ทันได้พูด (ตอนปิดไมค์ heardAt ไม่ขยับเลยเพราะแทร็กถูกปิดจริง)
+  if (!rec.muted) rec.heardAt = Date.now();
   const btn = $('#btn-mute');
   if (btn) {
     btn.classList.toggle('on', rec.muted);
@@ -1428,6 +1448,27 @@ const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
     ปกติวาดเป็นคลื่นเสียงหลายแท่ง (.wave) ตาม prefers-reduced-motion ให้ถอยไปใช้
     มิเตอร์แท่งเดียวแบบเดิม (.meter) ที่ไม่มี transition ทุกเฟรม — แยกออกมาจาก
     startRecording() เพราะฟังก์ชันนั้นยาวอยู่แล้ว (~130 บรรทัด) ไม่อยากให้ยาวขึ้นอีก */
+/** ข้อความเตือนที่ควรแสดงตอนนี้ — คืน '' แปลว่าไม่ต้องเตือน.
+ *
+ *  แยกออกมาเป็นฟังก์ชันล้วน ๆ (อ่าน rec + เวลา ไม่แตะ DOM) เพราะสองอาการที่ทำให้ต้องแก้
+ *  ทดสอบไม่ได้เลยตอนมันฝังอยู่ใน setInterval:
+ *   1. คำเตือนเดิม "ค้าง" — ตั้ง hidden = false แล้วไม่มีใครตั้งกลับ พอเงียบตอนเริ่ม 6 วินาที
+ *      (ซึ่งปกติมาก คนกดอัดแล้วค่อยเริ่มพูด) คำเตือนจะอยู่ยาวจนจบ ทั้งที่เสียงเข้าตั้งนานแล้ว
+ *      ผู้ใช้เห็นแล้วนึกว่าไฟล์เสีย — ทั้งที่ตัวอัดไฟล์อัดจากสตรีมต้นทางตรง ๆ ไม่เกี่ยวกับมิเตอร์
+ *   2. เทียบกับ rec.peak ซึ่งเป็นค่าสูงสุด "ตลอดกาล" พอได้ยินเสียงครั้งเดียวเงื่อนไขก็เป็นเท็จ
+ *      ตลอดไป ไมค์ที่หลุดกลางประชุมจึงไม่มีทางถูกเตือน (t.onended จับได้เฉพาะแทร็กที่ตายสนิท
+ *      ไม่ใช่แทร็กที่ยังอยู่แต่ส่งความเงียบมา เช่น ถูกปิดที่ระดับ OS หรือ Bluetooth สลับโปรไฟล์)
+ */
+function silentWarning(now = Date.now()) {
+  if (!rec.recording || rec.muted) return '';
+  if (!rec.heardAt) {
+    return (now - rec.started) / 1000 > SILENT_START_SEC
+      ? (SILENT_WARN[rec.mode] || SILENT_WARN.room)
+      : '';
+  }
+  return (now - rec.heardAt) / 1000 > SILENT_LOST_SEC ? LOST_WARN : '';
+}
+
 function startMeterLoop(analyser) {
   const buf = new Uint8Array(analyser.fftSize);
   const waveBars = $$('#wave .wave-bar');
@@ -1442,6 +1483,7 @@ function startMeterLoop(analyser) {
     const level = Math.sqrt(sum / buf.length);
     rec.level = level;            // ตัวตัดคลิปสดใช้ค่านี้หาจังหวะเงียบ
     rec.peak = Math.max(rec.peak, level);
+    if (level >= HEARD_LEVEL) rec.heardAt = Date.now();
 
     if (reducedMotion?.matches || !barCount) {
       if (meterBar) meterBar.style.width = `${Math.min(100, level * 320)}%`;
@@ -1575,6 +1617,7 @@ async function startRecording() {
     ctx.createMediaStreamSource(dest.stream).connect(analyser);
 
     rec.peak = 0;
+    rec.heardAt = 0;
     rec.muted = false;
     rec.started = Date.now();
     rec.recording = true;
@@ -1600,12 +1643,7 @@ async function startRecording() {
     rec.timer = setInterval(() => {
       const sec = (Date.now() - rec.started) / 1000;
       $('#rec-time').textContent = fmtClock(sec);
-      // ไม่เตือนถ้าผู้ใช้ตั้งใจปิดไมค์เอง (ไม่งั้นจะเข้าใจผิดว่าไมค์เสีย)
-      if (sec > 6 && rec.peak < 0.004 && !rec.muted) {
-        const warn = $('#rec-warn');
-        warn.hidden = false;
-        warn.textContent = SILENT_WARN[rec.mode] || SILENT_WARN.room;
-      }
+      $('#rec-warn').hidden = !silentWarning();
     }, 500);
 
     startMeterLoop(analyser);
@@ -1742,6 +1780,7 @@ async function finishRecording(tracks, seconds, silent) {
 function cleanupRecording() {
   rec.recording = false;
   rec.stopping = false;
+  rec.heardAt = 0;
   rec.muted = false;
   clearInterval(rec.timer);
   clearTimeout(rec.liveTimer);
