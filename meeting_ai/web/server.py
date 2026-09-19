@@ -59,8 +59,10 @@ MAX_SEGMENT_TEXT = 5_000      # ตัวอักษรต่อ segment (ป�
 CHUNK = 1024 * 256
 # Range ที่อ่านออกแต่สนองไม่ได้ — ต้องแยกจาก "ไม่มี/อ่านไม่ออก" ที่ต้องเสิร์ฟทั้งไฟล์ (BACKLOG #46)
 UNSATISFIABLE = "unsatisfiable"
-# หลังตอบ 413 ต้องระบายของที่ client ยังส่งค้างอยู่ก่อนปิด ไม่งั้น TCP ส่ง RST แล้ว
-# client เห็นเป็น "connection reset" แทนที่จะเห็น 413 (วัดจริงกับ body 20 MB)
+# ทุกครั้งที่ตอบก่อนอ่าน body จบ ต้องระบายของที่ client ยังส่งค้างอยู่ก่อนปิด ไม่งั้น
+# TCP ส่ง RST แทน FIN แล้ว client เห็นเป็น "connection reset" แทนที่จะได้อ่านคำตอบ
+# (วัดจริงกับ body 20 MB บนเส้น 413 — และ BACKLOG #76 วัดซ้ำว่าเส้นอื่นก็โดนเหมือนกัน:
+#  ปฏิเสธแล้วปิดทันที client ได้คำตอบ 25/40 · ระบายก่อนปิด 40/40 ไม่มี error เลย)
 # ระบายทีละก้อน ไม่เก็บลงแรม หยุดเมื่อครบเพดานไบต์หรือครบ LINGER_SECONDS นับจากเริ่มระบาย
 # (เวลารวมจริง ไม่ใช่เวลาเงียบต่อ recv — ดู _drain_rejected_body) ใหญ่กว่านี้ยอมให้ reset
 LINGER_DRAIN = 64 * 1024**2   # 64 MB
@@ -282,6 +284,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.server_version
     timeout = SOCKET_TIMEOUT      # socketserver ใช้ค่านี้ settimeout ให้ทุกคอนเนกชัน
     body_bytes = 0                # ความยาว body ของคำขอนี้ (ตั้งใหม่ทุกคำขอใน _route)
+    body_read = 0                 # อ่านออกจาก socket ไปแล้วกี่ไบต์ — ส่วนต่างคือของที่ต้องระบาย
     # เชื่อหัวข้อ X-Forwarded-For ได้เฉพาะเมื่อรู้ว่ามี proxy คั่นอยู่จริง — ไม่งั้นใครก็ปลอม
     # หัวข้อนี้เพื่อเลี่ยง rate limit ได้ (api/index.py บน Vercel ตั้งเป็น True ให้แล้ว)
     trust_proxy = config.trust_proxy
@@ -345,6 +348,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+        # ตอบไปแล้วแต่ body ที่ client ส่งมายังค้างใน receive buffer ของเรา: ปิดตอนนี้ =
+        # TCP ยิง RST ไม่ใช่ FIN แล้วฝั่ง client (อย่างน้อยบน Windows) ทิ้งไบต์ที่รับมาแล้ว
+        # แต่ยังไม่ได้อ่านไปพร้อมกัน — คำตอบที่เราเพิ่งส่งหายทั้งก้อน client เห็นแค่
+        # "connection reset" เดิมระบายเฉพาะเส้น 413 แต่ทุกเส้นที่ตอบก่อนอ่าน body
+        # (401/403/404/405/415/400 framing ผิด) โดนกลไกเดียวกันหมด (BACKLOG #76)
+        # ไม่ต้องเช็ค close_connection: ถ้ามี body ค้าง บรรทัดบนสุดของ _send ตั้ง close ไปแล้ว
+        # และต่อให้กติกานั้นเปลี่ยน การระบายส่วนที่ยังไม่ได้อ่านก็ยังถูกเสมอ — ปล่อยค้างไว้บน
+        # คอนเนกชันที่ใช้ซ้ำคือของขวัญให้ request smuggling พอดี (ดูคอมเมนต์บนสุดของ _send)
+        self._drain_rejected_body(self.body_bytes - self.body_read)
 
     def _json(self, data, status: int = 200) -> None:
         self._send(status, json.dumps(data, ensure_ascii=False).encode("utf-8"),
@@ -722,6 +734,7 @@ class Handler(BaseHTTPRequestHandler):
         เฉยๆ โดยไม่อ่าน body คือจุดที่ทำให้เกิด "2 คำตอบใน 1 คอนเนกชัน" — ดูคอมเมนต์ใน _send
         """
         self.body_bytes = 0
+        self.body_read = 0
         te = [v.strip().lower() for v in (self.headers.get_all("Transfer-Encoding") or [])]
         if te and te != ["identity"]:
             # http.server ไม่ถอด chunked ให้ ถ้าเรารับไว้ body จะถูกอ่านเป็นคำขอถัดไปทั้งก้อน
@@ -752,6 +765,7 @@ class Handler(BaseHTTPRequestHandler):
         if not length:
             return {}
         raw = self.rfile.read(length)
+        self.body_read += len(raw)
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -813,6 +827,7 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 fh.write(chunk)
                 remaining -= len(chunk)
+                self.body_read += len(chunk)
         if remaining > 0:
             dest.unlink(missing_ok=True)
             return "อัปโหลดไม่ครบ — ลองใหม่อีกครั้ง"
@@ -858,8 +873,7 @@ class Handler(BaseHTTPRequestHandler):
             # ยังไม่ได้อ่าน body ออกจาก socket — ใช้คอนเนกชันนี้ต่อไม่ได้ (HTTP/1.1 keep-alive)
             self.close_connection = True
             try:
-                self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(e))
-                self._drain_rejected_body(e.pending)
+                self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(e))  # _send ระบายให้แล้ว
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass  # client ที่กำลังอัปโหลดอยู่หลุดไปก่อน — ปกติ ไม่ต้องขึ้น traceback
         except BadBody as e:
