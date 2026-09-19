@@ -247,6 +247,27 @@ def _probe_run(docker: str) -> str:
     return f"Docker รัน container ไม่ได้: {first[:160]}"
 
 
+def profile_ready() -> bool:
+    """บอทมี session ที่ล็อกอิน Google อยู่จริงหรือยัง (BUG-067).
+
+    เดิมเช็กแค่ "โฟลเดอร์ไม่ว่าง" ซึ่งผ่านง่ายเกินไป — คอนเทนเนอร์ที่รันแล้วออกโดยยังไม่ได้
+    ล็อกอิน ก็ทิ้งไฟล์โครงของ Chromium ไว้ไม่กี่ไฟล์แล้ว ตัวตรวจจึงบอกว่า "ไม่ขาดอะไร"
+
+    วัดของจริงบนเครื่อง worker 2026-09-19: `bot/profile` มี **5 ไฟล์ 92 KB ไม่มี
+    `Default/Cookies` เลย** แต่ `missing_pieces()` ตอบว่าพร้อม ผลคือบอทถูกส่งเข้าห้องแบบ
+    ไม่ระบุตัวตน ห้องที่ไม่รับ guest ปฏิเสธทันที และ host ไม่เคยเห็นการเคาะประตูด้วยซ้ำ
+    กว่าจะรู้สาเหตุก็เสียเวลาไปหลายรอบ
+
+    Chromium เก็บคุกกี้ของ session ไว้ที่ `Default/Cookies` เสมอ — ไม่มีไฟล์นี้
+    (หรือมีแต่ว่างเปล่า) แปลว่ายังไม่เคยล็อกอินสำเร็จ
+    """
+    cookies = PROFILE_DIR / "Default" / "Cookies"
+    try:
+        return cookies.is_file() and cookies.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def missing_pieces() -> list[str]:
     """สิ่งที่ยังขาดเพื่อให้ส่งบอทเข้าห้องได้ — ว่างเปล่า = พร้อม."""
     missing = []
@@ -259,7 +280,7 @@ def missing_pieces() -> list[str]:
         return missing
     if not _image_exists(exe):
         missing.append(f"image {IMAGE} (สร้างด้วย mai bot-login)")
-    if not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir()):
+    if not profile_ready():
         missing.append("การล็อกอิน Google ของบอท (รัน mai bot-login)")
     if not missing:
         why = _probe_run(exe)
@@ -675,7 +696,7 @@ def join_and_record(
     docker = _docker()
     build_image()
 
-    if not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir()):
+    if not profile_ready():
         raise RuntimeError(
             "ยังไม่ได้ล็อกอิน Google ให้บอท — ห้อง Workspace จะบล็อก guest\n"
             "   รันครั้งเดียวก่อน:  ./mai bot-login"
