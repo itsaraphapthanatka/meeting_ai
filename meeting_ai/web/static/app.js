@@ -1979,7 +1979,18 @@ async function openMeeting(id) {
   setupPlayer(id);
   setupDetailTabs();
   // ปุ่มในแผ่นเป็นปุ่มเดิมของ .detail-actions — กดแล้วต้องปิดแผ่นเอง ไม่งั้นม่านค้างทับหน้า
-  $('.detail-actions').addEventListener('click', () => {
+  //
+  // แต่ห้ามปิดตอนกด <select> (BUG-063): บนมือถือ การแตะ select จะยิง click ขึ้นมาถึงตัวนี้
+  // ก่อนที่ตัวเลือกจะโผล่ พอปิดแผ่น CSS ก็ซ่อน .detail-actions ทั้งก้อน select หายไปจาก
+  // layout และตัวเลือกไม่เคยขึ้นเลย — อาการที่ผู้ใช้เห็นคือ "ความเป็นส่วนตัว" กับ "ฟอร์แมต
+  // ดาวน์โหลด" กดไม่ได้ ส่วนปุ่มอื่นในแผ่นเดียวกันใช้ได้ปกติ
+  $('.detail-actions').addEventListener('click', (e) => {
+    if (e.target.closest('select')) return;
+    if (document.body.classList.contains('sheet-open')) closeMeetingSheet();
+  });
+  // เลือกค่าเสร็จแล้วค่อยปิดแผ่น — ผู้ใช้เลือกความเป็นส่วนตัวเสร็จก็จบธุระแล้ว
+  // (ฟอร์แมตดาวน์โหลดไม่ปิด เพราะต้องกดปุ่ม ⬇ ต่อในแผ่นเดียวกัน)
+  $('#d-visibility').addEventListener('change', () => {
     if (document.body.classList.contains('sheet-open')) closeMeetingSheet();
   });
 
