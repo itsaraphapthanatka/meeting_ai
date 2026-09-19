@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 import re
 import secrets
@@ -247,6 +248,31 @@ def _probe_run(docker: str) -> str:
     return f"Docker รัน container ไม่ได้: {first[:160]}"
 
 
+def profile_problem() -> str:
+    """ปัญหาของโปรไฟล์บอท — คืน '' แปลว่าพร้อมใช้ (BUG-069).
+
+    แยก "ยังไม่เคยล็อกอิน" ออกจาก "ล็อกอินไม่ได้เพราะสิทธิ์ไฟล์" เพราะสองอย่างนี้แก้คนละทาง
+    และอันหลังมองไม่เห็นเลยถ้าไม่บอก
+
+    วัดบนเครื่อง worker 2026-09-19: `bot/profile/Default` เป็น `drwx------ root:root`
+    ลงวันที่ 17 ก.ย. — ถูกสร้างตอนคอนเทนเนอร์ยังรันเป็น root (ก่อน BACKLOG #21)
+    พอ #21 เปลี่ยนไปรันในนาม uid 1000 ทั้ง host และคอนเทนเนอร์ก็อ่านโฟลเดอร์นั้นไม่ได้อีก
+    Chromium จึงเขียนได้แค่ไฟล์ระดับบน (โปรไฟล์โตจาก 92 KB เป็น 5 MB ได้จริง) แต่
+    **session ไม่เคยถูกบันทึก** ผู้ใช้ล็อกอินกี่รอบก็ไม่ติด และตัวตรวจเดิมรายงานว่า
+    "ยังไม่ได้ล็อกอิน" ซึ่งชี้ให้ไปทำสิ่งที่ไม่มีวันสำเร็จซ้ำอีก
+    """
+    if not PROFILE_DIR.is_dir():
+        return "การล็อกอิน Google ของบอท (รัน mai bot-login)"
+    default = PROFILE_DIR / "Default"
+    if default.exists() and not os.access(default, os.R_OK | os.W_OK | os.X_OK):
+        return (f"โปรไฟล์บอทเข้าถึงไม่ได้ ({default} เป็นของผู้ใช้อื่น) — "
+                f"ล็อกอินกี่ครั้งก็ไม่ถูกบันทึก แก้ด้วย: "
+                f"sudo chown -R $(id -u):$(id -g) {PROFILE_DIR}")
+    if not profile_ready():
+        return "การล็อกอิน Google ของบอท (รัน mai bot-login)"
+    return ""
+
+
 def profile_ready() -> bool:
     """บอทมี session ที่ล็อกอิน Google อยู่จริงหรือยัง (BUG-067).
 
@@ -280,8 +306,9 @@ def missing_pieces() -> list[str]:
         return missing
     if not _image_exists(exe):
         missing.append(f"image {IMAGE} (สร้างด้วย mai bot-login)")
-    if not profile_ready():
-        missing.append("การล็อกอิน Google ของบอท (รัน mai bot-login)")
+    why = profile_problem()
+    if why:
+        missing.append(why)
     if not missing:
         why = _probe_run(exe)
         if why:
@@ -696,11 +723,11 @@ def join_and_record(
     docker = _docker()
     build_image()
 
-    if not profile_ready():
-        raise RuntimeError(
-            "ยังไม่ได้ล็อกอิน Google ให้บอท — ห้อง Workspace จะบล็อก guest\n"
-            "   รันครั้งเดียวก่อน:  ./mai bot-login"
-        )
+    # profile_problem() บอกสาเหตุที่ตรงอยู่แล้ว (ยังไม่ล็อกอิน / เข้าถึงโปรไฟล์ไม่ได้)
+    # อย่าต่อท้ายด้วย "รัน bot-login" แบบเหมารวม — กรณีสิทธิ์ไฟล์ทำแล้วก็ไม่มีวันสำเร็จ
+    why = profile_problem()
+    if why:
+        raise RuntimeError(f"ส่งบอทไม่ได้ — {why}")
 
     out_wav = Path(out_wav).resolve()
     out_wav.parent.mkdir(parents=True, exist_ok=True)

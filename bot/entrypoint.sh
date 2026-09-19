@@ -31,6 +31,17 @@ for d in $NEED_WRITE; do
     rm -f "$d/.mai-write-test"
 done
 
+# /prof/Default คือที่เก็บ session จริงของ Chromium — เขียนระดับบนของ /prof ได้ ไม่ได้แปลว่า
+# ใช้โปรไฟล์ได้ (BUG-069) โปรไฟล์ที่สร้างไว้ตอนยังรันเป็น root เป็น drwx------ root:root
+# คอนเทนเนอร์ที่รันในนาม pwuser จึงอ่านไม่ได้ Chromium เขียนแต่ไฟล์ระดับบนแล้วล็อกอินหาย
+# ทุกครั้งโดยไม่มีอะไรฟ้อง — ต้องล้มตรงนี้พร้อมบอกวิธีแก้
+if [ -d /prof/Default ] && { [ ! -r /prof/Default ] || [ ! -w /prof/Default ]; }; then
+    echo "[entrypoint] ❌ /prof/Default มีอยู่แต่เข้าถึงไม่ได้ (รันในนามผู้ใช้ $(id -u):$(id -g))" >&2
+    echo "[entrypoint]    โปรไฟล์นี้ถูกสร้างตอนคอนเทนเนอร์ยังรันเป็น root — การล็อกอินจะไม่ถูกบันทึก" >&2
+    echo "[entrypoint]    บนเครื่อง host สั่ง: sudo chown -R 1000:1000 bot/profile" >&2
+    exit 1
+fi
+
 # 1) เสียงเสมือน (null-sink ชื่อ meet) — เสียง Chromium ไหลเข้ามาให้ ffmpeg อัดจาก meet.monitor
 pulseaudio -D --exit-idle-time=-1 --disable-shm=1 2>/dev/null || true
 for i in $(seq 1 10); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done

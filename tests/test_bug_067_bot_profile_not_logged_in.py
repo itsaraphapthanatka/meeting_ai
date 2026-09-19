@@ -112,5 +112,32 @@ class TestItIsUsedWhereItMatters(ProfileCase):
         self.assertIn("bot-login", str(e.exception))
 
 
+class TestAnUnreadableProfileIsReportedAsSuch(ProfileCase):
+    """BUG-069 — โปรไฟล์ที่ root เป็นเจ้าของ: ล็อกอินกี่ครั้งก็ไม่ถูกบันทึก."""
+
+    def _lock_default(self):
+        import os
+        (self.profile / "Default").mkdir(parents=True)
+        (self.profile / "Default").chmod(0o000)
+        self.addCleanup((self.profile / "Default").chmod, 0o700)
+        return os.access(self.profile / "Default", os.R_OK)
+
+    def test_it_names_the_permission_problem_not_the_login(self):
+        if self._lock_default():
+            self.skipTest("ทำให้โฟลเดอร์อ่านไม่ได้ไม่สำเร็จ (Windows/root)")
+        why = bot.profile_problem()
+        self.assertIn("chown", why)
+        self.assertNotIn("bot-login", why,
+                         "ชี้ให้ไปทำสิ่งที่ไม่มีวันสำเร็จซ้ำอีก")
+
+    def test_a_healthy_profile_reports_no_problem(self):
+        self._cookies()
+        self.assertEqual(bot.profile_problem(), "")
+
+    def test_an_empty_profile_still_asks_for_bot_login(self):
+        self.profile.mkdir(parents=True)
+        self.assertIn("bot-login", bot.profile_problem())
+
+
 if __name__ == "__main__":
     unittest.main()
