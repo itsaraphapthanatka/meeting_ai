@@ -862,15 +862,13 @@ function closeMeetingSheet() {
 }
 
 /* จอแคบ: สรุปกับบทถอดเสียงเป็นแท็บ แทนที่จะต่อกันยาว */
+/* สรุปกับบทถอดเสียงแยกเป็นแท็บ — **ใช้ทั้งสองจอ** ตั้งแต่ BACKLOG #80
+   เดิมจอกว้างวางสองส่วนต่อกัน ซึ่งแปลว่าต้องเลื่อนผ่านสรุปทั้งอันกว่าจะถึงบทถอดเสียง
+   เหตุผลเดียวกับที่จอแคบแยกมาตั้งแต่แรก ความกว้างจอไม่ได้ทำให้สรุปสั้นลง */
 function setupDetailTabs() {
   const seg = $('#d-seg');
   if (!seg) return;
   const panes = $$('.dtab');
-  if (!isMobile()) {
-    seg.hidden = true;
-    panes.forEach((p) => p.classList.remove('tab-off'));
-    return;
-  }
   seg.hidden = false;
   const btns = $$('.seg-btn', seg);
   const pick = (tab) => {
