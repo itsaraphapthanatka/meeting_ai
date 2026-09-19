@@ -213,7 +213,7 @@ def _transcribe_all(spec: dict, paths: dict, names: list[str],
             warning = f"แยกผู้พูดไม่สำเร็จ: {e} — ส่วนอื่นยังทำงานปกติ"
 
     if not segments:
-        raise RuntimeError("ถอดเสียงไม่ได้ข้อความเลย — ไฟล์อาจไม่มีเสียงพูด หรือเงียบทั้งไฟล์")
+        raise RuntimeError(NO_SPEECH_ERROR)
 
     progress("รวมไฟล์เสียง", DIARIZE_END)
     playback: Path | None = None
@@ -311,6 +311,9 @@ def audio_peaks(path: Path, buckets: int = PEAK_BUCKETS) -> list[int] | None:
     return [int(round(v / top * 100)) for v in rms]
 
 
+# ข้อความเดียวที่ใช้ทั้งโปรเจกต์ — ฝั่งบอทดักตัวนี้เพื่อเปลี่ยนเป็นสาเหตุที่ตรงกว่า
+NO_SPEECH_ERROR = "ถอดเสียงไม่ได้ข้อความเลย — ไฟล์อาจไม่มีเสียงพูด หรือเงียบทั้งไฟล์"
+
 SILENT_DB = -55.0   # ต่ำกว่านี้ถือว่าเงียบ (ห้องประชุมที่มีคนพูดอยู่ราว -30 ถึง -15 dB)
 
 
@@ -346,7 +349,12 @@ def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
     max_minutes = int(spec.get("max_minutes") or 180)
     limit = max_minutes * 60
 
+    # สถานะที่คอนเทนเนอร์เคยรายงานมา ('waiting' / 'inroom' / 'left') — ใช้อธิบายความล้มเหลว
+    seen_status: set[str] = set()
+
     def tick(elapsed: float, status: str = "") -> bool:
+        if status:
+            seen_status.add(status)
         frac = min(1.0, elapsed / limit) if limit else 0.0
         # อย่าบอกว่า "อยู่ในห้อง" ถ้าคอนเทนเนอร์ยังไม่ยืนยัน — ผู้ใช้จะไปนั่งรอเปล่าๆ
         # ทั้งที่ต้องไปกดรับเข้าห้องให้บอทก่อน
@@ -379,7 +387,26 @@ def bot_job(spec: dict, progress: ProgressFn, mix_dir: Path,
         progress(step, BOT_END + (1.0 - BOT_END) * max(0.0, min(1.0, value)))
 
     sub = {**spec, "kind": "process", "tracks": ["mixed"]}
-    return transcribe_job(sub, lambda name: wav, scaled, mix_dir)
+    try:
+        return transcribe_job(sub, lambda name: wav, scaled, mix_dir)
+    except RuntimeError as e:
+        # ถอดเสียงไม่ได้ + คอนเทนเนอร์ไม่เคยรายงานว่า 'inroom' = ไม่เคยได้เข้าห้องจริง
+        #
+        # เจอจริง 2026-09-19: Meet ขึ้น "You can't join this video call — No one can join
+        # a meeting unless invited or admitted by the host" แล้วเตะบอทออกใน 60 วินาที
+        # ไฟล์ที่ได้ **ไม่ต่ำพอ** จะติดกับดัก SILENT_DB ข้างบน งานจึงไปล้มด้วยข้อความ
+        # "ไฟล์อาจไม่มีเสียงพูด" ซึ่งพาคนไปไล่หาปัญหาไมโครโฟน แทนที่จะไปกดรับเข้าห้อง
+        #
+        # ดักเฉพาะตอน "ถอดเสียงไม่ได้" เท่านั้น และเชื่อ 'inroom' เป็นเงื่อนไขร่วม ไม่ใช่
+        # ตัดสินจากสถานะอย่างเดียว — คอนเทนเนอร์รุ่นเก่าที่ไม่เขียน bot_status.txt จะได้ไม่
+        # ถูกทิ้งประชุมที่อัดมาดี ๆ เพราะเราเดาผิด
+        if str(e) != NO_SPEECH_ERROR or "inroom" in seen_status:
+            raise
+        waited = _mmss(audio_duration(wav))
+        raise RuntimeError(
+            f"บอทไม่เคยได้เข้าห้อง — ยืนรออยู่หน้าห้อง {waited} แล้วถูกพาออก "
+            "ต้องมีคนในห้องกด “รับเข้าห้อง” (Admit) ให้บอทก่อน "
+            "ลองส่งใหม่แล้วกดรับภายในหนึ่งนาที") from None
 
 
 def transcript_for_llm(segments: list[dict]) -> str:
