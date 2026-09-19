@@ -1886,6 +1886,19 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     bound_host = "127.0.0.1"
 
+    # client ที่ปิดไปกลางคันไม่ใช่ความผิดของเรา แต่ socketserver พิมพ์ traceback เต็มลง
+    # stderr ทุกครั้ง วัดจริงจาก log ของ CI: รัน windows-latest ที่ **ผ่านทั้งรอบ** มี
+    # WinError 10053 อยู่ 15 ครั้ง — เสียงรบกวนนี้ทำให้อ่านผิดว่าเทสต์ล้ม แล้วไล่ผิดทาง
+    # ไปทั้งวัน (BACKLOG #77) เงียบเฉพาะสามชนิดนี้ ซึ่งเป็นกลุ่มเดียวกับที่ _route ดักไว้
+    # อยู่แล้วว่า "เบราว์เซอร์ปิดไปกลางทาง ไม่ใช่ปัญหา" อย่างอื่นยังพิมพ์ตามเดิม —
+    # เงียบหมดคือการซ่อนบั๊กจริง
+    QUIET_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+    def handle_error(self, request, client_address) -> None:
+        if isinstance(sys.exc_info()[1], self.QUIET_ERRORS):
+            return
+        super().handle_error(request, client_address)
+
 
 def _start_sweeper() -> None:
     """เธรดเก็บกวาดของโพรเซสที่รันยาว (`mai web`) — ชั่วโมงละครั้ง (BACKLOG #24).
