@@ -208,7 +208,9 @@ class TestTheRecordingSurvivesAStuckBot(unittest.TestCase):
         self.logs.mkdir(parents=True)
         self.profile = self.tmp / "prof"
         self.profile.mkdir(parents=True)
-        (self.profile / "cookies").write_text("x", encoding="utf-8")
+        # โครงจริงของโปรไฟล์ Chromium ที่ล็อกอินแล้ว — bot.profile_ready() ดูไฟล์นี้
+        (self.profile / "Default").mkdir(parents=True, exist_ok=True)
+        (self.profile / "Default" / "Cookies").write_bytes(b"SQLite format 3")
         for p in (mock.patch.object(bot, "STAGE_DIR", self.stage),
                   mock.patch.object(bot, "DEBUG_DIR", self.logs),
                   mock.patch.object(bot, "PROFILE_DIR", self.profile),

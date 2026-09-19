@@ -114,7 +114,9 @@ class _DockerRun(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.profile = self.tmp / "prof"
         self.profile.mkdir(parents=True)
-        (self.profile / "cookies").write_text("x", encoding="utf-8")
+        # โครงจริงของโปรไฟล์ Chromium ที่ล็อกอินแล้ว — bot.profile_ready() ดูไฟล์นี้
+        (self.profile / "Default").mkdir(parents=True, exist_ok=True)
+        (self.profile / "Default" / "Cookies").write_bytes(b"SQLite format 3")
         self.cmds: list[list[str]] = []
         for target in (
             mock.patch.object(bot, "STAGE_DIR", self.tmp / "stage"),
