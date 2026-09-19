@@ -616,6 +616,14 @@ class _HttpCaseMixin:
         หายไปเลย) http.client คำนวณ Content-Length ให้เองตามความยาว body เสมอ ใช้พิสูจน์กรณี
         เหล่านี้ไม่ได้ คืน (status, response text ทั้งก้อนเท่าที่อ่านได้, วินาทีที่ใช้)
         status -1 = ส่ง body ไม่สำเร็จ, -2 = อ่านตอบกลับไม่สำเร็จ/timeout, -3 = ไม่ใช่ HTTP response
+
+        **ส่ง header กับ body เป็นก้อนเดียว** (BACKLOG #75) ของเดิมแยกเป็นสอง sendall ซึ่งเปิด
+        ช่องให้เซิร์ฟเวอร์ปฏิเสธตั้งแต่อ่าน header จบ (เช่น Content-Length ผิดรูป -> 400) แล้ว
+        close() ทั้งที่ body ยังค้างใน receive buffer ของมัน — TCP ตอบด้วย RST ไม่ใช่ FIN และ
+        Windows ทิ้งไบต์ที่เรารับมาแล้วแต่ยังไม่ได้อ่านไปพร้อมกัน คำตอบ 400 ที่มาถึงแล้วจึงหาย
+        ทั้งก้อน เทสต์แดงสุ่มทั้งที่เซิร์ฟเวอร์ทำถูกทุกอย่าง
+        วัดกับ body 10 ไบต์ 40 ครั้งต่อแบบ: แยกส่ง = ได้ 400 กลับมา 28/40 (คั่น 30ms ระหว่าง
+        สองก้อน = 0/40) · ส่งก้อนเดียว = 40/40 ทั้งตอนเซิร์ฟเวอร์ตอบไวและตอบช้า
         เจตนาไม่อ่าน body ของ response ให้ครบ (พอเจอ header จบก็หยุด) เพราะบางเทสต์ส่ง body
         ใหญ่มากและ response อาจสะท้อนกลับมาใหญ่พอกัน — ใช้ text นี้เช็คแค่ status/หัวข้อความ error
 
@@ -631,12 +639,13 @@ class _HttpCaseMixin:
             for k, v in items:
                 head += f"{k}: {v}\r\n"
             head += "\r\n"
-            s.sendall(head.encode("utf-8"))
+            payload = head.encode("utf-8")
             if send_body and body:
-                try:
-                    s.sendall(body)
-                except OSError as e:
-                    return -1, f"send failed: {e!r}", time.monotonic() - t0
+                payload += body          # ก้อนเดียว — ดู docstring ว่าทำไม
+            try:
+                s.sendall(payload)
+            except OSError as e:
+                return -1, f"send failed: {e!r}", time.monotonic() - t0
             try:
                 while True:
                     b = s.recv(65536)
@@ -647,7 +656,9 @@ class _HttpCaseMixin:
                     if b"\r\n\r\n" in blob and len(blob) > 40:
                         break
             except OSError as e:
-                return -2, f"recv failed: {e!r}", time.monotonic() - t0
+                # อ่านมาได้บางส่วนก่อนโดนตัด = คำตอบมาถึงจริง ใช้เท่าที่มี อย่าทิ้งทั้งก้อน
+                if not chunks:
+                    return -2, f"recv failed: {e!r}", time.monotonic() - t0
         finally:
             s.close()
         text = b"".join(chunks).decode("utf-8", "replace")
