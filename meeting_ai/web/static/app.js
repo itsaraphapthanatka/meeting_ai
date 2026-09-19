@@ -1020,7 +1020,7 @@ function showNew(hash = '#new') {
       + (state.config.diarize_missing || []).join('; ');
   }
 
-  $('#btn-pick').onclick = () => $('#f-file').click();
+  $('#btn-pick').onclick = () => { if (requireTitle()) $('#f-file').click(); };
   $('#f-file').onchange = (e) => { if (e.target.files[0]) uploadFile(e.target.files[0]); };
 
   const drop = $('#drop');
@@ -1038,7 +1038,7 @@ function showNew(hash = '#new') {
   // (เช็ค closest('button') กัน dialog เปิดสองครั้งตอนกดโดนปุ่มพอดี)
   drop.addEventListener('click', (e) => {
     if (e.target.closest('button')) return;
-    $('#f-file').click();
+    if (requireTitle()) $('#f-file').click();
   });
 
   $('#btn-rec').onclick = startRecording;
@@ -1103,6 +1103,7 @@ function describeRoom(raw) {
 }
 
 async function sendBot() {
+  if (!requireTitle()) return;
   const url = ($('#b-url').value || '').trim();
   if (!url) { banner('ใส่ลิงก์ห้องประชุมก่อน'); return; }
   const v = formValues();
@@ -1335,6 +1336,20 @@ function renderSources() {
   note.hidden = true;
 }
 
+/* ชื่อการประชุมเป็นช่องบังคับ (BACKLOG #78) — คืนชื่อที่ตัดช่องว่างแล้ว หรือ null
+   พร้อมบอกผู้ใช้และโฟกัสช่องให้ ผู้เรียกต้องหยุดเองเมื่อได้ null
+
+   **เรียกก่อนเริ่มงาน ไม่ใช่ตอนจบ**: ถ้าไปเช็คตอนส่ง คนอัดประชุมไปแล้วสี่สิบนาที
+   จะเพิ่งรู้ตอนนั้นว่าลืมใส่ชื่อ ซึ่งสายเกินไปจนน่าโมโห */
+function requireTitle() {
+  const el = $('#f-title');
+  const title = (el?.value || '').trim();
+  if (title) return title;
+  banner('ใส่ชื่อการประชุมก่อน');
+  if (el) { el.focus(); el.select(); }
+  return null;
+}
+
 function formValues() {
   return {
     title: ($('#f-title')?.value || '').trim(),
@@ -1350,6 +1365,9 @@ function formValues() {
 async function submitMeeting(tracks, { source, fallbackTitle }) {
   const v = formValues();
   const draft = await api('/api/meetings', jsonPost({
+    // ตาข่ายกันตก ไม่ใช่ทางปกติ — requireTitle() ดักไว้ตั้งแต่ก่อนเริ่มงานทุกเส้นแล้ว
+    // (BACKLOG #78) แต่ถ้ามีเส้นไหนหลุดมาได้ การทิ้งไฟล์ที่อัดมาสี่สิบนาทีแย่กว่า
+    // การตั้งชื่อให้เองมาก
     title: v.title || fallbackTitle,
     lang: v.lang,
     template: v.template,
@@ -1395,6 +1413,8 @@ async function submitMeeting(tracks, { source, fallbackTitle }) {
 }
 
 async function uploadFile(file) {
+  // ดักซ้ำอีกชั้นนอกเหนือจากตอนกดเปิด dialog — การลากไฟล์มาวางไม่ผ่านทางนั้น
+  if (!requireTitle()) return;
   banner('');
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   try {
@@ -1546,6 +1566,7 @@ async function openInput(deviceId, { echo }) {
 }
 
 async function startRecording() {
+  if (!requireTitle()) return;
   const mode = recMode();
   const wantLive = $('#c-live').checked;
   const micId = $('#d-mic')?.value || '';
