@@ -39,8 +39,10 @@ VOLUME ["/out"]
 # ถ้าหลุดออกจาก Chromium มาได้ การเป็น root ใน container แปลว่าเขียนได้ทุกที่ที่ mount เข้ามา
 # — รวมถึง /prof ที่มี session ที่ล็อกอิน Google ของเจ้าของไว้
 # pwuser (uid 1000) มากับ image ของ Playwright อยู่แล้ว
-RUN mkdir -p /profwork /home/pwuser/.cache \
-    && chown -R pwuser:pwuser /app /profwork /home/pwuser
+# /out ถูกประกาศเป็น VOLUME ข้างบน จึงมีอยู่จริงและเป็นของ root — ยกให้ pwuser ด้วย
+# ไม่งั้นโหมดที่ไม่ได้ mount /out มาจาก host จะเขียนไม่ได้ (ดู BUG-068)
+RUN mkdir -p /profwork /home/pwuser/.cache /out \
+    && chown -R pwuser:pwuser /app /profwork /home/pwuser /out
 USER pwuser
 
 # ตายแล้วต้องรู้: ไม่มี HEALTHCHECK แปลว่า container ที่ Chromium ตายไปแล้วยังขึ้นว่า Up
