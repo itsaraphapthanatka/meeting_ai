@@ -210,7 +210,7 @@ class TestTheEntrypointGuards(unittest.TestCase):
         # อาการถ้าไม่ตรวจ: บอทเข้าห้อง นั่งจนจบ แล้วไม่มีไฟล์เสียง ซึ่งไล่ยากมาก
         tmp = Path(tempfile.mkdtemp(prefix="mai-mount-"))
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        block = ENTRYPOINT[ENTRYPOINT.index("for d in /out /prof"):]
+        block = ENTRYPOINT[ENTRYPOINT.index("for d in $NEED_WRITE"):]
         block = block[:block.index("\ndone") + 5]
         # ชี้ไปโฟลเดอร์ปลอมที่เขียนไม่ได้แทน /out /prof
         good, bad = tmp / "good", tmp / "bad"
@@ -218,7 +218,7 @@ class TestTheEntrypointGuards(unittest.TestCase):
         bad.mkdir()
         bad.chmod(0o500)
         self.addCleanup(bad.chmod, 0o700)
-        probe = block.replace("for d in /out /prof", f'for d in "{bad.as_posix()}"')
+        probe = block.replace("for d in $NEED_WRITE", f'for d in "{bad.as_posix()}"')
         r = self._run(probe, tmp)
         if r.returncode == 0:
             self.skipTest("ระบบไฟล์นี้ไม่บังคับสิทธิ์ (Windows) — ตรวจตรรกะไม่ได้")
@@ -227,9 +227,9 @@ class TestTheEntrypointGuards(unittest.TestCase):
     def test_it_continues_when_the_folder_is_writable(self):
         tmp = Path(tempfile.mkdtemp(prefix="mai-mount-"))
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        block = ENTRYPOINT[ENTRYPOINT.index("for d in /out /prof"):]
+        block = ENTRYPOINT[ENTRYPOINT.index("for d in $NEED_WRITE"):]
         block = block[:block.index("\ndone") + 5]
-        probe = block.replace("for d in /out /prof", f'for d in "{tmp.as_posix()}"')
+        probe = block.replace("for d in $NEED_WRITE", f'for d in "{tmp.as_posix()}"')
         r = self._run(probe, tmp)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(list(tmp.glob(".mai-write-test")), [], "ไฟล์ทดสอบต้องถูกลบทิ้ง")
