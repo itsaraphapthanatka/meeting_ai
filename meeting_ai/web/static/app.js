@@ -889,22 +889,15 @@ function setupDetailTabs() {
    ลำดับปุ่มกับค่าเริ่มต้นจึงขยับแยกกันได้ ไม่ต้องเรียงใหม่ทั้งแถบเพื่อเปลี่ยนแท็บแรก */
 const DEFAULT_CAP = 'rec';
 
-/* จอแคบ: เลือกวิธีนำเสียงเข้าทีละอันแทนการกางการ์ดทั้งสามใบพร้อมกัน
-   จอกว้างไม่แตะเลย — ปุ่มถูกซ่อนด้วย CSS และ data-cap ที่ตั้งไว้ไม่มีผลกับ .card ที่ display เป็น grid
+/* เลือกวิธีนำเสียงเข้าทีละอันแทนการกางการ์ดทั้งสามใบพร้อมกัน — **ใช้ทั้งสองจอ**
+   ตั้งแต่ BACKLOG #79 เดิมจอกว้างกางทั้งสามใบ ซึ่งกลายเป็นกริดสองคอลัมน์ที่ใบที่สาม
+   ตกไปแถวล่างเหลือที่ว่างข้าง ๆ หนึ่งช่อง และทำให้หน้ายาวขึ้นโดยคนก็เลือกทางเดียวอยู่ดี
    การ์ดอัดสดอาจถูกปิดโดยแอดมิน (rec-card.hidden) ปุ่มของมันจึงต้องหายไปด้วย ไม่ใช่กดแล้วเจอที่ว่าง */
 function setupCapturePicker() {
   const seg = $('#cap-seg');
   if (!seg) return;
   const label = $('#cap-label');
   const cards = $$('.cards .card');
-  if (!isMobile()) {
-    // จอกว้างกางทั้งสามใบเหมือนเดิม — ต้องล้าง cap-off ทิ้งเผื่อผู้ใช้เพิ่งขยายหน้าต่างจากจอแคบ
-    seg.hidden = true;
-    if (label) label.hidden = true;
-    cards.forEach((c) => c.classList.remove('cap-off'));
-    document.body.classList.remove('cap-rec');
-    return;
-  }
   const avail = new Set(cards.filter((c) => !c.hidden).map((c) => c.dataset.cap));
   const btns = $$('.seg-btn', seg).filter((b) => {
     const ok = avail.has(b.dataset.cap);

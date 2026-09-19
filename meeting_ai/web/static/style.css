@@ -844,7 +844,56 @@ body.auth-only #stats { display: none; }
    ของเดิมแค่ยุบสองคอลัมน์เป็นหนึ่ง = เอา sidebar (ค้นหา + คิวงาน + เครื่องประมวลผล + รายการ)
    ไปกองทับฟอร์ม "ประชุมใหม่" ทั้งก้อน หน้าเดียวยาวเกิน 3000px และไม่มีลำดับความสำคัญอะไรเลย
    ตอนนี้ body[data-view] เป็นตัวเลือกว่าจะโชว์ region ไหน (ดู setView() ใน app.js) */
-.mobilebar, .m-cta, .m-chip, .seg, .acct, .m-section, .field-label { display: none; }
+.mobilebar, .m-cta, .m-chip, .acct, .m-section, .field-label { display: none; }
+
+/* ---- แท็บ "เอาเสียงเข้ามายังไง" — ใช้ทั้งสองจอ (BACKLOG #79) ----
+   เดิมจอกว้างกางการ์ดทั้งสามใบพร้อมกัน ซึ่งกลายเป็นกริดสองคอลัมน์ที่ใบที่สามตกไปแถวล่าง
+   เหลือที่ว่างข้าง ๆ หนึ่งช่อง และหน้ายาวขึ้นโดยไม่ได้อะไรกลับมา — คนเลือกทางเดียวอยู่ดี
+   `.seg` ยังถูกซ่อนด้วย attribute `hidden` ตอนเหลือทางเดียว และแท็บของหน้ารายละเอียด
+   (`#d-seg`) ยังเป็นของจอแคบล้วน เพราะ setupDetailTabs() สั่ง hidden เองบนจอกว้าง */
+#cap-label:not([hidden]) {
+  display: block;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.seg:not([hidden]) {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 16px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.seg-btn {
+  flex: 1;
+  min-height: 38px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.seg-btn.is-on { background: var(--surface); color: var(--text); font-weight: 600; }
+.seg-btn[hidden] { display: none; }
+
+.seg:not([hidden]) ~ .cards { gap: 0; }
+.card.cap-off { display: none; }
+/* เมื่อมีปุ่มแท็บแล้ว การ์ดไม่ต้องมีกรอบหรือหัวข้อของตัวเอง — ชื่ออยู่บนปุ่มที่กดมาแล้ว
+   ไม่งั้นจะเป็นกล่องในกล่องพร้อมหัวข้อซ้ำสองที่ */
+.seg:not([hidden]) ~ .cards .card {
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+.seg:not([hidden]) ~ .cards .card > h3 { display: none; }
+/* แถบอัดลอยด้านล่างมีความหมายเฉพาะตอนอยู่แท็บ "อัดสด" */
+body:not(.cap-rec) .floatbar { display: none; }
+body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
 
 /* กล่องตัวเลือกเพิ่มเติม — ใช้ทั้งสองจอ ต่างกันแค่เปิด/ปิดตั้งต้น (ตั้งจาก JS) */
 .adv { margin: 0 0 16px; }
@@ -1067,56 +1116,11 @@ body.auth-only #stats { display: none; }
   .pane-title { display: none; }
 
   /* หัวข้อเหนือแถบเลือกวิธีนำเสียงเข้า — มีเฉพาะจอแคบ (จอกว้างการ์ดมีหัวข้อของตัวเองอยู่แล้ว) */
-  .field-label:not([hidden]) {
-    display: block;
-    margin: 0 0 8px;
-    color: var(--muted);
-    font-size: 13px;
-    font-weight: 500;
-  }
-
   /* กล่องลากไฟล์: ไอคอน + บอกนามสกุลในกล่องเลย ย่อหน้าอธิบายเหนือกล่องจึงซ้ำซ้อน */
   .seg:not([hidden]) ~ .cards .card > p.muted { display: none; }
   .drop-icon { color: var(--accent); }
   .drop-formats { margin: 4px 0 0; font-size: 12.5px; }
   #drop { cursor: pointer; }
-
-  .seg:not([hidden]) {
-    display: flex;
-    gap: 2px;
-    margin: 0 0 16px;
-    padding: 3px;
-    border-radius: 12px;
-    background: var(--surface-2);
-  }
-  .seg-btn {
-    flex: 1;
-    min-height: 38px;
-    border: 0;
-    border-radius: 9px;
-    background: none;
-    color: var(--muted);
-    font: inherit;
-    font-size: 14px;
-    cursor: pointer;
-  }
-  .seg-btn.is-on { background: var(--surface); color: var(--text); font-weight: 600; }
-  .seg-btn[hidden] { display: none; }
-
-  .cards { gap: 0; }
-  .card.cap-off { display: none; }
-  /* เมื่อมีปุ่มแท็บแล้ว การ์ดไม่ต้องมีกรอบหรือหัวข้อของตัวเอง — ชื่ออยู่บนปุ่มที่กดมาแล้ว
-     ไม่งั้นจะเป็นกล่องในกล่องพร้อมหัวข้อซ้ำสองที่ */
-  .seg:not([hidden]) ~ .cards .card {
-    background: none;
-    border: 0;
-    box-shadow: none;
-    padding: 0;
-  }
-  .seg:not([hidden]) ~ .cards .card > h3 { display: none; }
-  /* แถบอัดลอยด้านล่างมีความหมายเฉพาะตอนอยู่แท็บ "อัดสด" */
-  body:not(.cap-rec) .floatbar { display: none; }
-  body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
 
   /* --- หน้ารายละเอียด --- */
   .dtab.tab-off { display: none; }
