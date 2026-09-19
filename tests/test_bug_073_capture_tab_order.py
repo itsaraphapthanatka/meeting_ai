@@ -6,10 +6,10 @@
 แถบปุ่ม `#cap-seg` · การ์ดใน `.cards` · คำโปรยบนปุ่ม "เริ่มประชุมใหม่" ของจอแคบ
 ย้ายที่เดียวลืมอีกสองที่ = จอแคบสลับการ์ดถูกแต่จอกว้างเรียงอีกแบบ
 
-และค่าเริ่มต้นไม่ได้เขียนตายตัวไว้ที่ไหน — `setupCapturePicker()` เรียก
-`pick(btns[0].dataset.cap)` คือ **ปุ่มซ้ายสุดที่ใช้ได้** ลำดับใน HTML จึงเป็นตัวกำหนด
-ว่าเปิดหน้ามาเจอแท็บไหน เทสต์จึงผูกกติกาข้อนี้ไว้ด้วย ไม่งั้นการย้ายปุ่มครั้งหน้า
-จะเปลี่ยนพฤติกรรมโดยไม่มีใครตั้งใจ
+ส่วน **แท็บที่เปิดหน้ามาแล้วตกใส่** ไม่ได้ผูกกับลำดับอีกแล้ว — ตอนแรกมันคือ
+`pick(btns[0].dataset.cap)` (ปุ่มซ้ายสุด) แต่ BACKLOG #74 เจ้าของขอให้ตกที่ "อัดสด"
+ซึ่งอยู่ตรงกลาง จึงแยกเป็น `DEFAULT_CAP` ต่างหาก ดู `test_bug_074_default_capture_tab`
+ไฟล์นี้เลิกยุ่งกับค่าเริ่มต้นแล้ว เพื่อไม่ให้สองไฟล์อ้างกติกาคนละแบบ
 
 วัดกับเบราว์เซอร์จริงที่ 375x812 (hit-test กลางปุ่มแล้วยิงคลิกจริง):
 
@@ -74,25 +74,6 @@ class TestTheThreePlacesAgree(unittest.TestCase):
         words = {"bot": "ส่งบอท", "rec": "อัดสด", "upload": "อัปโหลด"}
         pos = [m.group(1).index(words[cap]) for cap in seg_order()]
         self.assertEqual(pos, sorted(pos), f"คำโปรยเรียงไม่ตรงกับแถบปุ่ม: {m.group(1)}")
-
-
-class TestTheDefaultFollowsTheFirstButton(unittest.TestCase):
-    """ค่าเริ่มต้นไม่ได้เขียนตายตัว — มันคือ "ปุ่มซ้ายสุดที่ใช้ได้"."""
-
-    def test_the_picker_defaults_to_the_first_available_button(self):
-        self.assertIn("pick(btns[0].dataset.cap)", APP_JS,
-                      "ถ้ากติกานี้เปลี่ยน ลำดับใน HTML จะไม่ใช่ตัวกำหนดแท็บเริ่มต้นอีกต่อไป")
-
-    def test_the_markup_preselects_that_same_button(self):
-        # is-on ใน HTML คือสถานะก่อน JS ทำงาน ถ้าไม่ตรงกับ btns[0] จะเห็นไฮไลต์กระพริบสลับ
-        on = re.findall(r'<button class="seg-btn is-on"[^>]*data-cap="([a-z]+)"',
-                        HTML[HTML.index('id="cap-seg"'):])
-        self.assertEqual(on, [seg_order()[0]])
-
-    def test_only_one_button_is_preselected(self):
-        seg = HTML[HTML.index('id="cap-seg"'):]
-        seg = seg[:seg.index("</div>")]
-        self.assertEqual(seg.count("is-on"), 1)
 
 
 if __name__ == "__main__":
