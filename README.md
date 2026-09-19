@@ -547,6 +547,7 @@ meeting_ai/
         ├── store.py    # คลังการประชุมเป็นไฟล์ JSON (โหมดในเครื่อง)
         ├── pgstore.py  # คลังการประชุมบน Postgres (โหมด cloud)
         ├── _common.py  # ตัวช่วยที่สองคลังต้องทำเหมือนกันเป๊ะ ๆ
+        ├── actionitems.py # แยก Action Items จากสรุป + กระทบยอดกับสถานะที่ติ๊กไว้
         ├── db.py       # connection pool ของ Postgres
         ├── blobstore.py# ไฟล์เสียง: ดิสก์ หรือ S3/R2 (SigV4 เขียนเอง)
         ├── jobs.py     # คิวงาน + progress + นำผลเข้าคลัง

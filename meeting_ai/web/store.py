@@ -21,6 +21,7 @@ from typing import Any
 
 from ..config import config
 from .. import log as _log
+from . import actionitems
 from ._common import (  # noqa: F401  ชื่อเหล่านี้เป็น API ของโมดูลนี้ ผู้เรียกอ้างผ่าน store.*
     ID_RE as _ID_RE,
     SNIPPET_PAD,
@@ -305,7 +306,10 @@ def create(
     # peaks อยู่ใน detail ไม่ใช่ index: index ถูกอ่านทั้งก้อนทุกครั้งที่เปิดรายการ
     # 64 ตัวเลขคูณจำนวนประชุมจะบวมโดยไม่มีใครใช้จนกว่าจะเปิดการประชุมนั้นจริง
     detail = {"id": mid, "segments": segments, "summary": summary, "translations": {},
-              "peaks": peaks or None}
+              "peaks": peaks or None,
+              # แยก action items ตั้งแต่ตอนสร้าง ไม่ใช่ตอนอ่าน — ตอนอ่านจะแยกใหม่ทุกครั้ง
+              # ที่เปิดหน้า แล้วสถานะที่ผู้ใช้ติ๊กจะไม่มีที่อยู่ (BACKLOG #53)
+              "action_items": actionitems.reconcile(None, summary)}
     # _guard = ล็อกข้ามโพรเซส (BUG-056) · _write_detail = เขียนแล้วล้างแคช (BUG-055)
     # ต้องใช้ทั้งคู่ ไม่ใช่เลือกอย่างใดอย่างหนึ่ง
     with _guard():
@@ -330,6 +334,7 @@ def get(mid: str) -> dict | None:
     out["transcript"] = timestamped(detail)
     out["translations"] = detail.get("translations", {})
     out["peaks"] = detail.get("peaks") or None
+    out["action_items"] = detail.get("action_items") or []
     return out
 
 
@@ -376,6 +381,7 @@ def set_summary(mid: str, summary: str, error: str | None = None) -> dict | None
             return None
         detail = dict(load_detail(mid))
         detail["summary"] = summary
+        detail["action_items"] = actionitems.reconcile(detail.get("action_items"), summary)
         _write_detail(mid, detail)
         meta["summary_error"] = error
         meta["updated"] = datetime.now().isoformat(timespec="seconds")
@@ -393,6 +399,7 @@ def update(mid: str, title: str | None = None, summary: str | None = None) -> di
         if summary is not None:
             detail = dict(load_detail(mid))
             detail["summary"] = summary
+            detail["action_items"] = actionitems.reconcile(detail.get("action_items"), summary)
             _write_detail(mid, detail)
             meta["edited"] = True
             meta["summary_error"] = None  # คนเขียนสรุปเองแล้ว ไม่ต้องเตือนค้างไว้
@@ -400,6 +407,46 @@ def update(mid: str, title: str | None = None, summary: str | None = None) -> di
             meta["title"] = title.strip() or meta["title"]
         meta["updated"] = datetime.now().isoformat(timespec="seconds")
         _save_index(meetings)
+    return get(mid)
+
+
+def set_action_item(mid: str, item_id: str, *, done: bool | None = None,
+                    assignee: str | None = None) -> dict | None:
+    """ติ๊ก/ยกเลิกติ๊ก หรือแก้ผู้รับผิดชอบของรายการเดียว.
+
+    ตั้ง `assignee_edited` เมื่อคนแก้เอง เพื่อให้ `reconcile()` รู้ว่าครั้งหน้าอย่าเอา
+    ค่าจากสรุปมาทับ — ถ้าไม่มีธงนี้ สรุปใหม่จะลบสิ่งที่คนพิมพ์ทิ้งทุกครั้ง
+    """
+    with _guard():
+        if not any(m.get("id") == mid for m in _load_index()):
+            return None
+        detail = dict(load_detail(mid))
+        items = [dict(x) for x in (detail.get("action_items") or [])]
+        hit = next((x for x in items if x.get("id") == item_id), None)
+        if hit is None:
+            return None
+        if done is not None:
+            hit["done"] = bool(done)
+        if assignee is not None:
+            hit["assignee"] = assignee.strip()[:actionitems.MAX_TEXT]
+            hit["assignee_edited"] = True
+        detail["action_items"] = items
+        _write_detail(mid, detail)
+    return get(mid)
+
+
+def delete_action_item(mid: str, item_id: str) -> dict | None:
+    """ลบรายการ — มีไว้ให้ผู้ใช้เก็บกวาด orphan ที่ระบบไม่ยอมลบให้เอง."""
+    with _guard():
+        if not any(m.get("id") == mid for m in _load_index()):
+            return None
+        detail = dict(load_detail(mid))
+        items = [dict(x) for x in (detail.get("action_items") or [])]
+        left = [x for x in items if x.get("id") != item_id]
+        if len(left) == len(items):
+            return None
+        detail["action_items"] = left
+        _write_detail(mid, detail)
     return get(mid)
 
 
