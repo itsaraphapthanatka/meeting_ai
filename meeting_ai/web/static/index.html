@@ -56,7 +56,7 @@
          เครื่องประมวลผลที่กางอยู่แล้ว ไม่ต้องมีซ้ำ -->
     <button id="m-new" class="m-cta" type="button">
       <span class="m-cta-t">เริ่มประชุมใหม่</span>
-      <span class="m-cta-s">อัปโหลดไฟล์ · อัดสด · ส่งบอทเข้าห้อง</span>
+      <span class="m-cta-s">ส่งบอทเข้าห้อง · อัดสด · อัปโหลดไฟล์</span>
     </button>
     <button id="m-devices" class="m-chip" type="button" hidden>
       <span class="m-chip-dot"></span><span id="m-chip-text"></span>
@@ -138,26 +138,46 @@
          จอกว้างยังกางทั้งสามใบเหมือนเดิม เพราะมีที่พอและเทียบกันได้ในตาเดียว -->
     <div id="cap-label" class="field-label">เอาเสียงเข้ามายังไง</div>
     <div id="cap-seg" class="seg" role="tablist" hidden>
-      <button class="seg-btn is-on" type="button" role="tab" data-cap="upload">อัปโหลดไฟล์</button>
+      <button class="seg-btn is-on" type="button" role="tab" data-cap="bot">ส่งบอท</button>
       <button class="seg-btn" type="button" role="tab" data-cap="rec">อัดสด</button>
-      <button class="seg-btn" type="button" role="tab" data-cap="bot">ส่งบอท</button>
+      <button class="seg-btn" type="button" role="tab" data-cap="upload">อัปโหลดไฟล์</button>
     </div>
 
     <div class="cards">
-      <div class="card" data-cap="upload">
-        <h3>📁 อัปโหลดไฟล์</h3>
-        <p class="muted">ไฟล์ที่ Meet/Teams/Zoom อัดไว้ — mp3, m4a, wav, mp4, webm ฯลฯ</p>
-        <div id="drop" class="drop">
-          <svg class="drop-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 17v1.5A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V17"
-                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <p>ลากไฟล์มาวางที่นี่</p>
-          <p class="muted">หรือ</p>
-          <button id="btn-pick" class="btn" type="button">เลือกไฟล์</button>
-          <p class="drop-formats muted">mp3 · m4a · wav · mp4 · webm</p>
-          <input id="f-file" type="file" accept="audio/*,video/*" hidden>
+      <div class="card" data-cap="bot">
+        <h3>🤖 เชิญบอทเข้าห้องประชุม</h3>
+        <p class="muted">
+          Google Meet, Microsoft Teams, Zoom — บอทเข้าไปนั่งฟังแล้วสรุปให้
+          ไม่ต้องเปิดเครื่องไว้เอง สั่งจากมือถือก็ได้
+        </p>
+        <label class="field">
+          <span>ลิงก์ห้องประชุม</span>
+          <input id="b-url" type="url" placeholder="วางลิงก์ Meet / Teams / Zoom"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <p id="b-detect" class="hint"></p>
+        <div class="field-row">
+          <label class="field">
+            <span>ชื่อบอทที่แสดงในห้อง</span>
+            <input id="b-name" type="text" value="AI Notetaker" maxlength="60">
+          </label>
+          <label class="field field-sm" id="b-pass-field" hidden>
+            <span>รหัสเข้าห้อง (Zoom) — ใส่ไว้ดีกว่า</span>
+            <input id="b-pass" type="text" maxlength="40" placeholder="รหัสตัวเลขของห้อง">
+          </label>
+          <label class="field field-sm">
+            <span>อยู่ในห้องไม่เกิน</span>
+            <select id="b-max">
+              <option value="30">30 นาที</option>
+              <option value="60">1 ชั่วโมง</option>
+              <option value="120" selected>2 ชั่วโมง</option>
+              <option value="240">4 ชั่วโมง</option>
+              <option value="480">8 ชั่วโมง</option>
+            </select>
+          </label>
         </div>
+        <button id="btn-bot" class="btn btn-primary btn-wide" type="button">ส่งบอทเข้าห้อง</button>
+        <p id="bot-note" class="hint"></p>
       </div>
 
       <div class="card" id="rec-card" data-cap="rec">
@@ -222,40 +242,20 @@
         </div>
       </div>
 
-      <div class="card" data-cap="bot">
-        <h3>🤖 เชิญบอทเข้าห้องประชุม</h3>
-        <p class="muted">
-          Google Meet, Microsoft Teams, Zoom — บอทเข้าไปนั่งฟังแล้วสรุปให้
-          ไม่ต้องเปิดเครื่องไว้เอง สั่งจากมือถือก็ได้
-        </p>
-        <label class="field">
-          <span>ลิงก์ห้องประชุม</span>
-          <input id="b-url" type="url" placeholder="วางลิงก์ Meet / Teams / Zoom"
-                 autocomplete="off" spellcheck="false">
-        </label>
-        <p id="b-detect" class="hint"></p>
-        <div class="field-row">
-          <label class="field">
-            <span>ชื่อบอทที่แสดงในห้อง</span>
-            <input id="b-name" type="text" value="AI Notetaker" maxlength="60">
-          </label>
-          <label class="field field-sm" id="b-pass-field" hidden>
-            <span>รหัสเข้าห้อง (Zoom) — ใส่ไว้ดีกว่า</span>
-            <input id="b-pass" type="text" maxlength="40" placeholder="รหัสตัวเลขของห้อง">
-          </label>
-          <label class="field field-sm">
-            <span>อยู่ในห้องไม่เกิน</span>
-            <select id="b-max">
-              <option value="30">30 นาที</option>
-              <option value="60">1 ชั่วโมง</option>
-              <option value="120" selected>2 ชั่วโมง</option>
-              <option value="240">4 ชั่วโมง</option>
-              <option value="480">8 ชั่วโมง</option>
-            </select>
-          </label>
+      <div class="card" data-cap="upload">
+        <h3>📁 อัปโหลดไฟล์</h3>
+        <p class="muted">ไฟล์ที่ Meet/Teams/Zoom อัดไว้ — mp3, m4a, wav, mp4, webm ฯลฯ</p>
+        <div id="drop" class="drop">
+          <svg class="drop-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 17v1.5A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V17"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <p>ลากไฟล์มาวางที่นี่</p>
+          <p class="muted">หรือ</p>
+          <button id="btn-pick" class="btn" type="button">เลือกไฟล์</button>
+          <p class="drop-formats muted">mp3 · m4a · wav · mp4 · webm</p>
+          <input id="f-file" type="file" accept="audio/*,video/*" hidden>
         </div>
-        <button id="btn-bot" class="btn btn-primary btn-wide" type="button">ส่งบอทเข้าห้อง</button>
-        <p id="bot-note" class="hint"></p>
       </div>
     </div>
 
