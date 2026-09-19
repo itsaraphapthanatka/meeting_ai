@@ -248,6 +248,9 @@ h3 { font-size: 18px; line-height: 1.3; font-weight: 600; margin: 0 0 6px; }
 .field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 260px; min-width: 0; }
 .field-sm { flex: 0 1 180px; }
 .field > span { font-size: 13px; color: var(--muted); }
+/* ป้ายช่องบังคับ — เดิมชื่อการประชุมว่างได้แล้วระบบตั้งชื่อให้เอง ผู้ใช้จึงได้คลัง
+   ที่เต็มไปด้วย "อัดสด 19/9/2569 23:46" ซึ่งค้นไม่เจอภายหลัง (BACKLOG #78) */
+.req { font-weight: 600; font-size: 11px; color: var(--warn); }
 
 .field input, .field select {
   padding: 9px 11px;
