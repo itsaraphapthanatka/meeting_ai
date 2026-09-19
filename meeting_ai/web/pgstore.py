@@ -23,6 +23,7 @@ from pathlib import Path
 from .. import log as _log
 from .. import summarizer
 from ..config import WORKER_STALE_SECONDS as _WORKER_STALE_SECONDS, config
+from . import actionitems
 from . import db
 from ._common import (  # noqa: F401  ชื่อเหล่านี้เป็น API ของโมดูลนี้ ผู้เรียกอ้างผ่าน store.*
     ID_RE as _ID_RE,
@@ -424,11 +425,35 @@ def _has_peaks(conn) -> bool:
     return _peaks_ok
 
 
+_ai_ok: bool | None = None
+_ai_checked_at = 0.0
+
+
+def _has_action_items(conn) -> bool:
+    """เหตุผลเดียวกับ _has_peaks เป๊ะ — deploy มาก่อน migration เสมอ (BACKLOG #53)."""
+    global _ai_ok, _ai_checked_at
+    now = time.monotonic()
+    if _ai_ok is True:
+        return True
+    if _ai_ok is False and (now - _ai_checked_at) < _PEAKS_RECHECK_SEC:
+        return False
+    row = conn.execute(
+        """select 1 from information_schema.columns
+           where table_schema = 'meeting_ai' and table_name = 'meetings'
+             and column_name = 'action_items'"""
+    ).fetchone()
+    _ai_ok = row is not None
+    _ai_checked_at = now
+    return _ai_ok
+
+
 def reset_peaks_cache() -> None:
     """ให้ db-init/เทสต์บังคับตรวจใหม่ทันทีโดยไม่ต้องรอ 60 วินาที."""
-    global _peaks_ok, _peaks_checked_at
+    global _peaks_ok, _peaks_checked_at, _ai_ok, _ai_checked_at
     _peaks_ok = None
     _peaks_checked_at = 0.0
+    _ai_ok = None
+    _ai_checked_at = 0.0
 
 
 def create(
@@ -463,6 +488,12 @@ def create(
             vals += ",%s"
             upd = "peaks = excluded.peaks, "
             args.append(json.dumps(peaks) if peaks else None)
+        if _has_action_items(conn):
+            cols += ", action_items"
+            vals += ",%s"
+            upd += "action_items = excluded.action_items, "
+            args.append(json.dumps(actionitems.reconcile(None, summary),
+                                   ensure_ascii=False))
         conn.execute(
             f"""insert into meeting_ai.meetings ({cols})
                 values ({vals})
@@ -481,7 +512,8 @@ def create(
 def get(mid: str) -> dict | None:
     with db.connect() as conn:
         with_peaks = _has_peaks(conn)
-        extra = ", peaks" if with_peaks else ""
+        with_items = _has_action_items(conn)
+        extra = (", peaks" if with_peaks else "") + (", action_items" if with_items else "")
         row = conn.execute(
             f"""select {_META_COLS}, summary, segments, translations{extra}
                 from meeting_ai.meetings where id = %s""",
@@ -494,6 +526,7 @@ def get(mid: str) -> dict | None:
     out["segments_list"] = row[17] or []
     out["translations"] = row[18] or {}
     out["peaks"] = (row[19] or None) if with_peaks else None
+    out["action_items"] = (row[19 + int(with_peaks)] or []) if with_items else []
     out["transcript"] = timestamped({"segments": out["segments_list"]})
     return out
 
@@ -539,7 +572,81 @@ def update(mid: str, title: str | None = None, summary: str | None = None) -> di
         ).fetchone()
         if exists is None:
             return None
+        if summary is not None:
+            _sync_action_items(conn, mid, summary)
         _refresh_search(conn, mid)
+    return get(mid)
+
+
+def _sync_action_items(conn, mid: str, summary: str) -> None:
+    """แยก action items จากสรุปใหม่ แล้วรวมกับสถานะเดิม — ในทรานแซกชันเดียวกับการเขียนสรุป.
+
+    ถ้าแยกไปทำทีหลังคนละรอบ จะมีช่วงที่สรุปใหม่แล้วแต่รายการยังเป็นของเก่า
+    ซึ่งผู้ใช้ที่เปิดหน้าพอดีจะเห็นสถานะไม่ตรงกับสิ่งที่อ่าน
+    """
+    if not _has_action_items(conn):
+        return       # ยังไม่ได้รัน db-init — ปล่อยผ่าน ดีกว่าทำให้ทั้งเส้นพัง
+    row = conn.execute(
+        "select action_items from meeting_ai.meetings where id = %s", (mid,)
+    ).fetchone()
+    if row is None:
+        return
+    merged = actionitems.reconcile(row[0] or [], summary)
+    conn.execute(
+        "update meeting_ai.meetings set action_items = %s where id = %s",
+        (json.dumps(merged, ensure_ascii=False), mid),
+    )
+
+
+def _write_action_items(conn, mid: str, items: list[dict]) -> bool:
+    if not _has_action_items(conn):
+        return False
+    conn.execute(
+        "update meeting_ai.meetings set action_items = %s, updated_at = now() where id = %s",
+        (json.dumps(items, ensure_ascii=False), mid),
+    )
+    return True
+
+
+def set_action_item(mid: str, item_id: str, *, done: bool | None = None,
+                    assignee: str | None = None) -> dict | None:
+    """ติ๊ก/ยกเลิกติ๊ก หรือแก้ผู้รับผิดชอบของรายการเดียว (ดู store.set_action_item)."""
+    with db.connect() as conn:
+        if not _has_action_items(conn):
+            return None
+        row = conn.execute(
+            "select action_items from meeting_ai.meetings where id = %s", (mid,)
+        ).fetchone()
+        if row is None:
+            return None
+        items = [dict(x) for x in (row[0] or [])]
+        hit = next((x for x in items if x.get("id") == item_id), None)
+        if hit is None:
+            return None
+        if done is not None:
+            hit["done"] = bool(done)
+        if assignee is not None:
+            hit["assignee"] = assignee.strip()[:actionitems.MAX_TEXT]
+            hit["assignee_edited"] = True
+        _write_action_items(conn, mid, items)
+    return get(mid)
+
+
+def delete_action_item(mid: str, item_id: str) -> dict | None:
+    """ลบรายการ — มีไว้ให้ผู้ใช้เก็บกวาด orphan ที่ระบบไม่ยอมลบให้เอง."""
+    with db.connect() as conn:
+        if not _has_action_items(conn):
+            return None
+        row = conn.execute(
+            "select action_items from meeting_ai.meetings where id = %s", (mid,)
+        ).fetchone()
+        if row is None:
+            return None
+        items = [dict(x) for x in (row[0] or [])]
+        left = [x for x in items if x.get("id") != item_id]
+        if len(left) == len(items):
+            return None
+        _write_action_items(conn, mid, left)
     return get(mid)
 
 
@@ -554,6 +661,7 @@ def set_summary(mid: str, summary: str, error: str | None = None) -> dict | None
         ).fetchone()
         if row is None:
             return None
+        _sync_action_items(conn, mid, summary)
         _refresh_search(conn, mid)
     return get(mid)
 

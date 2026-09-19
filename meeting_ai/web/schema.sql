@@ -65,6 +65,7 @@ create table if not exists meeting_ai.meetings (
     transcript_edited boolean not null default false,
     segments          jsonb not null default '[]'::jsonb,
     translations      jsonb not null default '{}'::jsonb,
+    action_items      jsonb not null default '[]'::jsonb,
     -- key ของไฟล์เสียงในที่เก็บ (ดิสก์ในเครื่อง หรือ blob บน cloud)
     audio_key         text,
     -- ความดังต่อช่วงสำหรับวาด waveform (array ของ 0-100) — worker คำนวณให้ตอนประมวลผล
@@ -79,6 +80,10 @@ create table if not exists meeting_ai.meetings (
 
 -- ฐานที่สร้างก่อนมี waveform (BACKLOG #60)
 alter table meeting_ai.meetings add column if not exists peaks jsonb;
+-- BACKLOG #53 — โค้ดขึ้นก่อน migration เสมอบน Vercel ทุกจุดที่อ้างคอลัมน์นี้จึงต้อง
+-- ผ่าน _has_action_items() ก่อน ไม่งั้นหน้าเปิดการประชุมพังทั้งหน้าเหมือนตอน peaks
+alter table meeting_ai.meetings
+  add column if not exists action_items jsonb not null default '[]'::jsonb;
 
 create index if not exists meetings_owner_idx on meeting_ai.meetings (owner_id, created_at desc);
 create index if not exists meetings_created_idx on meeting_ai.meetings (created_at desc);
