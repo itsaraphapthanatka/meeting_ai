@@ -88,11 +88,25 @@ const jsonPost = (body) => ({
   body: JSON.stringify(body),
 });
 
-function banner(msg) {
+/* tag = เหตุผลที่แบนเนอร์นี้ขึ้น ใช้ถอนมันทีหลังเมื่อเหตุผลนั้นหมดไป (ดู expireBanner) */
+function banner(msg, tag = '') {
   const el = $('#banner');
-  if (!msg) { el.hidden = true; return; }
+  if (!msg) { el.hidden = true; el.dataset.tag = ''; return; }
   el.hidden = false;
   el.textContent = msg;
+  el.dataset.tag = tag;
+}
+
+/* ข้อความขึ้นต้นของ step ที่ฝั่งเซิร์ฟเวอร์ส่งมาเมื่อบอทเข้าห้องได้แล้ว
+   ต้องตรงกับ runner.py -> bot_job() -> tick() มีเทสต์ผูกสองฝั่งไว้ (BUG-072) */
+const BOT_IN_ROOM = 'บอทอยู่ในห้อง';
+
+/* แบนเนอร์ "ไปกด รับเข้าห้อง (Admit)" ถูกต้องตอนกดส่ง แต่พอบอทเข้าห้องได้แล้วมันกลายเป็น
+   คำสั่งที่ขัดกับการ์ดงานในจอเดียวกันที่บอกว่า "บอทอยู่ในห้อง 03:02" — ผู้ใช้อ่านแล้วไม่รู้ว่า
+   จะเชื่ออันไหน ถอนออกทันทีที่เหตุผลหมดไป */
+function expireBanner() {
+  if ($('#banner').dataset.tag !== 'bot-admit') return;
+  if (state.jobs.some((j) => isMine(j) && (j.step || '').startsWith(BOT_IN_ROOM))) banner('');
 }
 
 /* ---------------- markdown ----------------
@@ -574,6 +588,7 @@ async function pollJobs() {
     (j) => (j.status === 'running' || j.status === 'queued') && isMine(j));
   state.jobs = data.jobs || [];
   renderJobs();
+  expireBanner();
   updateStreamingIndicator();
   // ผ่าน renderWorkers() ตัวเดียวกับ refreshWorkers() เสมอ — การ์ด job_title/job_id ที่นั่นพอแล้ว
   if (data.workers) { state.workers = data.workers; renderWorkers(); }
@@ -1111,7 +1126,7 @@ async function sendBot() {
     // ซึ่งอ่านได้ว่า "ยังไม่ได้ส่ง" แล้วกดส่งซ้ำ — ทั้งที่บอทเข้าห้องไปแล้ว
     // (showNew('#home') สร้างฟอร์มใหม่ให้ด้วย จึงไม่ต้องล้าง #b-url เอง)
     showNew('#home');
-    banner('ส่งบอทแล้ว — ไปกด "รับเข้าห้อง" (Admit) ในห้องประชุมด้วย');
+    banner('ส่งบอทแล้ว — ไปกด "รับเข้าห้อง" (Admit) ในห้องประชุมด้วย', 'bot-admit');
   } catch (e) {
     banner(`ส่งบอทไม่สำเร็จ: ${e.message}`);
   } finally {
