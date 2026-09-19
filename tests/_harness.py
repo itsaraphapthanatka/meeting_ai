@@ -43,11 +43,11 @@ from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 from unittest import mock  # noqa: E402
 
-from meeting_ai.web import backend, blobstore, jobs, server  # noqa: E402
+from meeting_ai.web import actionitems, backend, blobstore, jobs, server  # noqa: E402
 from meeting_ai.web import store as filestore  # noqa: E402
 
 __all__ = [
-    "backend", "blobstore", "jobs", "server", "filestore",
+    "actionitems", "backend", "blobstore", "jobs", "server", "filestore",
     "FakeStore", "CloudCase", "LocalCase", "AuthCase", "new_mid",
 ]
 
@@ -181,6 +181,7 @@ class FakeStore:
             "created": _now(), "updated": _now(),
             "summary": summary, "segments_list": list(segments), "translations": {},
             "peaks": list(peaks) if peaks else None,
+            "action_items": actionitems.reconcile(None, summary),
         }
         self.meetings[mid] = m
         return dict(m)
@@ -201,6 +202,41 @@ class FakeStore:
             return None
         m["summary"] = summary
         m["summary_error"] = error
+        m["action_items"] = actionitems.reconcile(m.get("action_items"), summary)
+        m["updated"] = _now()
+        return dict(m)
+
+    # ---------- action items (BACKLOG #53) ----------
+    # ของปลอมนี้ต้องมีเมธอดครบเหมือน pgstore จริง ไม่งั้นเส้น cloud จะตายด้วย AttributeError
+    # ตอนรันจริงแทนที่จะแดงในเทสต์ — บทเรียนเดียวกับตอน rate_hit/rate_reset หายไป
+
+    def set_action_item(self, mid: str, item_id: str, *, done: bool | None = None,
+                        assignee: str | None = None) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        items = [dict(x) for x in (m.get("action_items") or [])]
+        hit = next((x for x in items if x.get("id") == item_id), None)
+        if hit is None:
+            return None
+        if done is not None:
+            hit["done"] = bool(done)
+        if assignee is not None:
+            hit["assignee"] = assignee.strip()[:actionitems.MAX_TEXT]
+            hit["assignee_edited"] = True
+        m["action_items"] = items
+        m["updated"] = _now()
+        return dict(m)
+
+    def delete_action_item(self, mid: str, item_id: str) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        items = [dict(x) for x in (m.get("action_items") or [])]
+        left = [x for x in items if x.get("id") != item_id]
+        if len(left) == len(items):
+            return None
+        m["action_items"] = left
         m["updated"] = _now()
         return dict(m)
 
