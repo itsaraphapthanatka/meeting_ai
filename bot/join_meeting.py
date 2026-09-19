@@ -134,6 +134,7 @@ async def _monitor(page, stop: asyncio.Event, end_markers: str,
     last_end_check = 0.0
     last_shot = 0.0
     inside = False
+    was_inside = False      # เคยเข้าห้องได้จริงอย่างน้อยหนึ่งครั้งหรือยัง (ดู leave_reason)
     set_status("waiting")
     while not stop.is_set():
         now = time.time()
@@ -142,17 +143,21 @@ async def _monitor(page, stop: asyncio.Event, end_markers: str,
             return
         if now - last_end_check >= 5:
             last_end_check = now
-            if await _visible(page, end_markers, timeout=800):
-                log("ตรวจพบว่าประชุมจบ/ออกจากห้องแล้ว")
-                set_status("left")
-                return
+            end_seen = await _visible(page, end_markers, timeout=800)
             # เข้าห้องได้จริงหรือยัง — วัดจากปุ่มที่มีเฉพาะตอนอยู่ในห้อง
             now_inside = await _visible(page, in_room_markers, timeout=800)
             if now_inside != inside:
                 inside = now_inside
+                was_inside = was_inside or inside
                 set_status("inroom" if inside else "waiting")
                 log("เข้าห้องแล้ว เริ่มได้ยินเสียงห้อง" if inside
                     else "ยังอยู่หน้าห้อง รอ host กดรับ")
+            # ตัวจับ "ประชุมจบ" เชื่อได้ต่อเมื่อเคยเข้าห้องแล้ว — ดู platforms.leave_reason
+            why = platforms.leave_reason(was_inside, end_seen, now - start)
+            if why:
+                log(why)
+                set_status("left")
+                return
         if now - last_shot >= SHOT_EVERY_SEC:
             last_shot = now
             await shoot(page, SHOT_IN_ROOM)

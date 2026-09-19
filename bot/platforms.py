@@ -52,16 +52,55 @@ def prepare_url(url: str, platform: str) -> str:
 
 # ---------- ตัวช่วยที่ทนต่อ UI ที่เปลี่ยนบ่อย ----------
 
-async def click_first(page, selectors, timeout=4000) -> bool:
+# selector ที่รวมเป็นชุดเดียวด้วยคอมมาไม่ได้ (คนละ engine ของ Playwright)
+_UNCOMBINABLE = ("text=", "xpath=", "//", "css=")
+
+
+def _combinable(selectors) -> bool:
+    return all(not s.strip().startswith(_UNCOMBINABLE) for s in selectors)
+
+
+async def _first_visible(page, selectors, timeout: int):
+    """รอ selector **ทุกตัวพร้อมกัน** แล้วคืนตัวที่ตรงตามลำดับความสำคัญเดิม (None = ไม่มีเลย).
+
+    ของเดิมไล่ทีละตัวด้วย timeout เต็มก้อนต่อหนึ่งตัว ตัวที่ "ไม่มีอยู่จริงบนหน้านี้" จึงกิน
+    เวลาเต็มเพดานก่อนจะได้ลองตัวถัดไป — ห้อง Meet ที่ต้องขออนุมัติมีแต่ปุ่ม "Ask to join"
+    จึงเสีย 5 วินาทีให้ "Join now" ที่ไม่มีอยู่ ทุกครั้งที่ส่งบอท (วัดจาก log ของเครื่อง
+    ประมวลผล 2026-09-19: ตั้งชื่อบอท -> กดปุ่มเข้าห้อง ใช้ 5 วินาที)
+
+    รอรวมทีเดียวก่อน แล้วค่อยเลือกตามลำดับเดิมด้วยเวลาสั้น ๆ — **ลำดับความสำคัญไม่เปลี่ยน**
+    (สำคัญกับรายการที่มี selector กว้าง ๆ เป็นตัวสำรองท้ายสุด เช่น `input[type="text"]`)
+    """
+    if _combinable(selectors):
+        try:
+            await page.locator(", ".join(selectors)).first.wait_for(
+                state="visible", timeout=timeout)
+        except Exception:
+            return None
+        timeout = SETTLE_MS       # โผล่แล้วอย่างน้อยหนึ่งตัว ไม่ต้องรอนานอีก
     for sel in selectors:
         try:
             el = page.locator(sel).first
             await el.wait_for(state="visible", timeout=timeout)
-            await el.click()
-            return True
+            return el
         except Exception:
             continue
-    return False
+    return None
+
+
+# เวลารอสั้น ๆ ตอนรู้แล้วว่ามีของโผล่ เหลือแค่ถามว่า "ตัวไหน"
+SETTLE_MS = 300
+
+
+async def click_first(page, selectors, timeout=4000) -> bool:
+    el = await _first_visible(page, selectors, timeout)
+    if el is None:
+        return False
+    try:
+        await el.click()
+        return True
+    except Exception:
+        return False
 
 
 async def describe_inputs(page) -> str:
@@ -92,15 +131,14 @@ async def wait_any(page, selectors, timeout=30000) -> bool:
 
 
 async def fill_first(page, selectors, value, timeout=5000) -> bool:
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            await el.wait_for(state="visible", timeout=timeout)
-            await el.fill(value)
-            return True
-        except Exception:
-            continue
-    return False
+    el = await _first_visible(page, selectors, timeout)
+    if el is None:
+        return False
+    try:
+        await el.fill(value)
+        return True
+    except Exception:
+        return False
 
 
 # ---------- Google Meet ----------
@@ -313,3 +351,31 @@ def sandbox_args() -> list[str]:
     `meeting_ai/bot.py` -> `_sandbox_flags()` ซึ่งตั้ง env ตัวนี้มาให้
     """
     return [] if os.environ.get(SANDBOX_ENV) == "1" else ["--no-sandbox"]
+
+# ---------- ควรออกจากห้องหรือยัง ----------
+
+# ให้เวลา host กดรับเข้าห้องนานเท่านี้ ก่อนจะยอมแพ้ (วินาที)
+# ยาวพอให้คนหาอีเมล/สลับแท็บมากด แต่ไม่ยาวจนอัดความเงียบทิ้งเป็นชั่วโมง
+JOIN_WAIT_SEC = 120
+
+
+def leave_reason(was_inside: bool, end_seen: bool, waited: float) -> str:
+    """เหตุผลที่ควรออกจากห้อง — คืน '' แปลว่าอยู่ต่อ.
+
+    **ตัวจับ "ประชุมจบ" เชื่อได้ต่อเมื่อบอทเคยเข้าห้องแล้วเท่านั้น** (BUG-066)
+
+    ข้อความที่ใช้จับว่าประชุมจบทับกับข้อความบน "หน้าห้องรอ" ของ Meet เอง — หน้ารอขึ้นว่า
+    `Returning to home screen in 60 seconds` ซึ่งตรงกับรูปแบบ `Return to home` ใน MEET_END
+    ผลคือรอบตรวจรอบแรก (ทำงานทันทีที่เข้าลูป) เจอทันทีแล้วสรุปว่าประชุมจบ บอทจึงออกจากห้อง
+    **ในวินาทีเดียวกับที่กดปุ่มเข้าห้อง** เจ้าของไม่มีทางกด "รับเข้าห้อง" ทัน ไม่ว่าจะเร็วแค่ไหน
+    (วัดจาก log เครื่องประมวลผล 2026-09-19: 11:56:53 กดเข้าห้อง / 11:56:53 ตรวจพบว่าจบ)
+
+    ก่อนเคยเข้าห้อง จึงไม่สนใจตัวจับจบเลย แต่ต้องมีเพดานเวลา ไม่งั้นห้องที่ปฏิเสธบอทจริง ๆ
+    จะถูกอัดเป็นความเงียบยาวจนครบ MAX_MINUTES (ค่าเริ่มต้น 180 นาที)
+    """
+    if was_inside:
+        return "ตรวจพบว่าประชุมจบ/ออกจากห้องแล้ว" if end_seen else ""
+    if waited >= JOIN_WAIT_SEC:
+        return (f"ไม่ได้ถูกรับเข้าห้องภายใน {int(JOIN_WAIT_SEC)} วินาที — "
+                "ต้องมีคนในห้องกด “รับเข้าห้อง” (Admit) ให้บอท")
+    return ""
