@@ -447,13 +447,37 @@ def _has_action_items(conn) -> bool:
     return _ai_ok
 
 
+_qa_ok: bool | None = None
+_qa_checked_at = 0.0
+
+
+def _has_qa(conn) -> bool:
+    """เหตุผลเดียวกับ _has_peaks/_has_action_items — deploy มาก่อน migration เสมอ."""
+    global _qa_ok, _qa_checked_at
+    now = time.monotonic()
+    if _qa_ok is True:
+        return True
+    if _qa_ok is False and (now - _qa_checked_at) < _PEAKS_RECHECK_SEC:
+        return False
+    row = conn.execute(
+        """select 1 from information_schema.columns
+           where table_schema = 'meeting_ai' and table_name = 'meetings'
+             and column_name = 'qa'"""
+    ).fetchone()
+    _qa_ok = row is not None
+    _qa_checked_at = now
+    return _qa_ok
+
+
 def reset_peaks_cache() -> None:
     """ให้ db-init/เทสต์บังคับตรวจใหม่ทันทีโดยไม่ต้องรอ 60 วินาที."""
-    global _peaks_ok, _peaks_checked_at, _ai_ok, _ai_checked_at
+    global _peaks_ok, _peaks_checked_at, _ai_ok, _ai_checked_at, _qa_ok, _qa_checked_at
     _peaks_ok = None
     _peaks_checked_at = 0.0
     _ai_ok = None
     _ai_checked_at = 0.0
+    _qa_ok = None
+    _qa_checked_at = 0.0
 
 
 def create(
@@ -513,7 +537,9 @@ def get(mid: str) -> dict | None:
     with db.connect() as conn:
         with_peaks = _has_peaks(conn)
         with_items = _has_action_items(conn)
-        extra = (", peaks" if with_peaks else "") + (", action_items" if with_items else "")
+        with_qa = _has_qa(conn)
+        extra = ((", peaks" if with_peaks else "") + (", action_items" if with_items else "")
+                 + (", qa" if with_qa else ""))
         row = conn.execute(
             f"""select {_META_COLS}, summary, segments, translations{extra}
                 from meeting_ai.meetings where id = %s""",
@@ -527,6 +553,7 @@ def get(mid: str) -> dict | None:
     out["translations"] = row[18] or {}
     out["peaks"] = (row[19] or None) if with_peaks else None
     out["action_items"] = (row[19 + int(with_peaks)] or []) if with_items else []
+    out["qa"] = (row[19 + int(with_peaks) + int(with_items)] or []) if with_qa else []
     out["transcript"] = timestamped({"segments": out["segments_list"]})
     return out
 
@@ -606,6 +633,49 @@ def _write_action_items(conn, mid: str, items: list[dict]) -> bool:
         (json.dumps(items, ensure_ascii=False), mid),
     )
     return True
+
+
+MAX_QA = 20          # ต้องตรงกับ store.MAX_QA — มีเทสต์ผูกไว้
+
+
+def add_qa(mid: str, question: str, answer: str, enough: bool = True) -> dict | None:
+    """บันทึกคำถาม-คำตอบหนึ่งคู่ (ดู store.add_qa)."""
+    with db.connect() as conn:
+        if not _has_qa(conn):
+            return None      # ยังไม่ได้รัน db-init — ทิ้งคำตอบดีกว่าทำให้ทั้งงานพัง
+        row = conn.execute(
+            "select qa from meeting_ai.meetings where id = %s", (mid,)
+        ).fetchone()
+        if row is None:
+            return None
+        rows = [dict(x) for x in (row[0] or [])]
+        rows.append({"id": secrets.token_hex(6), "question": question, "answer": answer,
+                     "enough": bool(enough), "asked": _now().isoformat(timespec="seconds")})
+        conn.execute(
+            "update meeting_ai.meetings set qa = %s, updated_at = now() where id = %s",
+            (json.dumps(rows[-MAX_QA:], ensure_ascii=False), mid),
+        )
+    return get(mid)
+
+
+def delete_qa(mid: str, qa_id: str) -> dict | None:
+    with db.connect() as conn:
+        if not _has_qa(conn):
+            return None
+        row = conn.execute(
+            "select qa from meeting_ai.meetings where id = %s", (mid,)
+        ).fetchone()
+        if row is None:
+            return None
+        rows = [dict(x) for x in (row[0] or [])]
+        left = [x for x in rows if x.get("id") != qa_id]
+        if len(left) == len(rows):
+            return None
+        conn.execute(
+            "update meeting_ai.meetings set qa = %s, updated_at = now() where id = %s",
+            (json.dumps(left, ensure_ascii=False), mid),
+        )
+    return get(mid)
 
 
 def set_action_item(mid: str, item_id: str, *, done: bool | None = None,

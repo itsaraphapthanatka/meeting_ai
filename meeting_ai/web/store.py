@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -335,6 +336,7 @@ def get(mid: str) -> dict | None:
     out["translations"] = detail.get("translations", {})
     out["peaks"] = detail.get("peaks") or None
     out["action_items"] = detail.get("action_items") or []
+    out["qa"] = detail.get("qa") or []
     return out
 
 
@@ -407,6 +409,42 @@ def update(mid: str, title: str | None = None, summary: str | None = None) -> di
             meta["title"] = title.strip() or meta["title"]
         meta["updated"] = datetime.now().isoformat(timespec="seconds")
         _save_index(meetings)
+    return get(mid)
+
+
+MAX_QA = 20          # เก็บคำถามล่าสุดเท่านี้ต่อการประชุม — กันแถวบวมจากการถามรัว ๆ
+
+
+def add_qa(mid: str, question: str, answer: str, enough: bool = True) -> dict | None:
+    """บันทึกคำถาม-คำตอบหนึ่งคู่ (ADR-002 ข้อ 2.5 · ไม่แตะ summary และไม่แตะ translations).
+
+    เก็บใน detail ไม่ใช่ index: index ถูกอ่านทั้งก้อนทุกครั้งที่เปิดรายการ คำตอบยาวหลักพัน
+    ตัวอักษรคูณจำนวนประชุมจะบวมโดยไม่มีใครใช้ จนกว่าจะเปิดการประชุมนั้นจริง (เหตุผลเดียวกับ peaks)
+    """
+    with _guard():
+        if not any(m.get("id") == mid for m in _load_index()):
+            return None
+        detail = dict(load_detail(mid))
+        rows = [dict(x) for x in (detail.get("qa") or [])]
+        rows.append({"id": secrets.token_hex(6), "question": question, "answer": answer,
+                     "enough": bool(enough),
+                     "asked": datetime.now().isoformat(timespec="seconds")})
+        detail["qa"] = rows[-MAX_QA:]
+        _write_detail(mid, detail)
+    return get(mid)
+
+
+def delete_qa(mid: str, qa_id: str) -> dict | None:
+    with _guard():
+        if not any(m.get("id") == mid for m in _load_index()):
+            return None
+        detail = dict(load_detail(mid))
+        rows = [dict(x) for x in (detail.get("qa") or [])]
+        left = [x for x in rows if x.get("id") != qa_id]
+        if len(left) == len(rows):
+            return None
+        detail["qa"] = left
+        _write_detail(mid, detail)
     return get(mid)
 
 

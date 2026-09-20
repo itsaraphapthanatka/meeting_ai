@@ -67,7 +67,7 @@ def machine_caps() -> dict:
 
 def job_kinds(caps: dict) -> list[str]:
     """ชนิดงานที่เครื่องซึ่งมี caps ชุดนี้รับได้ — ใช้กรองตอนคว้างานจากคิว."""
-    kinds = ["process", "summarize", "translate"]
+    kinds = ["process", "summarize", "translate", "ask"]
     if caps.get("bot"):
         kinds.append("bot")
     return kinds
@@ -448,8 +448,24 @@ def translate_job(spec: dict, progress: ProgressFn) -> dict:
     return {"lang": lang, "text": summarizer.translate(text, lang)}
 
 
+def ask_job(spec: dict, progress: ProgressFn) -> dict:
+    """ตอบคำถามจากสรุปของการประชุมนี้ (ADR-002 · BACKLOG #54).
+
+    คำถามมาจาก `spec` ที่เซิร์ฟเวอร์สร้าง ไม่ใช่จาก result ที่ worker ส่งกลับ — เหตุผล
+    เดียวกับภาษาปลายทางของงานแปล (BUG-048) ฝั่ง apply_result() ก็อ่านจาก spec เช่นกัน
+    """
+    question = (spec.get("question") or "").strip()
+    summary = spec.get("summary") or ""
+    if not question:
+        raise RuntimeError("งานนี้ไม่มีคำถามใน spec — ถามใหม่อีกครั้ง")
+    progress("ค้นคำตอบจากสรุป", 0.4)
+    out = summarizer.answer(question, summary)
+    return {"answer": out["text"], "enough": out["enough"]}
+
+
 HANDLERS = {
     "process": None,      # ต้องใช้ fetch/mix_dir จึงเรียก transcribe_job ตรงๆ
     "summarize": summarize_job,
     "translate": translate_job,
+    "ask": ask_job,
 }
