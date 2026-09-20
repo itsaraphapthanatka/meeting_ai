@@ -56,13 +56,20 @@ def machine_caps() -> dict:
     ถ้าไปดูความสามารถของตัวเองจะปิดตัวเลือกให้ผู้ใช้ทั้งที่ worker ทำได้ จึงต้องถามจาก worker
     """
     bot_missing = bot.missing_pieces()
-    return {
+    caps = {
         **stt.capabilities(),
         "diarize": diarize.available(),
         "diarize_missing": diarize.missing_pieces(),
         "bot": not bot_missing,
         "bot_missing": bot_missing,
     }
+    # ชนิดงานที่ **เครื่องนี้** คว้าได้ ตามโค้ดที่เครื่องนี้รันอยู่จริง
+    # เซิร์ฟเวอร์คำนวณแทนไม่ได้ เพราะสองฝั่งเป็นคนละเวอร์ชันกันได้ (BACKLOG #84):
+    # 2026-09-20 worker ค้างอยู่ที่ PR #71 ส่วน production ไปถึง #98 แล้ว งาน `ask`
+    # ที่ #54 เพิ่งเพิ่มจึงค้างคิว 17 ชั่วโมงโดยไม่มีใครรู้ — เซิร์ฟเวอร์เห็น caps ครบ
+    # แล้วสรุปเองว่า worker รับ `ask` ได้ ทั้งที่โค้ดบนเครื่องนั้นไม่รู้จัก `ask` เลย
+    caps["kinds"] = job_kinds(caps)
+    return caps
 
 
 def job_kinds(caps: dict) -> list[str]:
