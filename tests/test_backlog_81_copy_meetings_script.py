@@ -93,12 +93,60 @@ class TestItSurvivesAnUnmigratedDestination(unittest.TestCase):
         self.assertEqual(set(const("OPTIONAL_COLS")), {"peaks", "action_items", "qa"})
 
 
+class TestTheWrongDatabaseGuard(unittest.TestCase):
+    """เกิดขึ้นจริงมาแล้ว 2026-09-20 — รัน `db-init` ใส่ฐานผิดไปสองรอบ.
+
+    ฐานเก่ากับ production ชื่อเหมือนกันทั้งคู่ (`neondb`) จึงดูจากชื่อไม่ออก ต้องนับแถวเอา
+    ลองจริงแล้ว: สั่ง `--expect-dst-meetings 8` กับฐานที่มี 13 → พิมพ์ว่าหยุดก่อน exit 1
+    ส่วน `--expect-dst-meetings 13` → ผ่านแล้วไปต่อ
+    """
+
+    def test_the_flag_exists_and_takes_a_number(self):
+        self.assertIn('"--expect-dst-meetings", type=int', SRC)
+
+    def test_it_is_optional(self):
+        # ไม่ควรบังคับ คนที่รู้อยู่แล้วว่าชี้ถูกไม่ต้องนับให้
+        self.assertIn("if args.expect_dst_meetings is not None:", SRC)
+
+    def test_a_mismatch_stops_the_run(self):
+        i = SRC.index("if args.expect_dst_meetings is not None:")
+        block = SRC[i:SRC.index("rows = src.execute", i)]
+        self.assertIn("return 1", block, "ไม่ตรงแล้วต้องหยุด ไม่ใช่แค่เตือน")
+
+    def test_the_check_runs_before_anything_else(self):
+        # ล้มทั้งใน dry-run ด้วย ไม่งั้นคนอ่านรายงานของฐานผิดไปทั้งหน้าแล้วเชื่อ
+        i = SRC.index("if args.expect_dst_meetings is not None:")
+        self.assertLess(i, SRC.index("rows = src.execute"))
+        self.assertLess(i, SRC.index("if not args.apply:"))
+
+    def test_it_counts_rows_not_database_names(self):
+        block = SRC[SRC.index("if args.expect_dst_meetings is not None:"):]
+        block = block[:block.index("rows = src.execute")]
+        self.assertIn("select count(*) from meeting_ai.meetings", block)
+
+
 class TestSecretsDoNotLeak(unittest.TestCase):
 
     def test_the_urls_come_from_the_environment_not_argv(self):
         # argument จะไปโผล่ใน shell history และใน ps ของทั้งเครื่อง
         self.assertIn('os.environ.get("SRC_DATABASE_URL")', SRC)
         self.assertIn('os.environ.get("DST_DATABASE_URL")', SRC)
+
+    def test_the_source_defaults_to_the_local_env_file(self):
+        """เจ้าของเปิด `.env` อ่านค่าเองไม่สะดวก และยิ่งคัดลอกไปมายิ่งเสี่ยงหลุด.
+
+        ต้นทางปกติคือฐานที่ `.env` ของเครื่องนั้นชี้อยู่แล้ว จึงให้ default ไปเลย
+        เหลือให้กรอกแค่ปลายทาง
+        """
+        self.assertIn('os.environ.get("SRC_DATABASE_URL") or os.environ.get("DATABASE_URL")',
+                      SRC)
+
+    def test_the_destination_never_defaults(self):
+        # ปลายทางคือที่ที่จะถูกเขียน ห้ามเดาเด็ดขาด
+        i = SRC.index('dst_url = os.environ.get("DST_DATABASE_URL")')
+        line_end = SRC.index(chr(10), i)
+        self.assertNotIn(" or os.environ", SRC[i:line_end])
+        self.assertIn("if not dst_url:", SRC)
         for bad in ("--src", "--dst", "--src-url", "--dst-url"):
             with self.subTest(bad=bad):
                 self.assertNotIn(f'"{bad}"', SRC)
