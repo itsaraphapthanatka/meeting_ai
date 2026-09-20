@@ -767,8 +767,18 @@ def set_segments(mid: str, segments: list[dict]) -> dict | None:
 def access(mid: str, user_id: str | None) -> str:
     """สิทธิ์ของผู้ใช้กับการประชุมหนึ่ง: 'owner' | 'team' | 'none'.
 
-    owner  = เจ้าของ (หรือการประชุมที่ไม่มีเจ้าของ เช่นย้ายมาจากโหมดไฟล์)
+    owner  = เจ้าของตัวจริงเท่านั้น
     team   = การประชุมถูกตั้งเป็น team ทุกคนในฐานนี้อ่าน/เกลาได้ แต่ลบ/แชร์ไม่ได้
+
+    **แถวที่ไม่มีเจ้าของคืน `none` ตั้งแต่ 2026-09-20** (BACKLOG #42) — เดิมคืน `owner`
+    ให้ผู้ใช้ที่ล็อกอิน *คนไหนก็ได้* โดยตั้งใจจะรองรับข้อมูลที่ย้ายมาจากโหมดไฟล์
+    วัดกับฐานจริงแล้วว่า **ไม่มีแถวแบบนั้นเลย (0 แถว)** ทางนั้นจึงไม่ได้รองรับอะไรอยู่
+    มีแต่ความเสี่ยง: `owner_id ... on delete set null` แปลว่าลบผู้ใช้หนึ่งคน =
+    การประชุมทั้งหมดของเขากลายเป็นของทุกคนทันที
+
+    ผลของการปิดทางนี้: ถ้าเกิดแถวแบบนั้นขึ้นมาจริง **จะไม่มีใครเปิดได้เลย แม้แต่แอดมิน**
+    ซึ่งตั้งใจ — เงียบ ๆ ให้ทุกคนเป็นเจ้าของนั้นแย่กว่า และ `mai db-check` นับจำนวนให้อยู่แล้ว
+    วิธีกู้คือเซ็ต `owner_id` ให้ถูกคนในฐาน แล้วแถวนั้นกลับมาใช้ได้ทันที
     """
     with db.connect() as conn:
         row = conn.execute(
@@ -777,16 +787,13 @@ def access(mid: str, user_id: str | None) -> str:
     if row is None:
         return "none"
     owner_id, visibility = (str(row[0]) if row[0] else None), row[1]
-    if user_id and owner_id is None:
-        # ทางนี้ตั้งใจให้ข้อมูลที่ย้ายมาจากโหมดไฟล์ยังใช้ได้ แต่ผลคือ **ผู้ใช้ที่ล็อกอิน
-        # คนไหนก็ได้** กลายเป็นเจ้าของ — ลบ/แชร์/เปลี่ยน visibility ได้หมด
-        # และแถวแบบนี้เกิดใหม่ได้เองด้วย: `owner_id ... on delete set null` ใน schema
-        # แปลว่าลบผู้ใช้หนึ่งคนในฐาน = การประชุมทั้งหมดของเขากลายเป็นของทุกคน
-        # อย่างน้อยต้องไม่เงียบ (BACKLOG #42 · นับทั้งฐานได้ด้วย `mai db-check`)
+    if owner_id is None:
+        # ปิดตายตั้งแต่ BACKLOG #42 — ดู docstring ว่าทำไม ยังเขียน log ไว้เพราะแถวแบบนี้
+        # ไม่ควรมีอยู่เลย ถ้าโผล่มาต้องมีคนเห็น ไม่ใช่เงียบหายไปกับสิทธิ์ที่ถูกปฏิเสธ
         _log.get(__name__).warning(
-            "การประชุม %s ไม่มีเจ้าของ จึงให้สิทธิ์เจ้าของกับผู้ใช้ที่ล็อกอินทุกคน "
-            "— ตรวจด้วย `mai db-check`", mid)
-        return "owner"
+            "การประชุม %s ไม่มีเจ้าของ จึงเปิดไม่ได้เลย — เซ็ต owner_id ให้ถูกคน "
+            "แล้วตรวจด้วย `mai db-check`", mid)
+        return "none"
     if user_id and owner_id == user_id:
         return "owner"
     if user_id and visibility == "team":
@@ -827,7 +834,9 @@ def search(query: str = "", user_id: str | None = None) -> list[dict]:
     ใช้ ILIKE เพราะภาษาไทยไม่มีช่องว่างระหว่างคำ full-text search จะพลาดมากกว่า
     """
     query = (query or "").strip()
-    where = ["(visibility = 'team' or owner_id = %s or owner_id is null)"]
+    # ไม่รวม `owner_id is null` แล้ว (BACKLOG #42) — ถ้ายังรวมไว้ แถวไม่มีเจ้าของจะโผล่
+    # ในรายการของทุกคนทั้งที่ access() ปฏิเสธไปแล้ว คือเห็นชื่อการประชุมของคนอื่นแต่กดไม่เข้า
+    where = ["(visibility = 'team' or owner_id = %s)"]
     params: list[Any] = [user_id]
     if query:
         where.append("search_text ilike %s")
