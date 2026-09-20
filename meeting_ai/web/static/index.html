@@ -387,6 +387,7 @@
     <div id="d-seg" class="seg" role="tablist" hidden>
       <button class="seg-btn is-on" type="button" role="tab" data-tab="summary">สรุป</button>
       <button class="seg-btn" type="button" role="tab" data-tab="actions">สิ่งที่ต้องทำ</button>
+      <button class="seg-btn" type="button" role="tab" data-tab="ask">ถาม</button>
       <button class="seg-btn" type="button" role="tab" data-tab="transcript">บทถอดเสียง</button>
     </div>
 
@@ -418,6 +419,20 @@
     </div>
     <p class="hint">ติ๊กเมื่อทำเสร็จ · แตะชื่อผู้รับผิดชอบเพื่อแก้</p>
     <div id="d-actions" class="actions-list"></div>
+    </div>
+
+    <div class="dtab" data-tab="ask">
+    <div class="section-head">
+      <h3>ถามเกี่ยวกับการประชุมนี้</h3>
+    </div>
+    <p class="hint">ตอบจากสรุปของการประชุมนี้เท่านั้น ไม่ได้อ่านบทถอดเสียงทั้งฉบับ</p>
+    <div class="ask-box">
+      <textarea id="q-input" rows="2" maxlength="500"
+                placeholder="เช่น ตกลงอะไรกันบ้าง / ใครรับผิดชอบเรื่องงบ"></textarea>
+      <button id="q-send" class="btn btn-primary" type="button">ถาม</button>
+    </div>
+    <p id="q-note" class="hint" hidden></p>
+    <div id="d-qa" class="qa-list"></div>
     </div>
 
     <div class="dtab" data-tab="transcript">

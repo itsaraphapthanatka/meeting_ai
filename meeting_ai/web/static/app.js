@@ -605,9 +605,11 @@ async function pollJobs() {
       if (job.warning) banner(job.warning);
       if (job.status === 'error') banner(`ไม่สำเร็จ: ${job.error}`);
       if (job.status === 'done' && job.meeting_id) {
-        // งานแปลไม่ควรเด้งหน้าจอไปที่อื่น แค่โหลดของเดิมใหม่
-        if (job.kind === 'translate' && state.current === job.meeting_id) openMeeting(job.meeting_id);
-        else if (job.kind !== 'translate' && !opened) { openMeeting(job.meeting_id); opened = true; }
+        // งานแปลกับงานถาม-ตอบไม่ควรเด้งหน้าจอไปที่อื่น แค่โหลดของเดิมใหม่ —
+        // คนถามคำถามแล้วไปทำอย่างอื่นต่อ ไม่ได้ขอให้พาไปไหน (BACKLOG #54)
+        const quiet = job.kind === 'translate' || job.kind === 'ask';
+        if (quiet && state.current === job.meeting_id) openMeeting(job.meeting_id);
+        else if (!quiet && !opened) { openMeeting(job.meeting_id); opened = true; }
         else if (state.current === job.meeting_id) openMeeting(job.meeting_id);
       }
     }
@@ -862,6 +864,79 @@ function closeMeetingSheet() {
 }
 
 /* จอแคบ: สรุปกับบทถอดเสียงเป็นแท็บ แทนที่จะต่อกันยาว */
+/* ถาม-ตอบกับการประชุม (BACKLOG #54 · ADR-002)
+
+   คำตอบมาทีหลังเพราะเป็น "งาน" ไม่ใช่การเรียกแล้วรอ — หน้าเว็บ poll อยู่แล้วทุก 1.5 วินาที
+   พองานจบ pollJobs() จะโหลดการประชุมใหม่ แล้ว renderQa() ได้ของใหม่มาเอง */
+function qaItem(row) {
+  const thin = row.enough === false
+    ? '<div class="qa-thin">โมเดลบอกว่าข้อมูลในสรุปไม่พอจะตอบข้อนี้</div>' : '';
+  return `<div class="qa-item" data-id="${esc(row.id)}">
+    <div class="qa-q"><span>${esc(row.question)}</span>
+      <button type="button" class="qa-del" aria-label="ลบคำถามนี้">✕</button></div>
+    <div class="qa-a">${renderMarkdown(row.answer || '')}</div>
+    ${thin}
+  </div>`;
+}
+
+function renderQa() {
+  const box = $('#d-qa');
+  if (!box) return;
+  const rows = (state.meeting.qa || []).slice().reverse();   // ใหม่สุดอยู่บน
+  box.innerHTML = rows.length
+    ? rows.map(qaItem).join('')
+    : '<p class="muted">ยังไม่มีคำถาม</p>';
+
+  // ไม่มีสรุป = ถามไม่ได้ บอกตั้งแต่ตอนนี้ ดีกว่าให้กดแล้วเจอ 409
+  const note = $('#q-note');
+  const ready = !!(state.meeting.summary || '').trim();
+  if (note) {
+    note.hidden = ready;
+    note.textContent = 'การประชุมนี้ยังไม่มีสรุป — กด “สรุปใหม่ด้วย AI” ก่อนแล้วค่อยถาม';
+  }
+  if ($('#q-send')) $('#q-send').disabled = !ready;
+}
+
+async function sendQuestion() {
+  const input = $('#q-input');
+  const question = (input.value || '').trim();
+  if (!question) { input.focus(); return; }
+  const btn = $('#q-send');
+  btn.disabled = true;
+  try {
+    const job = await api(`/api/meetings/${state.meeting.id}/ask`, jsonPost({ question }));
+    state.jobs = [job, ...state.jobs.filter((j) => j.id !== job.id)];
+    renderJobs();
+    ensurePolling();
+    input.value = '';
+    banner('ส่งคำถามแล้ว — คำตอบจะขึ้นเมื่อเครื่องประมวลผลทำเสร็จ');
+  } catch (e) {
+    banner(`ถามไม่สำเร็จ: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function setupQa() {
+  const send = $('#q-send');
+  if (!send) return;
+  send.onclick = sendQuestion;
+  // Ctrl/Cmd+Enter ส่ง — Enter เปล่า ๆ ต้องขึ้นบรรทัดใหม่ได้ คำถามยาวหลายบรรทัดมีจริง
+  $('#q-input').onkeydown = (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendQuestion(); }
+  };
+  $('#d-qa').onclick = async (e) => {
+    const del = e.target.closest('.qa-del');
+    if (!del) return;
+    const id = del.closest('.qa-item').dataset.id;
+    try {
+      const out = await api(`/api/meetings/${state.meeting.id}/qa/${id}`, { method: 'DELETE' });
+      state.meeting.qa = out.qa;
+      renderQa();
+    } catch (err) { banner(`ลบไม่สำเร็จ: ${err.message}`); }
+  };
+}
+
 /* เช็กลิสต์ Action Items (BACKLOG #53)
 
    `orphan` = เคยติ๊กว่าทำแล้ว แต่หายไปจากสรุปล่าสุด ระบบไม่ลบให้เองเพราะเป็นของที่คนทำไว้
@@ -954,6 +1029,7 @@ function setupDetailTabs() {
   if (actionsBtn) actionsBtn.hidden = !hasItems;
   const btns = $$('.seg-btn', seg).filter((b) => !b.hidden);
   const pick = (tab) => {
+    state.detailTab = tab;
     btns.forEach((b) => {
       const on = b.dataset.tab === tab;
       b.classList.toggle('is-on', on);
@@ -962,7 +1038,9 @@ function setupDetailTabs() {
     panes.forEach((p) => p.classList.toggle('tab-off', p.dataset.tab !== tab));
   };
   btns.forEach((b) => { b.onclick = () => pick(b.dataset.tab); });
-  pick('summary');
+  const want = state.detailTab || 'summary';
+  // แท็บที่เคยเปิดไว้อาจหายไปแล้ว (เช่น "สิ่งที่ต้องทำ" ตอนสรุปใหม่ไม่มีตาราง)
+  pick(btns.some((b) => b.dataset.tab === want) ? want : 'summary');
 }
 
 /* แท็บที่เปิดหน้ามาแล้วตกใส่ — เจ้าของเลือกไว้ ไม่ใช่ "ปุ่มซ้ายสุด" อย่างที่เคยเป็น
@@ -2020,6 +2098,10 @@ async function openMeeting(id) {
     return;
   }
   const sameMeeting = state.current === id;
+  // เปิดการประชุมคนละอัน = เริ่มที่สรุปเสมอ · แต่ถ้าเป็นการโหลดซ้ำของอันเดิม (งานถาม-ตอบ
+  // หรืองานแปลจบแล้ว pollJobs สั่งโหลดใหม่) ต้องอยู่แท็บเดิม — ถามคำถามแล้วโดนเด้งกลับไป
+  // หน้าสรุปตอนคำตอบมาถึง คือการพาผู้ใช้ออกจากที่ที่คำตอบอยู่พอดี (BACKLOG #54)
+  if (!sameMeeting) state.detailTab = 'summary';
   state.current = id;
   state.meeting = m;
   setHash(`#m/${id}`);
@@ -2060,6 +2142,8 @@ async function openMeeting(id) {
   renderTranscript(false);
   renderActionItems();
   setupActionItems();
+  renderQa();
+  setupQa();
 
   if (m.summary_error) {
     const err = $('#d-summary-err');

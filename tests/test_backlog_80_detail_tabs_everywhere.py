@@ -88,7 +88,14 @@ class TestTheDetailTabsAreNoLongerMobileOnly(unittest.TestCase):
 class TestTheTabsStillBehave(unittest.TestCase):
 
     def test_it_opens_on_the_summary(self):
-        self.assertIn("pick('summary');", detail_tabs_body())
+        """เปิดการประชุม *ใหม่* ต้องเริ่มที่สรุปเสมอ.
+
+        #54 เปลี่ยนกลไก: จากเดิม `pick('summary')` ตายตัว มาเป็นจำแท็บล่าสุดไว้ใน
+        `state.detailTab` แล้วรีเซ็ตเป็น summary เมื่อเป็นการประชุมคนละอัน — เพราะการ
+        โหลดซ้ำของอันเดิม (งานถาม-ตอบจบ) ต้องอยู่แท็บเดิม ไม่ใช่เด้งกลับหน้าสรุป
+        """
+        self.assertIn("state.detailTab || 'summary'", detail_tabs_body())
+        self.assertIn("if (!sameMeeting) state.detailTab = 'summary';", APP_JS)
 
     def test_each_button_switches_its_own_pane(self):
         b = detail_tabs_body()

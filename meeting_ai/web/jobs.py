@@ -301,7 +301,10 @@ def submit_ask(meeting_id: str, title: str, question: str,
     return _enqueue(f"{meeting_id}.ask.{secrets.token_hex(3)}", title, "ask",
                     spec={"kind": "ask", "meeting": meeting_id, "owner_id": owner_id,
                           "question": question},
-                    _meeting=meeting_id)
+                    # โหมดไฟล์เก็บงานในหน่วยความจำและ **ไม่มี** `_spec` (ดู _enqueue) ส่วนโหมด
+                    # cloud มีแต่ `_spec` ไม่มีคีย์ระดับบน — ต้องส่งทั้งสองทางเหมือนที่งานแปล
+                    # ทำกับ `_lang` ไม่งั้นงานจะไม่มีคำถามในโหมดใดโหมดหนึ่งเสมอ
+                    _meeting=meeting_id, _question=question)
 
 
 def build_spec(job_id: str) -> dict | None:
@@ -353,7 +356,7 @@ def build_spec(job_id: str) -> dict | None:
         spec["summary_lang"] = (job.get("_spec") or {}).get("summary_lang")
     elif kind == "ask":
         spec["summary"] = meeting.get("summary") or ""
-        spec["question"] = (job.get("_spec") or {}).get("question") or ""
+        spec["question"] = job.get("_question") or (job.get("_spec") or {}).get("question") or ""
     else:
         spec["lang"] = job.get("_lang") or (job.get("_spec") or {}).get("lang")
         spec["summary"] = meeting.get("summary") or ""
@@ -435,7 +438,8 @@ def apply_result(job_id: str, result: dict) -> None:
         meeting_id = _meeting_of(job)
         # คำถามอ่านจาก spec ไม่ใช่จาก result — ใครถือ WORKER_TOKEN จะได้ยัดคำถามปลอม
         # คู่กับคำตอบลงคลังของคนอื่นไม่ได้ (เหตุผลเดียวกับภาษาปลายทางของงานแปล BUG-048)
-        question = str((job.get("_spec") or {}).get("question") or "").strip()
+        question = str(job.get("_question")
+                       or (job.get("_spec") or {}).get("question") or "").strip()
         if not question:
             raise RuntimeError("งานนี้ไม่มีคำถามใน spec — ถามใหม่อีกครั้ง")
         text = sanitize.text(result.get("answer"))

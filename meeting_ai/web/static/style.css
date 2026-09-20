@@ -899,6 +899,29 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
    วางต่อกันแล้วต้องเลื่อนผ่านสรุปทั้งอันกว่าจะถึงบทถอดเสียง ซึ่งจริงบนจอกว้างพอ ๆ กัน */
 .dtab.tab-off { display: none; }
 
+/* ---- ถาม-ตอบ (BACKLOG #54) ---- */
+.ask-box { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 8px; }
+.ask-box textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.ask-box .btn { flex: none; min-height: 38px; }
+.qa-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.qa-item:last-child { border-bottom: 0; }
+.qa-q { font-weight: 600; display: flex; gap: 8px; align-items: flex-start; }
+.qa-q > span { flex: 1; min-width: 0; }
+.qa-a { margin-top: 6px; }
+/* คำตอบที่โมเดลบอกเองว่าข้อมูลไม่พอ ต้องดูออกตั้งแต่แรกเห็น ไม่ใช่ต้องอ่านจนจบ */
+.qa-thin { color: var(--warn); font-size: 12px; margin-top: 4px; }
+.qa-del { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; }
+
 /* ---- เช็กลิสต์ Action Items (BACKLOG #53) ---- */
 .ai-row {
   display: flex;
