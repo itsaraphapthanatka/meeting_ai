@@ -125,6 +125,38 @@ class TestTheWrongDatabaseGuard(unittest.TestCase):
         self.assertIn("select count(*) from meeting_ai.meetings", block)
 
 
+class TestTheWrongApplicationGuard(unittest.TestCase):
+    """เจอจริง 2026-09-20 — เจ้าของหยิบ connection string จากโปรเจกต์ Neon ผิดตัว.
+
+    ได้ฐานของแอปอื่นทั้งใบ (45 ตาราง มี `neon_auth.*`, `public.AuditLog`, `public.Branding`)
+    สคริปต์เวอร์ชันแรกพังด้วย traceback ของ psycopg (`UndefinedTable`) ซึ่งอ่านไม่ออกว่า
+    เกิดอะไรขึ้น · ตอนนี้บอกตรง ๆ พร้อมบอกว่าเจออะไรในฐานนั้นแทน แล้ว exit 1
+
+    ลองจริงกับฐานนั้น: "ปลายทางไม่มีตาราง meeting_ai.meetings · สิ่งที่เจอในฐานนั้นแทน:
+    public (36 ตาราง), neon_auth (9 ตาราง)"
+    """
+
+    def test_it_checks_the_table_exists_before_using_it(self):
+        self.assertIn("def _looks_like_ours(conn)", SRC)
+        i = SRC.index("if not _looks_like_ours(dst):")
+        self.assertLess(i, SRC.index("if args.expect_dst_meetings is not None:"),
+                        "ต้องรู้ก่อนว่าเป็นฐานของแอปนี้ไหม ก่อนจะไปนับแถว")
+
+    def test_it_stops_instead_of_crashing(self):
+        block = SRC[SRC.index("if not _looks_like_ours(dst):"):]
+        block = block[:block.index("ด่านที่สอง")]
+        self.assertIn("return 1", block)
+
+    def test_it_says_what_it_found_instead(self):
+        # "ไม่มีตาราง" อย่างเดียวไม่พอ ต้องช่วยให้คนรู้ว่าไปโดนฐานของอะไร
+        self.assertIn("def _other_app_hint(conn)", SRC)
+        self.assertIn("_other_app_hint(dst)", SRC)
+
+    def test_it_offers_the_legitimate_path_too(self):
+        # ฐานใหม่ของ meeting_ai เองก็ยังไม่มีตาราง — ต้องบอกว่าให้รัน db-init
+        self.assertIn("db-init", SRC)
+
+
 class TestSecretsDoNotLeak(unittest.TestCase):
 
     def test_the_urls_come_from_the_environment_not_argv(self):

@@ -69,6 +69,29 @@ def _cols(conn) -> set[str]:
     return {r[0] for r in rows}
 
 
+def _looks_like_ours(conn) -> bool:
+    """ปลายทางเป็นฐานของ meeting_ai จริงไหม — ไม่ใช่แค่ต่อติด.
+
+    เจอจริง 2026-09-20: เจ้าของหยิบ connection string จากโปรเจกต์ Neon ผิดตัว ได้ฐานของ
+    แอปอื่นทั้งใบ (45 ตาราง มี `neon_auth.*`, `public.AuditLog`, `public.Branding`)
+    สคริปต์เดิมพังด้วย traceback ของ psycopg ซึ่งอ่านไม่รู้เรื่องว่าเกิดอะไรขึ้น
+    """
+    row = conn.execute(
+        """select 1 from information_schema.tables
+           where table_schema = 'meeting_ai' and table_name = 'meetings'"""
+    ).fetchone()
+    return row is not None
+
+
+def _other_app_hint(conn) -> str:
+    rows = conn.execute(
+        """select table_schema, count(*) from information_schema.tables
+           where table_schema not in ('pg_catalog', 'information_schema')
+           group by table_schema order by 2 desc limit 3"""
+    ).fetchall()
+    return ", ".join(f"{a} ({b} ตาราง)" for a, b in rows) or "(ว่างเปล่า)"
+
+
 def _users(conn) -> list[tuple[str, str]]:
     return [(str(r[0]), r[1]) for r in conn.execute(
         "select id, email from meeting_ai.users order by created_at").fetchall()]
@@ -112,7 +135,16 @@ def main() -> int:
         print(f"ต้นทาง: {src.execute('select current_database()').fetchone()[0]} "
               f"· ปลายทาง: {dst.execute('select current_database()').fetchone()[0]}")
 
-        # ด่านกันชี้ผิดฐาน — เกิดขึ้นจริงมาแล้ว 2026-09-20: `.env` ของเครื่องเจ้าของชี้ไป
+        # ด่านแรก: ปลายทางเป็นฐานของแอปนี้จริงไหม — ถ้าไม่ใช่ต้องบอกให้รู้เรื่อง
+        # ไม่ใช่ปล่อยให้ psycopg โยน UndefinedTable ออกมาเป็น traceback
+        if not _looks_like_ours(dst):
+            print(chr(10) + "❌ ปลายทางไม่มีตาราง meeting_ai.meetings")
+            print("   สิ่งที่เจอในฐานนั้นแทน:", _other_app_hint(dst))
+            print("   ถ้าเป็นฐานของแอปอื่น = ชี้ผิดฐาน · ถ้าเป็นฐานใหม่ของ meeting_ai จริง")
+            print("   ให้รัน `mai db-init` กับฐานนั้นก่อน แล้วค่อยย้าย")
+            return 1
+
+        # ด่านที่สอง: ชี้ถูกแอปแล้ว แต่ถูกฐานไหม — เกิดขึ้นจริงมาแล้ว 2026-09-20: `.env` ของเครื่องเจ้าของชี้ไป
         # ฐาน Neon เก่าที่เลิกใช้แล้ว ส่วน production ใช้อีกฐาน กว่าจะรู้ก็หลังรัน `db-init`
         # ไปสองรอบ · ชื่อฐานเหมือนกันทั้งคู่ (`neondb`) จึงดูจากชื่อไม่ออก ต้องนับแถวเอา
         # ตรวจก่อนทุกอย่าง และ **ล้มทั้งใน dry-run ด้วย** ไม่งั้นคนอ่านรายงานผิดฐานไปทั้งหน้า
