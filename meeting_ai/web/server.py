@@ -25,7 +25,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .. import diarize, stt, summarizer
+from .. import diarize, runner, stt, summarizer
 from ..config import WORKER_STALE_SECONDS, config
 from . import backend, db, exports, jobs, ratelimit
 from .backend import store
@@ -139,6 +139,18 @@ def _check_join_url(url: str) -> tuple[bool, str]:
     if not _bot_host_ok(parsed.hostname):
         return False, f"รองรับ {PLATFORM_NAMES} เท่านั้น"
     return True, ""
+
+
+def worker_kinds(w: dict) -> list[str]:
+    """ชนิดงานที่เครื่องนี้คว้าได้ — คิดด้วย `runner.job_kinds()` ตัวเดียวกับที่ worker ใช้.
+
+    หน้าเว็บต้องรู้เรื่องนี้ เพราะงานที่ไม่มีเครื่องไหนรับได้จะค้างใน `queued` ตลอดกาล
+    โดยไม่มีใครบอก แล้วชิปยังขึ้นว่า "พร้อม" อยู่ (BACKLOG #83)
+
+    **ห้ามเขียนกติกานี้ซ้ำใน app.js** — ถ้าวันหนึ่ง `job_kinds()` เพิ่มเงื่อนไข
+    สองฝั่งจะเพี้ยนกันเงียบ ๆ แล้วหน้าเว็บจะโกหกแทนที่จะบอกความจริง
+    """
+    return runner.job_kinds({"bot": "bot" in (w.get("can") or [])})
 
 
 class BadBody(ValueError):
@@ -672,6 +684,8 @@ class Handler(BaseHTTPRequestHandler):
         เหลือชื่อเครื่อง/สถานะ/GPU ไว้ เพราะหน้าเว็บใช้บอกว่ามีเครื่องออนไลน์ให้รับงานไหม
         """
         workers = store.workers_list()
+        for w in workers:
+            w["kinds"] = worker_kinds(w)
         if self.user and self.user.get("is_admin"):
             return workers
         return [{k: v for k, v in w.items() if k not in ("job_title", "job_id")}
