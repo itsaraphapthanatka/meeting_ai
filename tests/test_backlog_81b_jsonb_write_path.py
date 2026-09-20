@@ -12,10 +12,18 @@ psycopg แปลง jsonb **ขาออก** ให้เป็น dict/list �
 ตั๋วใช้ต้นทาง = ปลายทาง = ฐานเดียวกัน จึงได้ "จะย้าย 0 แถว" — **ลูป insert ไม่เคยถูกรันเลย**
 บทเรียน: เส้นทางที่เทสต์ไม่เคย *รัน* เท่ากับไม่มีเทสต์ ต่อให้มีเทสต์ล้อมรอบเยอะแค่ไหน
 
-**และ `list` อันตรายกว่า `dict`** — วัดแล้วกับ dumper จริงของ psycopg: `dict` โยน error
-ให้เห็น ส่วน `[1, 2]` มี dumper ของ array อยู่แล้วจึงกลายเป็น array literal `{1,2}` เงียบ ๆ
-ซึ่งเป็นคนละชนิดกับ jsonb · `segments` กับ `speakers` เป็น list ทั้งคู่ การห่อจึงต้องยึด
-**ชนิดของคอลัมน์ที่ปลายทาง** ไม่ใช่ยึดว่าค่าที่ได้มาเป็น dict หรือเปล่า
+**และ `list` เงียบกว่า `dict`** — วัดแล้วกับ dumper จริงของ psycopg: `dict` โยน error
+ให้เห็น ส่วน `[1, 2]` มี dumper ของ array อยู่แล้วจึงกลายเป็น array literal `{1,2}` โดยไม่บ่น
+
+**ห้ามแก้ด้วยการ "เจอ list เมื่อไหร่ก็ห่อ"** — CI จับได้ว่าสมมติฐานนั้นผิด:
+
+    psycopg.errors.DatatypeMismatch: column "speakers" is of type text[]
+    but expression is of type jsonb
+
+`speakers` เป็น `text[]` จริง ๆ (schema.sql บรรทัด 61) การที่ psycopg แปลง list เป็น
+array literal จึง **ถูกต้องสำหรับคอลัมน์นั้น** ส่วน `segments`/`translations`/
+`action_items`/`qa`/`peaks` เป็น jsonb · ตัวตัดสินจึงมีอย่างเดียวคือ
+**ชนิดของคอลัมน์ที่ปลายทาง** ไม่ใช่ชนิดของค่าที่อ่านมา
 
 ชุดนี้วัด adaptation ของ psycopg จริง ๆ โดยไม่ต้องมีเซิร์ฟเวอร์ (`Transformer.get_dumper`)
 บวกเทสต์ไป-กลับกับ Postgres จริงเมื่อมี `MAI_TEST_DATABASE_URL` (CI งาน ubuntu+postgres)
@@ -29,18 +37,26 @@ import unittest
 import uuid
 from pathlib import Path
 
-import psycopg
-from psycopg.abc import PyFormat
-from psycopg.adapt import Transformer
-from psycopg.types.json import Jsonb
-
 ROOT = Path(__file__).resolve().parents[1]
 
-# โหลดจากไฟล์จริงที่ shipped ไม่ใช่คัดลอกตรรกะมาไว้ในเทสต์ (scripts/ ไม่ใช่แพ็กเกจ)
-_spec = importlib.util.spec_from_file_location(
-    "copy_meetings", ROOT / "scripts" / "copy_meetings.py")
-copy_meetings = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(copy_meetings)
+# CI มีสามงาน แต่ **ลง psycopg แค่งานเดียว** (ubuntu+postgres) เพราะ core อ่าน stdlib ล้วน
+# ตัวสคริปต์เองก็ import psycopg ที่ระดับโมดูล การโหลดจึงต้องอยู่ในกำแพงนี้ทั้งก้อน
+try:
+    import psycopg
+    from psycopg.abc import PyFormat
+    from psycopg.adapt import Transformer
+    from psycopg.types.json import Jsonb
+
+    # โหลดจากไฟล์จริงที่ shipped ไม่ใช่คัดลอกตรรกะมาไว้ในเทสต์ (scripts/ ไม่ใช่แพ็กเกจ)
+    _spec = importlib.util.spec_from_file_location(
+        "copy_meetings", ROOT / "scripts" / "copy_meetings.py")
+    copy_meetings = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(copy_meetings)
+except ModuleNotFoundError:
+    psycopg = None
+
+needs_psycopg = unittest.skipUnless(
+    psycopg, "ต้องมี psycopg (CI ลงเฉพาะงาน ubuntu+postgres)")
 
 
 def dump(value):
@@ -48,6 +64,7 @@ def dump(value):
     return Transformer().get_dumper(value, PyFormat.AUTO).dump(value)
 
 
+@needs_psycopg
 class TestWhyTheWrapperExists(unittest.TestCase):
     """ตรึงพฤติกรรมของ psycopg ที่ทำให้ต้องมี `_adapt()` — ถ้าวันหนึ่งมันเปลี่ยน เทสต์นี้จะบอก."""
 
@@ -65,19 +82,32 @@ class TestWhyTheWrapperExists(unittest.TestCase):
         self.assertEqual(dump(Jsonb({"a": 1})), b'{"a": 1}')
 
 
+@needs_psycopg
 class TestAdapt(unittest.TestCase):
 
+    # เรียงตามของจริง: speakers เป็น text[] ส่วน segments/translations เป็น jsonb
     COLS = ("id", "title", "speakers", "segments", "translations")
-    JSONB = {"speakers", "segments", "translations"}
+    JSONB = {"segments", "translations"}
 
     def _adapt(self, row):
         return copy_meetings._adapt(row, self.COLS, self.JSONB)
 
     def test_every_jsonb_column_is_wrapped_even_when_it_is_a_list(self):
         out = self._adapt(("m1", "ชื่อ", ["ก", "ข"], [{"text": "x"}], {"en": {}}))
-        for i in (2, 3, 4):
+        for i in (3, 4):
             with self.subTest(col=self.COLS[i]):
                 self.assertIsInstance(out[i], Jsonb)
+
+    def test_an_array_column_is_left_as_a_list(self):
+        """`speakers` เป็น `text[]` — ห่อเมื่อไหร่ Postgres ตีกลับทันที.
+
+        CI จับได้จริง 2026-09-20: `column "speakers" is of type text[] but expression
+        is of type jsonb` · นี่คือเหตุผลที่ตัวตัดสินต้องเป็นชนิดคอลัมน์ ไม่ใช่ชนิดค่า
+        """
+        out = self._adapt(("m1", "ชื่อ", ["ก", "ข"], [], {}))
+        self.assertNotIsInstance(out[2], Jsonb)
+        # วัดจริง: psycopg ไม่ใส่เครื่องหมายคำพูดให้คำที่ไม่ต้องการ escape
+        self.assertEqual(dump(out[2]), "{ก,ข}".encode())
 
     def test_the_wrapped_values_dump_as_json_not_as_an_array(self):
         out = self._adapt(("m1", "ชื่อ", ["ก", "ข"], [1, 2], {"en": {}}))
@@ -91,9 +121,9 @@ class TestAdapt(unittest.TestCase):
 
     def test_none_stays_none(self):
         """ห่อ None จะได้ jsonb `null` ซึ่งไม่เท่ากับ SQL NULL — คอลัมน์ nullable จะเพี้ยน."""
-        out = self._adapt(("m1", None, None, [], {}))
-        self.assertIsNone(out[2])
-        self.assertNotIsInstance(out[2], Jsonb)
+        out = self._adapt(("m1", None, [], None, {}))
+        self.assertIsNone(out[3])
+        self.assertNotIsInstance(out[3], Jsonb)
 
     def test_the_row_keeps_its_length_and_order(self):
         row = ("m1", "ชื่อ", [], [], {})
@@ -125,6 +155,7 @@ class FakeCursor:
         return self
 
 
+@needs_psycopg
 class TestInsert(unittest.TestCase):
 
     COLS = ["id", "title", "segments"]
@@ -164,6 +195,7 @@ class TestInsert(unittest.TestCase):
         self.assertEqual(dst.calls, [])
 
 
+@needs_psycopg
 @unittest.skipUnless(os.environ.get("MAI_TEST_DATABASE_URL"),
                      "ต้องมี Postgres ทดสอบจริงใน MAI_TEST_DATABASE_URL")
 class TestARealRoundTrip(unittest.TestCase):
@@ -199,7 +231,7 @@ class TestARealRoundTrip(unittest.TestCase):
                         speakers, segments, translations)
                    values (%s, %s, %s, 'private', 'th', %s, %s, %s)""",
                 (self.src_id, self.owner, "ประชุมทดสอบ jsonb",
-                 Jsonb(self.SPEAKERS), Jsonb(self.SEGMENTS), Jsonb(self.TRANSLATIONS)))
+                 self.SPEAKERS, Jsonb(self.SEGMENTS), Jsonb(self.TRANSLATIONS)))
         self.addCleanup(self._cleanup)
 
     def _cleanup(self) -> None:
@@ -219,7 +251,9 @@ class TestARealRoundTrip(unittest.TestCase):
             self.assertIsInstance(row[4], dict)
 
             jsonb = copy_meetings._jsonb_cols(conn)
-            self.assertLessEqual({"speakers", "segments", "translations"}, jsonb)
+            self.assertLessEqual({"segments", "translations"}, jsonb)
+            # ของจริงคือ text[] ไม่ใช่ jsonb — ถ้าหลุดเข้าชุดนี้ Postgres จะตีกลับตอน insert
+            self.assertNotIn("speakers", jsonb)
 
             moved = (self.dst_id, *row[1:])
             self.assertEqual(
