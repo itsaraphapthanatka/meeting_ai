@@ -182,9 +182,13 @@ function renderMarkdown(src) {
 /* ---------------- sidebar ---------------- */
 
 function renderJobs() {
+  const stranded = strandedKinds();
   $('#jobs').innerHTML = state.jobs.map((j) => {
     const pct = Math.round((j.progress || 0) * 100);
     const failed = j.status === 'error';
+    // งานที่ไม่มีเครื่องไหนรับได้จะค้าง "รอคิว" ตลอดกาล ไม่มี timeout ไม่มีใครดูแล
+    // อย่างน้อยต้องบอกว่าทำไมและค้างมานานแค่ไหน ไม่ใช่ปล่อยให้เดา (BACKLOG #83)
+    const stuck = j.status === 'queued' && stranded.includes(j.kind);
     // งานบอทที่ยังอยู่ในห้อง ต้องมีทางสั่งให้ออกมาสรุป ไม่ใช่รอครบเวลาเท่านั้น
     const canStop = j.kind === 'bot' && !failed && j.status !== 'done';
     // ช่วงที่บอทนั่งอยู่ในห้องกินเวลาเกือบทั้งงาน แต่แถบขยับแค่ 2%→35%
@@ -194,7 +198,9 @@ function renderJobs() {
     return `<div class="job ${failed ? 'err' : ''}">
       <div class="jt">${j.kind === 'bot' ? '🤖 ' : ''}${esc(j.title)}${
         isMine(j) ? '' : '<span class="job-sys">คิวระบบ</span>'}</div>
-      <div class="js">${esc(failed ? j.error : j.step)}</div>
+      <div class="js">${esc(failed ? j.error : j.step)}${
+        stuck ? `<span class="job-stuck">${esc(queuedFor(j))} — ไม่มีเครื่องที่ทำงาน${
+          esc(KIND_LABELS[j.kind] || j.kind)}ได้</span>` : ''}</div>
       ${failed ? '' : inRoom
         ? '<div class="bar rec"><div></div></div>'
         : `<div class="bar"><div style="width:${pct}%"></div></div>`}
@@ -225,6 +231,15 @@ function updateStreamingIndicator() {
   badge.hidden = !jobForMeeting(state.current);
 }
 
+/** งานนี้ค้างคิวมานานแค่ไหน — ใช้ `created` ซึ่งมีทั้งสองโหมด (jobs.py) */
+function queuedFor(j) {
+  if (!j.created) return 'ค้างคิวอยู่';
+  const sec = Math.max(0, Math.round((Date.now() - new Date(j.created).getTime()) / 1000));
+  // ห้ามขึ้นต้นด้วย "รอคิว" ซ้ำ — step ของงานที่ค้างคือ "รอคิว" อยู่แล้ว
+  // (เห็นตอนเปิดเบราว์เซอร์ดูจริง ได้ "รอคิวรอคิว 42 นาที")
+  return `ค้างมา ${fmtAgo(sec).replace('ที่แล้ว', '').trim()}`;
+}
+
 function fmtAgo(sec) {
   if (sec === null || sec === undefined) return '';
   if (sec < 60) return `${sec} วิที่แล้ว`;
@@ -235,6 +250,24 @@ function fmtAgo(sec) {
 
 const CAP_LABELS = { local: 'whisper ในเครื่อง', api: 'API', diarize: 'แยกผู้พูด',
                      bot: 'ส่งบอท' };
+
+const KIND_LABELS = { bot: 'บอท', process: 'ถอดเสียง', summarize: 'สรุป',
+                      translate: 'แปล', ask: 'ถาม' };
+
+/** ชนิดงานที่ค้างคิวอยู่โดยไม่มีเครื่องออนไลน์ตัวไหนรับได้เลย.
+
+    เกิดจริง 2026-09-20: เครื่องเดียวที่ออนไลน์ไม่มี Docker จึงไม่ประกาศ kind `bot`
+    งานบอทเลยค้าง "รอคิว" ตลอดกาล ขณะที่ชิปยังบอกว่า "1 เครื่องพร้อม" (BACKLOG #83)
+
+    `kinds` มาจากเซิร์ฟเวอร์ (server.worker_kinds -> runner.job_kinds) ไม่ได้คิดเองที่นี่
+    worker รุ่นเก่าที่ยังไม่ส่ง `kinds` ถือว่ารับได้ทุกอย่าง — เตือนผิดแย่กว่าไม่เตือน */
+function strandedKinds() {
+  const alive = (state.workers || []).filter((w) => w.alive);
+  if (!alive.length) return [];
+  const queued = (state.jobs || []).filter((j) => j.status === 'queued');
+  return [...new Set(queued.map((j) => j.kind))]
+    .filter((k) => alive.every((w) => w.kinds && !w.kinds.includes(k)));
+}
 
 /** เครื่องนี้ทำอะไรได้ — worker รุ่นเก่ายังไม่ส่ง caps มา จะไม่แสดงบรรทัดนี้ */
 function workerCan(w) {
@@ -253,10 +286,16 @@ function renderDeviceChip(ws) {
   if (!chip) return;
   const alive = ws.filter((w) => w.alive).length;
   chip.hidden = !ws.length;
-  chip.dataset.state = alive ? 'ok' : 'down';
-  $('#m-chip-text').textContent = alive
-    ? `${alive} เครื่องพร้อม`
-    : 'ไม่มีเครื่องประมวลผลออนไลน์';
+  // "ออนไลน์" ไม่เท่ากับ "รับงานที่ค้างอยู่ได้" — ของเดิมนับแค่ w.alive จึงขึ้นว่า
+  // "1 เครื่องพร้อม" ทั้งที่งานบอทค้างคิวเพราะเครื่องนั้นไม่มี Docker (BACKLOG #83)
+  const stranded = strandedKinds();
+  chip.dataset.state = !alive ? 'down' : stranded.length ? 'stuck' : 'ok';
+  $('#m-chip-text').textContent = !alive
+    ? 'ไม่มีเครื่องประมวลผลออนไลน์'
+    : stranded.length
+      ? `${alive} เครื่องออนไลน์ · ไม่มีเครื่องรับงาน${
+        stranded.map((k) => KIND_LABELS[k] || k).join('/')}`
+      : `${alive} เครื่องพร้อม`;
 }
 
 function renderWorkers() {

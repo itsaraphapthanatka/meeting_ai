@@ -1121,7 +1121,9 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
     cursor: pointer;
   }
   .m-chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
-  .m-chip[data-state="down"] .m-chip-dot { background: var(--warn); }
+  .m-chip[data-state="down"] .m-chip-dot,
+  /* ออนไลน์อยู่ แต่ไม่มีเครื่องรับงานที่ค้างคิว (BACKLOG #83) */
+  .m-chip[data-state="stuck"] .m-chip-dot { background: var(--warn); }
   .m-cta[hidden], .m-chip[hidden] { display: none; }
 
   /* หนึ่งหน้าจอ = หนึ่งแถบหัว: หน้าแรกใช้ topbar (มีแบรนด์กับบัญชี) หน้าอื่นใช้ mobilebar
@@ -1256,3 +1258,7 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
   body[data-view="devices"] #workers { display: block; }
   body[data-view="devices"] .wk-head { display: none; }   /* ชื่อหน้าอยู่บน mobilebar แล้ว */
 }
+
+/* BACKLOG #83 — เหตุผลที่งานค้างคิว ต่อท้ายบรรทัดสถานะ ไม่ใช่แถวใหม่ */
+.job .job-stuck { color: var(--warn); }
+.job .job-stuck::before { content: ' · '; color: var(--muted); }
