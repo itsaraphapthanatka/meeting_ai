@@ -178,10 +178,27 @@ class TestWhatAnOwnerlessRowActuallyDoes(unittest.TestCase):
             conn.execute("delete from meeting_ai.users where email like %s",
                          (f"%-{self.tag}@test.local",))
 
-    def test_a_stranger_becomes_owner_of_an_ownerless_meeting(self):
+    def test_a_stranger_gets_nothing_from_an_ownerless_meeting(self):
+        """ปิดตายแล้ว 2026-09-20 — เดิมข้อนี้ยืนยันว่าคนแปลกหน้าได้สิทธิ์ `owner`.
+
+        ตอนนั้นยังไม่กล้าปิดเพราะไม่รู้ว่าฐานจริงมีแถวแบบนี้กี่แถว · วัดแล้วว่า **0 แถว**
+        ทางนั้นจึงไม่ได้รองรับอะไรอยู่จริง มีแต่ความเสี่ยง
+        """
         mid = self._meeting("00", None)
-        self.assertEqual(pgstore.access(mid, self.stranger), "owner",
-                         "ถ้าข้อนี้เปลี่ยน แปลว่าความเสี่ยงของตั๋ว #42 หายไปแล้ว")
+        self.assertEqual(pgstore.access(mid, self.stranger), "none")
+
+    def test_not_even_the_real_owner_can_reach_it_once_it_is_ownerless(self):
+        # ตั้งใจ: ปฏิเสธทุกคนดีกว่าเดาว่าใครควรได้ · กู้ด้วยการเซ็ต owner_id ในฐาน
+        mid = self._meeting("05", None)
+        self.assertEqual(pgstore.access(mid, self.alice), "none")
+
+    def test_setting_the_owner_back_makes_it_usable_again(self):
+        mid = self._meeting("06", None)
+        with self.pgdb.connect() as conn:
+            conn.execute("update meeting_ai.meetings set owner_id = %s where id = %s",
+                         (self.alice, mid))
+        self.assertEqual(pgstore.access(mid, self.alice), "owner",
+                         "ทางกู้ที่ db-check แนะนำต้องใช้ได้จริง")
 
     def test_an_owned_private_meeting_stays_closed(self):
         # เทียบให้เห็นว่าเป็นเพราะ owner_id เป็น null จริง ๆ ไม่ใช่เพราะสิทธิ์พังทั้งระบบ
@@ -189,10 +206,11 @@ class TestWhatAnOwnerlessRowActuallyDoes(unittest.TestCase):
         self.assertEqual(pgstore.access(mid, self.stranger), "none")
         self.assertEqual(pgstore.access(mid, self.alice), "owner")
 
-    def test_it_shows_up_in_a_strangers_list(self):
+    def test_it_no_longer_shows_up_in_a_strangers_list(self):
+        # ถ้ายังโผล่ในรายการทั้งที่ access() ปฏิเสธ = เห็นชื่อการประชุมของคนอื่นแต่กดไม่เข้า
         mid = self._meeting("02", None)
         ids = [m["id"] for m in pgstore.search("", user_id=self.stranger)]
-        self.assertIn(mid, ids, "แถวไม่มีเจ้าของโผล่ในรายการของทุกคน")
+        self.assertNotIn(mid, ids)
 
     def test_deleting_a_user_creates_new_ownerless_rows(self):
         """ข้อนี้คือสิ่งที่ตั๋วไม่ได้บอก: แถวแบบนี้ **ไม่ได้มีแต่ของเก่าที่ย้ายมา**.
@@ -201,11 +219,13 @@ class TestWhatAnOwnerlessRowActuallyDoes(unittest.TestCase):
         ลบผู้ใช้หนึ่งคนในฐาน = การประชุมทั้งหมดของเขากลายเป็นของทุกคนทันที
         """
         mid = self._meeting("03", self.alice)
-        self.assertEqual(pgstore.access(mid, self.stranger), "none")
+        self.assertEqual(pgstore.access(mid, self.alice), "owner")
         with self.pgdb.connect() as conn:
             conn.execute("delete from meeting_ai.users where id = %s", (self.alice,))
-        self.assertEqual(pgstore.access(mid, self.stranger), "owner",
-                         "ลบผู้ใช้แล้วการประชุมของเขาต้องไม่กลายเป็นของทุกคนเงียบ ๆ")
+        # schema ยังเป็น `on delete set null` เหมือนเดิม — แถวยังกลายเป็นไม่มีเจ้าของอยู่
+        # แต่ผลลัพธ์เปลี่ยนจาก "ทุกคนเป็นเจ้าของ" เป็น "ไม่มีใครเข้าถึงได้"
+        self.assertEqual(pgstore.access(mid, self.stranger), "none",
+                         "ลบผู้ใช้แล้วการประชุมของเขาต้องไม่กลายเป็นของทุกคน")
 
     def test_the_audit_counts_it(self):
         before = self._count()
