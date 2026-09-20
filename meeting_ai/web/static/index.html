@@ -386,6 +386,7 @@
          บทถอดเสียง — แยกเป็นแท็บ (ดู setupDetailTabs ใน app.js) จอกว้างยังเห็นทั้งสองส่วนต่อกัน -->
     <div id="d-seg" class="seg" role="tablist" hidden>
       <button class="seg-btn is-on" type="button" role="tab" data-tab="summary">สรุป</button>
+      <button class="seg-btn" type="button" role="tab" data-tab="actions">สิ่งที่ต้องทำ</button>
       <button class="seg-btn" type="button" role="tab" data-tab="transcript">บทถอดเสียง</button>
     </div>
 
@@ -409,6 +410,14 @@
     <div id="d-summary" class="md"></div>
     <textarea id="d-editor" class="editor" hidden spellcheck="false"></textarea>
 
+    </div>
+
+    <div class="dtab" data-tab="actions">
+    <div class="section-head">
+      <h3>สิ่งที่ต้องทำ</h3>
+    </div>
+    <p class="hint">ติ๊กเมื่อทำเสร็จ · แตะชื่อผู้รับผิดชอบเพื่อแก้</p>
+    <div id="d-actions" class="actions-list"></div>
     </div>
 
     <div class="dtab" data-tab="transcript">

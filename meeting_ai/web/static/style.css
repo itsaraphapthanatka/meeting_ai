@@ -898,6 +898,35 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
 /* หน้ารายละเอียดก็แบ่งเป็นแท็บทั้งสองจอ (BACKLOG #80) — สรุปกับบทถอดเสียงยาวมากทั้งคู่
    วางต่อกันแล้วต้องเลื่อนผ่านสรุปทั้งอันกว่าจะถึงบทถอดเสียง ซึ่งจริงบนจอกว้างพอ ๆ กัน */
 .dtab.tab-off { display: none; }
+
+/* ---- เช็กลิสต์ Action Items (BACKLOG #53) ---- */
+.ai-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ai-row:last-child { border-bottom: 0; }
+/* กล่องติ๊กต้องใหญ่พอให้นิ้วโดน — ค่าเริ่มต้นของเบราว์เซอร์เล็กเกินไปบนมือถือ */
+.ai-row input[type="checkbox"] { width: 20px; height: 20px; margin-top: 2px; flex: none; }
+.ai-body { flex: 1; min-width: 0; }
+.ai-text { line-height: 1.5; }
+.ai-row.is-done .ai-text { text-decoration: line-through; color: var(--muted); }
+.ai-sub { margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+/* ปุ่มแก้ผู้รับผิดชอบดูเหมือนข้อความ แต่ต้องเป็น <button> จริงเพื่อให้แท็บ/สกรีนรีดเดอร์ถึงได้ */
+.ai-who {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+.ai-del { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; }
+/* กลุ่มเด็กกำพร้า — ระบบไม่ยอมลบงานที่คนติ๊กว่าทำแล้วเอง จึงต้องบอกว่าทำไมมันยังอยู่ */
+.ai-orphans { margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.ai-orphans > p { margin: 0 0 6px; font-size: 12.5px; color: var(--warn); }
 /* ชื่อส่วนอยู่บนปุ่มแท็บที่เพิ่งกดมาแล้ว ไม่ต้องเขียนซ้ำใต้ปุ่ม */
 .dtab > .section-head > h3,
 .dtab > .section-head > div > h3 { display: none; }

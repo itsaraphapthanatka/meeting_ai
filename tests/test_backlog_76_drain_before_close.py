@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -48,6 +49,7 @@ class _DrainSpy:
 
     def __init__(self) -> None:
         self.calls: list[int] = []
+        self.seen = threading.Event()
         self._real = server.Handler._drain_rejected_body
 
     def __enter__(self):
@@ -55,7 +57,10 @@ class _DrainSpy:
 
         def wrapper(handler, pending):
             spy.calls.append(pending)
-            return spy._real(handler, pending)
+            try:
+                return spy._real(handler, pending)
+            finally:
+                spy.seen.set()
 
         self._patch = mock.patch.object(server.Handler, "_drain_rejected_body", wrapper)
         self._patch.start()
@@ -64,6 +69,16 @@ class _DrainSpy:
     def __exit__(self, *a):
         self._patch.stop()
         return False
+
+    def wait(self, timeout: float = 5.0) -> None:
+        """รอให้เธรดของเซิร์ฟเวอร์เดินมาถึงบรรทัดระบายจริง ๆ ก่อนค่อยตรวจ.
+
+        การระบายเกิด **หลัง** เขียนคำตอบลง socket ไคลเอนต์จึงอ่าน 415 จบและ post_raw()
+        คืนค่าได้ก่อนที่เธรดนั้นจะทำงานต่อ ถ้าตรวจทันทีแล้วถอด patch ออกเลย บางครั้ง
+        (วัดได้ 2 ครั้งจาก ~11 รอบของสวีทเต็ม ตอนเครื่องมีโหลด) การระบายจะไปเกิดหลังถอด
+        patch — สายลับเลยไม่เห็นอะไรเลย แล้วเทสต์แดงทั้งที่เซิร์ฟเวอร์ทำถูกทุกอย่าง
+        """
+        self.seen.wait(timeout)
 
     @property
     def drained(self) -> list[int]:
@@ -79,13 +94,16 @@ class TestRejectedBodyIsDrained(CloudCase):
         with _DrainSpy() as spy:
             status, _, _ = self.post_raw("/api/auth/share", payload,
                                          content_type="text/plain")
+            spy.wait()
         self.assertEqual(status, 415)
         self.assertEqual(spy.drained, [len(payload)],
-                         "ไม่ได้ระบาย body ที่ปฏิเสธไป — client อาจเจอ reset แทน 415")
+                         "ไม่ได้ระบาย body ที่ปฏิเสธไป — client อาจเจอ reset แทน 415 "
+                         f"(เรียกทั้งหมด {spy.calls!r})")
 
     def test_a_request_without_a_body_drains_nothing(self):
         with _DrainSpy() as spy:
             self.get("/api/config")
+            spy.wait(0.5)     # ไม่มีอะไรให้รอ แต่ให้โอกาสมันพลาดถ้าโค้ดเรียกจริง
         self.assertEqual(spy.drained, [], "ไม่มี body ให้ระบายแต่ไปเรียก")
 
 
