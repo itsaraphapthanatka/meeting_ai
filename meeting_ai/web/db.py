@@ -130,6 +130,35 @@ def transaction():
         yield conn
 
 
+def meeting_count() -> int | None:
+    """นับการประชุมในฐานที่ `DATABASE_URL` ชี้อยู่ — None ถ้ายังไม่มีตาราง.
+
+    มีไว้เป็นด่านก่อน `db-init` เกิดขึ้นจริง 2026-09-20: รัน `db-init` ใส่ฐาน Neon
+    เก่าไปสองรอบ เพราะชื่อฐานเหมือนกันทั้งคู่ (`neondb`) ดูจากชื่อไม่ออก ต้องนับแถวเอา
+
+    `scripts/copy_meetings.py` มีของตัวเองเพราะมันต่อสองฐานที่รับมาเป็น URL ไม่ใช่ฐานของ `DATABASE_URL`
+    """
+    with connect() as conn:
+        row = conn.execute(
+            """select 1 from information_schema.tables
+               where table_schema = 'meeting_ai' and table_name = 'meetings'"""
+        ).fetchone()
+        if row is None:
+            return None
+        return conn.execute("select count(*) from meeting_ai.meetings").fetchone()[0]
+
+
+def schema_hint() -> str:
+    """ฐานนี้มีอะไรอยู่แทน — ช่วยบอกว่าไปโดนฐานของแอปอะ."""
+    with connect() as conn:
+        rows = conn.execute(
+            """select table_schema, count(*) from information_schema.tables
+               where table_schema not in ('pg_catalog', 'information_schema')
+               group by table_schema order by 2 desc limit 3"""
+        ).fetchall()
+    return ", ".join(f"{a} ({b} ตาราง)" for a, b in rows) or "(ว่างเปล่า)"
+
+
 def init() -> list[str]:
     """สร้าง schema/ตาราง (รันซ้ำได้) คืนรายชื่อตารางที่มีอยู่หลังรัน."""
     sql = SCHEMA_PATH.read_text(encoding="utf-8")

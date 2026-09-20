@@ -102,6 +102,23 @@ def _cmd_db_init(args: argparse.Namespace) -> int:
     if gaps:
         _db_gaps(gaps)
         return 2
+    # ด่านกันชี้ผิดฐาน — ต้องตรวจ **ก่อน** init เพราะ init สร้าง schema ทิ้งไว้
+    # ในฐานที่ไปโดน เกิดขึ้นจริง 2026-09-20 สองรอบ (BACKLOG #82)
+    want = getattr(args, "expect_meetings", None)
+    if want is not None:
+        have = db.meeting_count()
+        if have is None:
+            print("❌ ฐานนี้ยังไม่มีตาราง meeting_ai.meetings")
+            print("   สิ่งที่เจอในฐานนั้นแทน:", db.schema_hint())
+            print("   ถ้าเป็นฐานใหม่ของ meeting_ai จริง "
+                  "ให้รันโดยไม่ใส่ --expect-meetings")
+            return 1
+        if have != want:
+            print(f"❌ ฐานนี้มีการประชุม {have} รายการ "
+                  f"แต่สั่งไว้ว่าต้องเป็น {want} "
+                  "— หยุดก่อน น่าจะชี้ผิดฐาน")
+            return 1
+        print(f"✅ ฐานนี้มี {have} รายการ ตรงกับที่คาดไว้")
     tables = db.init()
     print("✅ สร้าง/อัปเดต schema `meeting_ai` เรียบร้อย")
     for t in tables:
@@ -289,6 +306,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=_cmd_web)
 
     sp = sub.add_parser("db-init", help="สร้างตารางใน Postgres (โหมด cloud — ต้องตั้ง DATABASE_URL)")
+    sp.add_argument("--expect-meetings", type=int, metavar="N",
+                    help="หยุดถ้าฐานนี้ไม่ได้มีการประชุม N รายการพอดี "
+                         "— ด่านกันชี้ผิดฐาน")
     sp.set_defaults(func=_cmd_db_init)
 
     sp = sub.add_parser("db-check",
