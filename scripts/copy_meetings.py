@@ -8,8 +8,14 @@
 ด้วย `VERCEL_TOKEN` (ตรวจแล้ว 2026-09-20 — ทุกตัวแปรของโปรเจกต์นี้เป็น sensitive หมด)
 สคริปต์จึงรับสองค่าจาก **environment ของคนรัน** เอง ไม่มีค่าลับผ่านมือใคร
 
+    # ต้นทางไม่ต้องใส่ถ้าเป็นฐานที่ .env ชี้อยู่แล้ว ใส่แต่ปลายทางพอ
+    DST_DATABASE_URL='...ฐาน production...' python scripts/copy_meetings.py
+
     SRC_DATABASE_URL='...ฐานเก่า...' DST_DATABASE_URL='...ฐาน production...' \
         python scripts/copy_meetings.py                       # ดูอย่างเดียว (ค่าเริ่มต้น)
+
+    # กันชี้ผิดฐาน: ถ้าปลายทางไม่ได้มี 8 รายการพอดี ให้หยุดทันที (ใช้ได้ทั้ง dry-run และ apply)
+    ... --expect-dst-meetings 8
 
     SRC_DATABASE_URL=... DST_DATABASE_URL=... \
         python scripts/copy_meetings.py --owner you@example.com --apply
@@ -25,6 +31,8 @@
   เสียงจะเปิดไม่ได้ สคริปต์พิมพ์รายการ key ให้เอาไปคัดลอกเอง
 * คอลัมน์ที่ปลายทางยังไม่มี (`peaks`, `action_items`, `qa` ถ้ายังไม่ได้รัน `db-init`)
   จะถูกข้ามโดยอัตโนมัติ ไม่ใช่ทำให้ทั้งงานล้ม
+* **`--expect-dst-meetings N` คือด่านกันชี้ผิดฐาน** — ฐานเก่ากับ production ชื่อเหมือนกัน
+  ทั้งคู่ (`neondb`) ดูจากชื่อไม่ออก ต้องนับแถวเอา · ล้มทั้งใน dry-run ด้วย
 """
 
 from __future__ import annotations
@@ -71,14 +79,26 @@ def main() -> int:
     ap.add_argument("--owner", help="อีเมลของผู้ใช้ที่ปลายทาง ที่จะเป็นเจ้าของทุกแถวที่ย้ายมา")
     ap.add_argument("--apply", action="store_true", help="เขียนจริง (ไม่ใส่ = ดูอย่างเดียว)")
     ap.add_argument("--only", help="ย้ายเฉพาะ id นี้ (ใส่ได้หลายตัว คั่นด้วยจุลภาค)")
+    ap.add_argument("--expect-dst-meetings", type=int, metavar="N",
+                    help="หยุดถ้าปลายทางไม่ได้มีการประชุม N รายการพอดี "
+                         "— ด่านกันชี้ผิดฐาน")
     args = ap.parse_args()
 
-    src_url = os.environ.get("SRC_DATABASE_URL")
+    # ต้นทางปกติคือฐานที่ `.env` ของเครื่องนี้ชี้อยู่แล้ว — ไม่ต้องให้คนไปเปิดไฟล์คัดลอกค่า
+    # ออกมาเอง (ยิ่งคัดลอกไปมา ยิ่งมีโอกาสไปโผล่ในที่ที่ไม่ควร) ตั้ง SRC_DATABASE_URL เองได้
+    # ถ้าต้นทางไม่ใช่ฐานนั้น
+    src_url = os.environ.get("SRC_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    src_from_env_file = not os.environ.get("SRC_DATABASE_URL") and bool(src_url)
     dst_url = os.environ.get("DST_DATABASE_URL")
-    if not src_url or not dst_url:
-        print("ต้องตั้ง SRC_DATABASE_URL และ DST_DATABASE_URL ใน environment "
+    if not src_url:
+        print("ไม่มีต้นทาง — ตั้ง SRC_DATABASE_URL หรือให้ .env มี DATABASE_URL")
+        return 2
+    if not dst_url:
+        print("ต้องตั้ง DST_DATABASE_URL ใน environment "
               "(ไม่รับเป็น argument เพื่อไม่ให้ค่าลับไปอยู่ใน shell history)")
         return 2
+    if src_from_env_file:
+        print("ต้นทาง: ใช้ DATABASE_URL จาก .env ของเครื่องนี้")
 
     wanted = {s.strip() for s in (args.only or "").split(",") if s.strip()}
 
@@ -91,6 +111,20 @@ def main() -> int:
 
         print(f"ต้นทาง: {src.execute('select current_database()').fetchone()[0]} "
               f"· ปลายทาง: {dst.execute('select current_database()').fetchone()[0]}")
+
+        # ด่านกันชี้ผิดฐาน — เกิดขึ้นจริงมาแล้ว 2026-09-20: `.env` ของเครื่องเจ้าของชี้ไป
+        # ฐาน Neon เก่าที่เลิกใช้แล้ว ส่วน production ใช้อีกฐาน กว่าจะรู้ก็หลังรัน `db-init`
+        # ไปสองรอบ · ชื่อฐานเหมือนกันทั้งคู่ (`neondb`) จึงดูจากชื่อไม่ออก ต้องนับแถวเอา
+        # ตรวจก่อนทุกอย่าง และ **ล้มทั้งใน dry-run ด้วย** ไม่งั้นคนอ่านรายงานผิดฐานไปทั้งหน้า
+        if args.expect_dst_meetings is not None:
+            have_n = dst.execute(
+                "select count(*) from meeting_ai.meetings").fetchone()[0]
+            if have_n != args.expect_dst_meetings:
+                print(f"{chr(10)}❌ ปลายทางมีการประชุม {have_n} รายการ "
+                      f"แต่สั่งไว้ว่าต้องเป็น {args.expect_dst_meetings} — หยุดก่อน "
+                      "น่าจะชี้ผิดฐาน")
+                return 1
+            print(f"✅ ปลายทางมี {have_n} รายการ ตรงกับที่คาดไว้")
         print("ผู้ใช้ที่ต้นทาง:", ", ".join(e for _, e in _users(src)) or "(ไม่มี)")
         print("ผู้ใช้ที่ปลายทาง:", ", ".join(e for _, e in _users(dst)) or "(ไม่มี)")
         if skipped_cols:
