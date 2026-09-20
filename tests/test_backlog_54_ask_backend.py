@@ -128,6 +128,38 @@ class TestTheQueueEntry(unittest.TestCase):
         self.assertIn('sanitize.text(result.get("answer"))', _apply_result_ask())
 
 
+class TestTheQuestionSurvivesBothModes(LocalCase):
+    """เจอตอนกดใช้จริง ไม่ใช่ตอนเทสต์ — โหมดไฟล์กับ cloud เก็บ spec คนละที่.
+
+    `_enqueue()` โหมดไฟล์เก็บงานไว้ในหน่วยความจำ **ไม่มีคีย์ `_spec`** เลย ส่วนโหมด cloud
+    เก็บลง `jobs.spec` แล้ว `job_get()` คืนมาเป็น `_spec` โดยไม่มีคีย์ระดับบน — งานแปลแก้เรื่องนี้
+    ไปแล้วด้วยการส่ง `_lang` เป็น extra ควบคู่กับ `spec` (เห็นได้ใน BUG-048)
+
+    รอบแรกผมส่งแค่ `spec=` ทำให้ `build_spec()` ในโหมดไฟล์ได้คำถามว่าง งานเลยตายด้วย
+    "งานนี้ไม่มีคำถามใน spec" ทั้งที่ผู้ใช้พิมพ์คำถามมาแล้ว — เทสต์เดิมไม่เห็นเพราะตรวจแต่
+    ซอร์สกับเส้น cloud
+    """
+
+    def test_build_spec_gets_the_question_in_file_mode(self):
+        mid = new_mid()
+        store.create(mid=mid, title="ประชุม", audio_name="a.wav", source="upload",
+                     language="th", duration=1.0, segments=[], summary=SUMMARY)
+        job = jobs.submit_ask(mid, "ประชุม", "ใครทำสไลด์")
+        spec = jobs.build_spec(job["id"])
+        self.assertEqual(spec["question"], "ใครทำสไลด์",
+                         "คำถามหายระหว่างทาง — งานจะตายทั้งที่ผู้ใช้พิมพ์มาแล้ว")
+        self.assertIn(SUMMARY, spec["summary"])
+
+    def test_apply_result_finds_it_in_file_mode_too(self):
+        mid = new_mid()
+        store.create(mid=mid, title="ประชุม", audio_name="a.wav", source="upload",
+                     language="th", duration=1.0, segments=[], summary=SUMMARY)
+        job = jobs.submit_ask(mid, "ประชุม", "ใครทำสไลด์")
+        jobs.apply_result(job["id"], {"answer": "สมชาย", "enough": True})
+        rows = store.get(mid)["qa"]
+        self.assertEqual([r["question"] for r in rows], ["ใครทำสไลด์"])
+
+
 class TestStorage(LocalCase):
 
     def setUp(self):

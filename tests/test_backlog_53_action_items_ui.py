@@ -46,11 +46,15 @@ class TestTheThirdTabExists(unittest.TestCase):
         seg = seg[:seg.index("</div>")]
         self.assertIn('data-tab="actions"', seg)
 
-    def test_the_order_reads_summary_actions_transcript(self):
+    def test_the_order_puts_actions_after_the_summary(self):
+        """ตรวจ *ลำดับสัมพัทธ์* ไม่ใช่รายการตายตัว — #54 แทรกแท็บ "ถาม" เข้ามาทีหลัง
+        แล้วเทสต์ที่ยึดรายการเป๊ะ ๆ ก็แดงทั้งที่ไม่มีอะไรผิด"""
         seg = HTML[HTML.index('id="d-seg"'):]
         seg = seg[:seg.index("</div>")]
-        self.assertEqual(re.findall(r'data-tab="([a-z]+)"', seg),
-                         ["summary", "actions", "transcript"])
+        order = re.findall(r'data-tab="([a-z]+)"', seg)
+        self.assertIn("actions", order)
+        self.assertLess(order.index("summary"), order.index("actions"))
+        self.assertLess(order.index("actions"), order.index("transcript"))
 
     def test_the_pane_exists_and_holds_the_list(self):
         self.assertIn('<div class="dtab" data-tab="actions">', HTML)
