@@ -141,17 +141,31 @@ def _check_join_url(url: str) -> tuple[bool, str]:
     return True, ""
 
 
-def worker_kinds(w: dict) -> list[str]:
-    """ชนิดงานที่เครื่องนี้คว้าได้ — คิดด้วย `runner.job_kinds()` ตัวเดียวกับที่ worker ใช้.
+def worker_kinds(w: dict) -> list[str] | None:
+    """ชนิดงานที่ **worker บอกเอง** ว่าคว้าได้ — None ถ้าเป็นรุ่นที่ยังไม่ส่งมา.
 
-    หน้าเว็บต้องรู้เรื่องนี้ เพราะงานที่ไม่มีเครื่องไหนรับได้จะค้างใน `queued` ตลอดกาล
-    โดยไม่มีใครบอก แล้วชิปยังขึ้นว่า "พร้อม" อยู่ (BACKLOG #83)
+    **ห้ามคำนวณจาก caps ด้วย `runner.job_kinds()` ฝั่งนี้** ซึ่งเวอร์ชันแรกของ #83 ทำ
+    แล้วผิด: สองฝั่งเป็นคนละเวอร์ชันกันได้ · 2026-09-20 worker ค้างที่ PR #71 ส่วน
+    production ถึง #98 เซิร์ฟเวอร์จึงสรุปว่า worker รับ `ask` ได้ ทั้งที่โค้ดบนเครื่องนั้น
+    ไม่รู้จัก `ask` — งานค้างคิว 17 ชั่วโมงโดยหน้าเว็บยังบอกว่า "พร้อม"
 
-    **ห้ามเขียนกติกานี้ซ้ำใน app.js** — ถ้าวันหนึ่ง `job_kinds()` เพิ่มเงื่อนไข
-    สองฝั่งจะเพี้ยนกันเงียบ ๆ แล้วหน้าเว็บจะโกหกแทนที่จะบอกความจริง
+    ค่าที่เชื่อได้มีค่าเดียวคือค่าที่ worker ส่งมา ซึ่งเป็นค่าเดียวกับที่มันใช้ตอน claim
     """
-    return runner.job_kinds({"bot": "bot" in (w.get("can") or [])})
+    kinds = w.get("kinds")
+    return list(kinds) if isinstance(kinds, list) else None
 
+
+def worker_outdated(w: dict) -> bool:
+    """โค้ดบนเครื่องนั้นไม่ตรงกับเซิร์ฟเวอร์ไหม — งานชนิดใหม่จะค้างคิวเงียบ ๆ.
+
+    เทียบสิ่งที่ worker บอก กับสิ่งที่โค้ด**รุ่นนี้**จะได้จาก caps ชุดเดียวกัน
+    ไม่ตรง = เครื่องนั้นรันโค้ดคนละรุ่น · ไม่ส่ง kinds มาเลย = เก่ากว่ารุ่นที่เริ่มส่ง
+    """
+    said = worker_kinds(w)
+    if said is None:
+        return True
+    expected = runner.job_kinds({"bot": "bot" in (w.get("can") or [])})
+    return set(said) != set(expected)
 
 class BadBody(ValueError):
     """body ของคำขออ่านไม่ได้ — ตอบ 400 ไม่ใช่ 500."""
@@ -685,7 +699,8 @@ class Handler(BaseHTTPRequestHandler):
         """
         workers = store.workers_list()
         for w in workers:
-            w["kinds"] = worker_kinds(w)
+            # kinds มาจาก store แล้ว (ค่าที่ worker บอกเอง) — ที่นี่แค่ติดธงว่าเวอร์ชันเพี้ยน
+            w["outdated"] = worker_outdated(w)
         if self.user and self.user.get("is_admin"):
             return workers
         return [{k: v for k, v in w.items() if k not in ("job_title", "job_id")}

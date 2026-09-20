@@ -330,6 +330,9 @@ function renderWorkers() {
         <span class="wk-sub">${label} · ${detail}</span>
         <span class="wk-sub">${w.gpu ? esc(w.gpu) + ' · ' : ''}ทำเสร็จ ${w.jobs_done} งาน</span>
         ${w.alive ? `<span class="wk-sub">${workerCan(w)}</span>` : ''}
+        ${w.alive && w.outdated ? '<span class="wk-sub wk-old">โค้ดบนเครื่องนี้'
+    + 'คนละรุ่นกับเซิร์ฟเวอร์ — งานชนิดใหม่จะค้างคิว (git pull แล้วรีสตาร์ต worker)'
+    + '</span>' : ''}
       </div>
     </div>`;
   }).join('');

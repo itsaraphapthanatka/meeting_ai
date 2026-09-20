@@ -34,7 +34,7 @@ import unittest
 from pathlib import Path
 
 from meeting_ai import runner
-from meeting_ai.web import server
+from meeting_ai.web import server  # noqa: F401  (อ่านซอร์สของมันด้านล่าง)
 
 STATIC = Path(__file__).resolve().parents[1] / "meeting_ai" / "web" / "static"
 APP_JS = (STATIC / "app.js").read_text(encoding="utf-8")
@@ -52,38 +52,32 @@ def fn(name: str) -> str:
     return APP_JS[start:nxt if nxt != -1 else len(APP_JS)]
 
 
-class TestTheRuleHasOneHome(unittest.TestCase):
-    """`runner.job_kinds()` เป็นเจ้าของกติกา — เซิร์ฟเวอร์แปลงให้ หน้าเว็บไม่คิดเอง."""
+class TestTheBrowserDoesNotReDeriveTheRule(unittest.TestCase):
+    """หน้าเว็บอ่าน `w.kinds` ที่ส่งมา ห้ามคิดเองจาก caps.
 
-    def test_a_machine_without_docker_is_not_offered_bot(self):
-        self.assertNotIn("bot", server.worker_kinds({"can": ["local", "api"]}))
+    **เวอร์ชันแรกของตั๋วนี้ให้เซิร์ฟเวอร์คำนวณ `kinds` จาก caps ด้วย `runner.job_kinds()`
+    ซึ่งผิด** และรู้ตัวภายในวันเดียวกัน: worker ค้างอยู่ที่ PR #71 ส่วน production ถึง #98
+    เซิร์ฟเวอร์จึงสรุปว่า worker รับงาน `ask` ได้ ทั้งที่โค้ดบนเครื่องนั้นไม่รู้จัก `ask`
+    เลย — งานค้างคิว 17 ชั่วโมงโดยหน้าเว็บยังบอกว่า "พร้อม" · แก้ใน BACKLOG #84
+    ให้ worker ส่ง `kinds` ของตัวเองมากับ heartbeat (ดู `test_backlog_84_*`)
+    """
 
-    def test_a_machine_with_docker_is(self):
-        self.assertIn("bot", server.worker_kinds({"can": ["local", "api", "bot"]}))
-
-    def test_it_matches_what_the_worker_itself_would_claim(self):
-        # ถ้าสองฝั่งไม่ตรงกัน หน้าเว็บจะบอกผิดว่ามี/ไม่มีเครื่องรับงาน
-        for cap in (True, False):
-            with self.subTest(bot=cap):
-                self.assertEqual(
-                    server.worker_kinds({"can": ["bot"] if cap else []}),
-                    runner.job_kinds({"bot": cap}))
-
-    def test_a_worker_row_without_can_does_not_crash(self):
-        self.assertNotIn("bot", server.worker_kinds({}))
-
-    def test_the_view_attaches_it_to_every_worker(self):
-        body = SERVER_PY[SERVER_PY.index("def _workers_view"):]
-        body = body[:body.index("def _job_scope")]
-        self.assertIn('w["kinds"] = worker_kinds(w)', body)
-        self.assertLess(body.index('w["kinds"]'), body.index("is_admin"),
-                        "ต้องติดไปกับทุกเครื่อง ไม่ใช่เฉพาะที่แอดมินเห็น")
-
-    def test_the_browser_is_not_given_the_rule_to_re_derive(self):
-        # app.js ต้องอ่าน w.kinds ที่ส่งมา ห้ามเดาจาก caps/can เอง
+    def test_it_reads_what_the_worker_reported(self):
         body = fn("function strandedKinds()")
         self.assertIn("w.kinds", body)
         self.assertNotIn("w.can", body)
+
+    def test_the_server_does_not_invent_kinds_from_caps(self):
+        """ค่าที่เชื่อได้มีค่าเดียวคือค่าที่ worker ส่งมา ซึ่งเป็นค่าเดียวกับที่มันใช้ตอน claim.
+
+        ตรวจเฉพาะ **โค้ด** ไม่ใช่ docstring — docstring ของฟังก์ชันนั้นพูดถึง
+        `runner.job_kinds()` อยู่แล้วเพื่ออธิบายว่าทำไมห้ามใช้
+        """
+        body = SERVER_PY[SERVER_PY.index("def worker_kinds"):
+                         SERVER_PY.index("def worker_outdated")]
+        code = body[body.index('"""', body.index('"""') + 3) + 3:]
+        self.assertNotIn("runner.job_kinds", code)
+        self.assertIn('w.get("kinds")', code)
 
 
 class TestStrandedKinds(unittest.TestCase):

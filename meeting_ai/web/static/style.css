@@ -1262,3 +1262,6 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
 /* BACKLOG #83 — เหตุผลที่งานค้างคิว ต่อท้ายบรรทัดสถานะ ไม่ใช่แถวใหม่ */
 .job .job-stuck { color: var(--warn); }
 .job .job-stuck::before { content: ' · '; color: var(--muted); }
+
+/* BACKLOG #84 — เครื่องที่รันโค้ดคนละรุ่นกับเซิร์ฟเวอร์ */
+.wk .wk-old { color: var(--warn); }

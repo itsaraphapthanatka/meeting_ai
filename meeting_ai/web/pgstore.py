@@ -1229,6 +1229,8 @@ def workers_list() -> list[dict]:
             "started": r[6].isoformat(timespec="seconds") if r[6] else None,
             # ให้หน้าเว็บบอกได้ว่าเครื่องไหนขาดอะไร ไม่ต้องไปไล่ดูทีละเครื่อง
             "can": [k for k in ("local", "api", "diarize", "bot") if caps.get(k)],
+            # ชนิดงานที่ worker **บอกเอง** — None ถ้าเป็น worker รุ่นก่อน BACKLOG #84
+            "kinds": caps.get("kinds") if isinstance(caps.get("kinds"), list) else None,
         })
     return out
 
