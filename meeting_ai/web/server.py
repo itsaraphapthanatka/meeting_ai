@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -58,6 +59,9 @@ MAX_SEGMENTS = 50_000
 # รหัสรายการ action item — สร้างจาก secrets.token_hex(6) ใน web/actionitems.py
 # ตรวจรูปแบบก่อนเอาไปค้น เพราะมันมาจาก URL เหมือน mid (กติกาเดียวกับ store.valid_id)
 _ITEM_ID_RE = re.compile(r"[0-9a-f]{12}")
+MAX_QUESTION = 500      # คำถามยาวกว่านี้ไม่ได้ช่วยอะไร และมันไปอยู่ใน prompt
+ASK_LIMIT = 20          # ครั้ง
+ASK_WINDOW = 600        # วินาที (ADR-002 ข้อ 2.7 — ผูกกับคน ไม่ใช่ IP)
 MAX_SEGMENT_TEXT = 5_000      # ตัวอักษรต่อ segment (ประโยคพูดจริงยาวหลักร้อยตัว)
 CHUNK = 1024 * 256
 # Range ที่อ่านออกแต่สนองไม่ได้ — ต้องแยกจาก "ไม่มี/อ่านไม่ออก" ที่ต้องเสิร์ฟทั้งไฟล์ (BACKLOG #46)
@@ -1540,6 +1544,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._translate(mid)
         if len(rest) == 2 and rest[0] == "action-items":
             return self._action_item(mid, rest[1])
+        if rest == ["ask"]:
+            if self.command != "POST":
+                return self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ต้องใช้ POST")
+            return self._ask(mid)
+        if len(rest) == 2 and rest[0] == "qa" and self.command == "DELETE":
+            return self._delete_qa(mid, rest[1])
         if rest:
             return self._error(HTTPStatus.NOT_FOUND, "ไม่พบ endpoint นี้")
 
@@ -1564,6 +1574,63 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"deleted": mid})
 
         self._error(HTTPStatus.METHOD_NOT_ALLOWED, "ใช้ method นี้กับ path นี้ไม่ได้")
+
+    def _ask(self, mid: str) -> None:
+        """POST /api/meetings/{id}/ask — ถามคำถามอิสระกับการประชุมนี้ (ADR-002 · #54).
+
+        **สิทธิ์**: อยู่หลังบล็อกตรวจสิทธิ์ของ `_meeting()` ซึ่งนับ POST เป็น "การเขียน"
+        แปลว่า **ต้องมีสิทธิ์แก้** ถึงจะถามได้ ADR-002 ข้อ 2.8/5.3 บอกให้ตัดสินใจเรื่องนี้
+        อย่างตั้งใจ ไม่ใช่รับมรดกเงียบ ๆ — v1 เลือกทางเข้มไว้ก่อนเพราะการถามใช้เงินของเจ้าของ
+        และลิงก์แชร์แบบอ่านอย่างเดียวมักส่งให้คนนอก ปลดล็อกทีหลังง่ายกว่าตามเก็บบิล
+
+        **เพดานผูกกับคน ไม่ใช่ IP** (ADR-002 ข้อ 2.7) — ทั้งออฟฟิศที่ออกเน็ต IP เดียว
+        ไม่ควรแย่งโควตากันเอง
+        """
+        body = self._body_json()
+        question = body.get("question")
+        if not isinstance(question, str) or not question.strip():
+            return self._error(HTTPStatus.BAD_REQUEST, "ต้องส่งคำถามมาด้วย")
+        question = question.strip()[:MAX_QUESTION]
+
+        meeting = store.get(mid)
+        if meeting is None:
+            return self._error(HTTPStatus.NOT_FOUND, "ไม่พบการประชุมนี้")
+        if not (meeting.get("summary") or "").strip():
+            return self._error(HTTPStatus.CONFLICT,
+                               "การประชุมนี้ยังไม่มีสรุป — กด “สรุปใหม่ด้วย AI” ก่อนแล้วค่อยถาม")
+
+        # _bucket_hit คืน "วินาทีที่ต้องรอ" ไม่ใช่ True/False (0.0 = ผ่าน)
+        wait = self._bucket_hit(self._ask_key(), ASK_LIMIT, ASK_WINDOW)
+        if wait:
+            return self._error(HTTPStatus.TOO_MANY_REQUESTS,
+                               f"ถามถี่เกินไป — ถามได้ {ASK_LIMIT} ครั้งต่อ "
+                               f"{ASK_WINDOW // 60} นาที ลองใหม่ในอีก {int(wait) + 1} วินาที")
+
+        job = jobs.submit_ask(mid, meeting["title"], question,
+                              owner_id=(self.user or {}).get("id"))
+        self._json(job, HTTPStatus.ACCEPTED)
+
+    def _ask_key(self) -> str:
+        """คีย์นับโควตา — ต่อผู้ใช้ ต่อลิงก์แชร์ แล้วค่อยถอยไปที่ IP.
+
+        คนถือลิงก์แชร์ไม่มีบัญชี แต่ก็ต้องมีโควตาของตัวเอง ไม่งั้นคนหนึ่งยิงรัวจนคนอื่น
+        ที่ถือลิงก์เดียวกันถามไม่ได้ — และเจ้าของเป็นคนจ่ายค่า LLM
+        """
+        uid = (self.user or {}).get("id")
+        if uid:
+            return f"ask:{uid}"
+        token = self._cookie("mai_share")
+        if token:
+            return "ask.share:" + hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
+        return f"ask.ip:{self._client_ip()}"
+
+    def _delete_qa(self, mid: str, qa_id: str) -> None:
+        if not _ITEM_ID_RE.fullmatch(qa_id):
+            return self._error(HTTPStatus.BAD_REQUEST, "รหัสคำถามไม่ถูกต้อง")
+        out = store.delete_qa(mid, qa_id)
+        if out is None:
+            return self._error(HTTPStatus.NOT_FOUND, "ไม่พบคำถามนี้")
+        self._json({"qa": out.get("qa", [])})
 
     def _action_item(self, mid: str, item_id: str) -> None:
         """ติ๊ก/แก้ผู้รับผิดชอบ/ลบ รายการเดียว (BACKLOG #53).

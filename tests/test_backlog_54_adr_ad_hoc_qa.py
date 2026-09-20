@@ -142,7 +142,11 @@ class TestTheConstraintsItLeansOn(unittest.TestCase):
         # ข้อ 2.3 "ราคาที่จ่าย": งาน ask ไม่ต้องใช้ GPU แต่ยังต้องรอ worker
         self.assertTrue(str(config.config.llm_base_url).startswith("http"))
         self.assertIn("summarize", runner.job_kinds({}))
-        self.assertNotIn("ask", runner.HANDLERS, "ฟีเจอร์ถูกสร้างแล้ว — ADR ต้องเปลี่ยนสถานะ")
+        # เดิมข้อนี้ดักว่า "ยังไม่ได้ทำ" — ทำแล้ว 2026-09-20 กับดักจึงกลับด้าน:
+        # ถ้าโค้ดมีฟีเจอร์ ADR ต้องไม่บอกว่ายังไม่ได้ทำ
+        self.assertIn("ask", runner.HANDLERS)
+        self.assertNotIn("ยังไม่ได้ทำในโค้ด", self.text,
+                         "โค้ดทำไปแล้วแต่ ADR ยังบอกว่ายังไม่ได้ทำ")
 
     def test_the_rate_limit_counter_it_wants_to_reuse_exists(self):
         self.assertTrue(callable(server.Handler._bucket_hit))

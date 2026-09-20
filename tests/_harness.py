@@ -182,6 +182,7 @@ class FakeStore:
             "summary": summary, "segments_list": list(segments), "translations": {},
             "peaks": list(peaks) if peaks else None,
             "action_items": actionitems.reconcile(None, summary),
+            "qa": [],
         }
         self.meetings[mid] = m
         return dict(m)
@@ -203,6 +204,32 @@ class FakeStore:
         m["summary"] = summary
         m["summary_error"] = error
         m["action_items"] = actionitems.reconcile(m.get("action_items"), summary)
+        m["updated"] = _now()
+        return dict(m)
+
+    # ---------- ถาม-ตอบ (BACKLOG #54) ----------
+
+    def add_qa(self, mid: str, question: str, answer: str,
+               enough: bool = True) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        rows = [dict(x) for x in (m.get("qa") or [])]
+        rows.append({"id": secrets.token_hex(6), "question": question, "answer": answer,
+                     "enough": bool(enough), "asked": _now()})
+        m["qa"] = rows[-20:]
+        m["updated"] = _now()
+        return dict(m)
+
+    def delete_qa(self, mid: str, qa_id: str) -> dict | None:
+        m = self.meetings.get(mid)
+        if m is None:
+            return None
+        rows = [dict(x) for x in (m.get("qa") or [])]
+        left = [x for x in rows if x.get("id") != qa_id]
+        if len(left) == len(rows):
+            return None
+        m["qa"] = left
         m["updated"] = _now()
         return dict(m)
 

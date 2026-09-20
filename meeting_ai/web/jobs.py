@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 import socket
 import tempfile
 import threading
@@ -289,6 +290,20 @@ def _meeting_of(job: dict) -> str | None:
     return job.get("_meeting") or (job.get("_spec") or {}).get("meeting") or job.get("meeting_id")
 
 
+def submit_ask(meeting_id: str, title: str, question: str,
+               owner_id: str | None = None) -> dict:
+    """คำถามหนึ่งข้อ = งานหนึ่งงาน (ADR-002 ข้อ 2.3/2.4).
+
+    id ใหม่ทุกครั้ง `<mid>.ask.<hex6>` เพราะถามซ้ำได้ไม่จำกัด ไม่เหมือนสรุป/คำแปลที่มีช่อง
+    เดียวต่อภาษา · **คำถามไม่อยู่ใน id** — ยาว มีช่องว่าง มีตัวคั่น path ได้ และเป็นข้อมูล
+    ส่วนตัวที่จะไปโผล่ใน URL กับ log เก็บไว้ใน spec ซึ่งเป็น jsonb อยู่แล้ว
+    """
+    return _enqueue(f"{meeting_id}.ask.{secrets.token_hex(3)}", title, "ask",
+                    spec={"kind": "ask", "meeting": meeting_id, "owner_id": owner_id,
+                          "question": question},
+                    _meeting=meeting_id)
+
+
 def build_spec(job_id: str) -> dict | None:
     """แปลงงานในคิวเป็น spec ที่ runner เอาไปทำได้ (ไม่มี path เครื่องอยู่ในนี้)."""
     job = get(job_id)
@@ -336,6 +351,9 @@ def build_spec(job_id: str) -> dict | None:
     if kind == "summarize":
         spec["segments"] = meeting.get("segments_list") or []
         spec["summary_lang"] = (job.get("_spec") or {}).get("summary_lang")
+    elif kind == "ask":
+        spec["summary"] = meeting.get("summary") or ""
+        spec["question"] = (job.get("_spec") or {}).get("question") or ""
     else:
         spec["lang"] = job.get("_lang") or (job.get("_spec") or {}).get("lang")
         spec["summary"] = meeting.get("summary") or ""
@@ -413,6 +431,17 @@ def apply_result(job_id: str, result: dict) -> None:
             # สรุปภาษาไทยพัง ทั้งที่พังคือรอบภาษาอื่น ความล้มเหลวรายงานผ่านการ์ดงานอยู่แล้ว
         else:
             store.set_summary(meeting_id, text, error=summary_error)
+    elif kind == "ask":
+        meeting_id = _meeting_of(job)
+        # คำถามอ่านจาก spec ไม่ใช่จาก result — ใครถือ WORKER_TOKEN จะได้ยัดคำถามปลอม
+        # คู่กับคำตอบลงคลังของคนอื่นไม่ได้ (เหตุผลเดียวกับภาษาปลายทางของงานแปล BUG-048)
+        question = str((job.get("_spec") or {}).get("question") or "").strip()
+        if not question:
+            raise RuntimeError("งานนี้ไม่มีคำถามใน spec — ถามใหม่อีกครั้ง")
+        text = sanitize.text(result.get("answer"))
+        if not text.strip():
+            raise RuntimeError("ไม่ได้รับคำตอบกลับมาจากเครื่องประมวลผล — ถามใหม่อีกครั้ง")
+        store.add_qa(meeting_id, question, text, bool(result.get("enough")))
     else:
         meeting_id = _meeting_of(job)
         # ภาษาปลายทางถูกเลือกไว้ตั้งแต่ submit_translate() และส่งให้ worker ผ่าน build_spec()
