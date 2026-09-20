@@ -862,6 +862,84 @@ function closeMeetingSheet() {
 }
 
 /* จอแคบ: สรุปกับบทถอดเสียงเป็นแท็บ แทนที่จะต่อกันยาว */
+/* เช็กลิสต์ Action Items (BACKLOG #53)
+
+   `orphan` = เคยติ๊กว่าทำแล้ว แต่หายไปจากสรุปล่าสุด ระบบไม่ลบให้เองเพราะเป็นของที่คนทำไว้
+   จึงต้องแยกกลุ่มและบอกเหตุผล ไม่ใช่ปนกับรายการปัจจุบันจนคนงงว่าทำไมมีงานที่อ่านไม่เจอในสรุป */
+function actionRow(item) {
+  const who = item.assignee || 'ไม่ได้ระบุ';
+  const sub = [item.due ? `กำหนด ${esc(item.due)}` : ''].filter(Boolean).join(' · ');
+  return `<div class="ai-row${item.done ? ' is-done' : ''}" data-id="${esc(item.id)}">
+    <input type="checkbox" ${item.done ? 'checked' : ''} aria-label="ทำเสร็จแล้ว">
+    <div class="ai-body">
+      <div class="ai-text">${esc(item.text)}</div>
+      <div class="ai-sub"><button type="button" class="ai-who">${esc(who)}</button>${sub ? ' · ' + sub : ''}</div>
+    </div>
+    ${item.orphan ? '<button type="button" class="ai-del" aria-label="ลบรายการนี้">✕</button>' : ''}
+  </div>`;
+}
+
+function renderActionItems() {
+  const box = $('#d-actions');
+  if (!box) return;
+  const items = state.meeting.action_items || [];
+  const live = items.filter((i) => !i.orphan);
+  const orphans = items.filter((i) => i.orphan);
+  if (!items.length) {
+    box.innerHTML = '<p class="muted">สรุปนี้ไม่มีตารางสิ่งที่ต้องทำ</p>';
+    return;
+  }
+  let html = live.map(actionRow).join('');
+  if (orphans.length) {
+    html += `<div class="ai-orphans"><p>ทำแล้ว แต่ไม่อยู่ในสรุปล่าสุด</p>${orphans.map(actionRow).join('')}</div>`;
+  }
+  box.innerHTML = html;
+}
+
+async function saveActionItem(id, body) {
+  const out = await api(`/api/meetings/${state.meeting.id}/action-items/${id}`, jsonPatch(body));
+  state.meeting.action_items = out.action_items;
+  renderActionItems();
+}
+
+function setupActionItems() {
+  const box = $('#d-actions');
+  if (!box) return;
+  box.onchange = async (e) => {
+    const cb = e.target.closest('input[type="checkbox"]');
+    if (!cb) return;
+    const row = cb.closest('.ai-row');
+    try {
+      await saveActionItem(row.dataset.id, { done: cb.checked });
+    } catch (err) {
+      cb.checked = !cb.checked;       // คืนสภาพให้ตรงกับเซิร์ฟเวอร์ ไม่ใช่ปล่อยให้โกหกตา
+      banner(`บันทึกไม่สำเร็จ: ${err.message}`);
+    }
+  };
+  box.onclick = async (e) => {
+    const row = e.target.closest('.ai-row');
+    if (!row) return;
+    if (e.target.closest('.ai-who')) {
+      const now = e.target.closest('.ai-who').textContent.trim();
+      const next = prompt('ผู้รับผิดชอบ:', now === 'ไม่ได้ระบุ' ? '' : now);
+      if (next === null) return;
+      try {
+        await saveActionItem(row.dataset.id, { assignee: next });
+      } catch (err) { banner(`บันทึกไม่สำเร็จ: ${err.message}`); }
+      return;
+    }
+    if (e.target.closest('.ai-del')) {
+      try {
+        const out = await api(
+          `/api/meetings/${state.meeting.id}/action-items/${row.dataset.id}`,
+          { method: 'DELETE' });
+        state.meeting.action_items = out.action_items;
+        renderActionItems();
+      } catch (err) { banner(`ลบไม่สำเร็จ: ${err.message}`); }
+    }
+  };
+}
+
 /* สรุปกับบทถอดเสียงแยกเป็นแท็บ — **ใช้ทั้งสองจอ** ตั้งแต่ BACKLOG #80
    เดิมจอกว้างวางสองส่วนต่อกัน ซึ่งแปลว่าต้องเลื่อนผ่านสรุปทั้งอันกว่าจะถึงบทถอดเสียง
    เหตุผลเดียวกับที่จอแคบแยกมาตั้งแต่แรก ความกว้างจอไม่ได้ทำให้สรุปสั้นลง */
@@ -870,7 +948,11 @@ function setupDetailTabs() {
   if (!seg) return;
   const panes = $$('.dtab');
   seg.hidden = false;
-  const btns = $$('.seg-btn', seg);
+  // ไม่มีตารางในสรุป = ไม่มีอะไรให้ดู ซ่อนปุ่มไปเลยดีกว่าให้กดแล้วเจอหน้าว่าง
+  const hasItems = ((state.meeting || {}).action_items || []).length > 0;
+  const actionsBtn = seg.querySelector('[data-tab="actions"]');
+  if (actionsBtn) actionsBtn.hidden = !hasItems;
+  const btns = $$('.seg-btn', seg).filter((b) => !b.hidden);
   const pick = (tab) => {
     btns.forEach((b) => {
       const on = b.dataset.tab === tab;
@@ -1976,6 +2058,8 @@ async function openMeeting(id) {
   renderLangSelect();
   renderSummaryView();
   renderTranscript(false);
+  renderActionItems();
+  setupActionItems();
 
   if (m.summary_error) {
     const err = $('#d-summary-err');
