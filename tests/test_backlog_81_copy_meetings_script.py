@@ -41,9 +41,12 @@ class TestItCannotWriteByAccident(unittest.TestCase):
         self.assertIn('"--apply", action="store_true"', SRC)
 
     def test_nothing_is_written_without_apply(self):
-        i = SRC.index("if not args.apply:")
-        j = SRC.index("dst.execute(sql", i)
-        self.assertLess(i, j, "ทางเขียนต้องอยู่หลังด่าน --apply เสมอ")
+        # ทางเขียนย้ายไปอยู่ใน `_insert()` ตอนแก้บั๊ก jsonb (#81b) — ด่านยังต้องมาก่อน
+        # เวอร์ชันแรกหาจาก `index(..., i)` คือหาเฉพาะหลังด่าน มุตันต์ที่แอบเพิ่มทางเขียน
+        # ไว้ **ก่อน** ด่านจึงรอดไปได้ ต้องดูครั้งแรกสุดในไฟล์ และต้องมีที่เดียว
+        self.assertEqual(SRC.count("_insert(dst, cols"), 1, "ทางเขียนต้องมีทางเดียว")
+        self.assertLess(SRC.index("if not args.apply:"), SRC.index("_insert(dst, cols"),
+                        "ทางเขียนต้องอยู่หลังด่าน --apply เสมอ")
 
     def test_it_stops_when_no_owner_is_given(self):
         i = SRC.index("if not args.owner:")

@@ -50,6 +50,7 @@ from meeting_ai.config import _load_dotenv  # noqa: E402
 _load_dotenv(ROOT / ".env")
 
 import psycopg  # noqa: E402
+from psycopg.types.json import Jsonb  # noqa: E402
 
 # คอลัมน์ที่คัดลอก — ไม่รวม owner_id (ตั้งใหม่จาก --owner) และไม่รวม search_text
 # ซึ่งปลายทางสร้างใหม่เองได้จาก title/summary/segments
@@ -90,6 +91,47 @@ def _other_app_hint(conn) -> str:
            group by table_schema order by 2 desc limit 3"""
     ).fetchall()
     return ", ".join(f"{a} ({b} ตาราง)" for a, b in rows) or "(ว่างเปล่า)"
+
+
+def _jsonb_cols(conn) -> set[str]:
+    """คอลัมน์ไหนของปลายทางเป็น jsonb — ชนิดของ **ปลายทาง** เป็นตัวตัดสินว่าจะห่อค่าอย่างไร."""
+    rows = conn.execute(
+        """select column_name from information_schema.columns
+           where table_schema = 'meeting_ai' and table_name = 'meetings'
+             and data_type = 'jsonb'"""
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _adapt(row, all_cols, jsonb):
+    """ห่อค่า jsonb ก่อนเขียนกลับ — ขาอ่านกับขาเขียนของ psycopg ไม่สมมาตรกัน.
+
+    psycopg แปลง jsonb ขาออกให้เป็น dict/list ของ Python ให้เอง แต่ขาเข้าไม่รู้ว่าจะแปลงกลับ
+    เป็นอะไร ต้องบอกด้วย `Jsonb()` เอง · เจอจริง 2026-09-20 ตอนย้ายของจริงครั้งแรก:
+
+        psycopg.ProgrammingError: cannot adapt type 'dict' using placeholder '%s'
+
+    และ `list` **อันตรายกว่า** เพราะไม่ error เลย — psycopg มี dumper ของ array อยู่แล้ว
+    `[1, 2]` จึงกลายเป็น array literal `{1,2}` ซึ่งเป็นคนละชนิดกับ jsonb ไปเงียบ ๆ
+    (`segments`, `speakers` เป็น list ทั้งคู่) ที่นี่จึงห่อ **ทุกคอลัมน์ที่ปลายทางเป็น jsonb**
+    ไม่ใช่ห่อเฉพาะตอนเจอ dict
+
+    None ต้องคง None ไว้ ห้ามห่อ ไม่งั้นได้ jsonb `null` ซึ่งไม่เท่ากับ SQL NULL
+    """
+    return tuple(Jsonb(v) if c in jsonb and v is not None else v
+                 for c, v in zip(all_cols, row))
+
+
+def _insert(dst, all_cols, rows, owner, jsonb) -> int:
+    """เขียนแถวลงปลายทาง คืนจำนวนที่เขียน — `on conflict do nothing` กันคนเขียนแทรกระหว่างทาง."""
+    placeholders = ", ".join(["%s"] * (len(all_cols) + 1))
+    sql = (f"insert into meeting_ai.meetings ({', '.join(all_cols)}, owner_id) "
+           f"values ({placeholders}) on conflict (id) do nothing")
+    done = 0
+    for r in rows:
+        dst.execute(sql, (*_adapt(r, all_cols, jsonb), owner))
+        done += 1
+    return done
 
 
 def _users(conn) -> list[tuple[str, str]]:
@@ -198,14 +240,7 @@ def main() -> int:
                   "— ใส่ --apply เพื่อเขียนจริง")
             return 0
 
-        all_cols = cols + extra
-        placeholders = ", ".join(["%s"] * (len(all_cols) + 1))
-        sql = (f"insert into meeting_ai.meetings ({', '.join(all_cols)}, owner_id) "
-               f"values ({placeholders}) on conflict (id) do nothing")
-        done = 0
-        for r in todo:
-            dst.execute(sql, (*r, owner))
-            done += 1
+        done = _insert(dst, cols + extra, todo, owner, _jsonb_cols(dst))
         # search_text สร้างใหม่จากของที่เพิ่งใส่ ไม่คัดลอกมาเพราะอาจค้างของเก่า
         dst.execute(
             """update meeting_ai.meetings set
