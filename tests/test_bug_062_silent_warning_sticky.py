@@ -55,6 +55,10 @@ class TestSilentWarning(unittest.TestCase):
             _cut(r"const SILENT_LOST_SEC = \d+;"),
             _cut(r"const SILENT_WARN = \{.*?\n\};"),
             _cut(r"const LOST_WARN = .*?;\n"),
+            # BACKLOG #85 ทำให้ silentWarning() พึ่งสองตัวนี้ — ไม่ตัดมาด้วย node จะ
+            # โยน ReferenceError แล้วเทสต์ทั้งคลาสล้มโดยไม่เกี่ยวกับสิ่งที่มันตั้งใจวัด
+            _cut(r"function deadTracks\(\) \{.*?\n\}"),
+            _cut(r"function deadTrackText\(names\) \{.*?\n\}"),
             _cut(r"function silentWarning\(now = Date\.now\(\)\) \{.*?\n\}"),
         ])
         cls.tmp = Path(tempfile.mkdtemp(prefix="mai-bug062-")).resolve()
@@ -135,8 +139,14 @@ class TestTheCallerActuallyUsesIt(unittest.TestCase):
     """ฟังก์ชันที่ถูกต้องแต่ไม่มีใครเรียก ก็ยังเป็นบั๊กเดิม."""
 
     def test_the_timer_hides_and_shows_from_the_same_decision(self):
-        # ต้องตั้ง hidden จากผลของ silentWarning() ทั้งสองทาง ไม่ใช่ตั้ง false ทางเดียว
-        self.assertIn("$('#rec-warn').hidden = !silentWarning();", APP_JS)
+        """ต้องตั้ง hidden จากผลของ silentWarning() ทั้งสองทาง ไม่ใช่ตั้ง false ทางเดียว.
+
+        BACKLOG #85 แยกเป็นสองบรรทัดเพราะต้องเอา **ข้อความ** ไปแสดงด้วย — ของเดิม
+        ตั้งแค่ hidden ทำให้กล่องเปล่าโผล่มา ข้อความที่คิดไว้สามแบบไม่เคยถูกแสดงเลย
+        """
+        self.assertIn("const warn = silentWarning();", APP_JS)
+        self.assertIn("$('#rec-warn').hidden = !warn;", APP_JS)
+        self.assertIn("$('#rec-warn').textContent = warn;", APP_JS)
 
     def test_nothing_sets_the_warning_visible_by_hand_any_more(self):
         # บรรทัดแบบ `warn.hidden = false` คือที่มาของอาการค้าง

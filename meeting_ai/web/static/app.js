@@ -1480,6 +1480,31 @@ const SILENT_WARN = {
 /* คนละกรณีกับข้างบน: เคยได้ยินแล้วเงียบยาว — ของเดิมเตือนกรณีนี้ไม่ได้เลย เพราะเทียบกับ
    ค่าพีคสูงสุดตลอดกาล พอได้ยินเสียงครั้งเดียวก็ปิดปากตัวเองถาวร ไมค์ที่หลุดตอนนาทีที่ 5
    จึงอัดเป็นความเงียบไปจนจบโดยไม่มีอะไรบอก */
+/* ชื่อที่ผู้ใช้เข้าใจของแต่ละแทร็ก — ชื่ออุปกรณ์จริงจากเบราว์เซอร์ (เช่น "BlackHole 2ch")
+   บอกไม่ได้ว่ามันทำหน้าที่อะไรในการอัดครั้งนี้ */
+const TRACK_ROLE = { system: 'เสียงในเครื่อง', mic: 'ไมค์ของคุณ', mixed: 'ไมค์' };
+
+/** แทร็กที่ยังไม่เคยได้ยินเสียงเลย — คืนรายชื่อคีย์ (ว่าง = ทุกแทร็กมีเสียงเข้า).
+ *
+ *  เกิดจริง 2026-09-20: เจ้าของอัดโหมด "ไมค์ + เสียงในเครื่อง" ด้วย BlackHole 2ch
+ *  ซึ่งเป็นอุปกรณ์เสมือนที่ไม่มีเสียงเข้าเลยจนกว่าจะตั้งเส้นทางเสียงออกของระบบไปหามัน
+ *  โหมดสองแทร็กจึงล้มทุกครั้งที่ลอง (5 ครั้งใน 2 วัน) ด้วย "ถอดเสียงไม่ได้ข้อความเลย"
+ *  ซึ่งรู้ได้ **หลังอัปโหลดและถอดเสียงเสร็จ** เท่านั้น
+ */
+function deadTracks() {
+  const t = rec.tracks || {};   // เผื่อถูกเรียกก่อนเริ่มอัด และเพื่อให้ตัดไปรันเดี่ยว ๆ ได้
+  return Object.keys(t).filter((n) => !t[n].heardAt);
+}
+
+function deadTrackText(names) {
+  return names.map((n) => {
+    const t = rec.tracks[n] || {};
+    const role = TRACK_ROLE[n] || n;
+    // ชื่ออุปกรณ์มีวงเล็บของตัวเองบ่อย ("BlackHole 2ch (Virtual)") ครอบวงเล็บซ้ำแล้วอ่านยาก
+    return t.label && t.label !== role ? `${role} “${t.label}”` : role;
+  }).join(' และ ');
+}
+
 const LOST_WARN = 'เงียบมานานแล้ว — ถ้ายังประชุมกันอยู่ ให้ตรวจว่าไมค์ยังต่ออยู่และไม่ได้ถูกปิด '
   + '(ข้อความนี้จะหายเองเมื่อได้ยินเสียงอีกครั้ง)';
 
@@ -1630,6 +1655,10 @@ const rec = {
   muted: false,
   // เวลาที่ 'ได้ยินเสียง' ครั้งล่าสุด (0 = ยังไม่เคยได้ยินเลยตั้งแต่เริ่มอัด)
   heardAt: 0,
+  warned: false,     // ดันคำเตือนแทร็กตายขึ้นแบนเนอร์ไปแล้วหรือยัง (ครั้งเดียวต่อการอัด)
+  // ชื่อแทร็ก -> {label, an, buf, peak, heardAt} — มิเตอร์หลักวัดจาก dest ซึ่งเป็น
+  // **เสียงผสม** ของทุกแทร็ก แทร็กที่เงียบสนิทจึงมองไม่เห็นถ้าอีกแทร็กดัง (BACKLOG #85)
+  tracks: {},
 };
 
 /* คลื่นเสียงสด (waveform) — สร้างแท่งไว้ครั้งเดียวตอนเปิดหน้า "ประชุมใหม่" แล้วอัปเดต
@@ -1706,7 +1735,30 @@ function silentWarning(now = Date.now()) {
       ? (SILENT_WARN[rec.mode] || SILENT_WARN.room)
       : '';
   }
-  return (now - rec.heardAt) / 1000 > SILENT_LOST_SEC ? LOST_WARN : '';
+  if ((now - rec.heardAt) / 1000 > SILENT_LOST_SEC) return LOST_WARN;
+  // เสียงผสมดังอยู่ แต่แทร็กใดแทร็กหนึ่งอาจเงียบสนิท — มิเตอร์รวมมองไม่เห็น
+  // (ถ้าเงียบทุกแทร็ก กรณีข้างบนดูแลไปแล้ว จึงเตือนเฉพาะตอนที่ยังเหลือแทร็กที่ได้ยิน)
+  const dead = deadTracks();
+  if (!dead.length || dead.length === Object.keys(rec.tracks).length) return '';
+  if ((now - rec.started) / 1000 <= SILENT_START_SEC) return '';
+  return `ไม่ได้ยินเสียงจาก ${deadTrackText(dead)} เลย — อีกแทร็กได้ยินปกติ · `
+    + 'ถ้าเป็นอุปกรณ์วนเสียงกลับ ต้องตั้งเสียงออกของระบบให้วิ่งเข้าอุปกรณ์นั้นด้วย';
+}
+
+/** เฝ้าระดับเสียงของแทร็กเดียว — แยกจากมิเตอร์รวมเพราะมิเตอร์รวมบอกไม่ได้ว่าใครเงียบ */
+function watchTrack(name, stream, ctx, label) {
+  const an = ctx.createAnalyser();
+  an.fftSize = 512;
+  ctx.createMediaStreamSource(stream).connect(an);
+  rec.tracks[name] = { label: label || '', an, buf: new Uint8Array(an.fftSize),
+                       peak: 0, heardAt: 0 };
+}
+
+/** ชื่ออุปกรณ์ที่ผู้ใช้เลือกไว้ใน <select> — ว่างได้ถ้าเบราว์เซอร์ยังไม่ให้ชื่อ */
+function pickedLabel(sel) {
+  const el = $(sel);
+  const opt = el && el.selectedOptions && el.selectedOptions[0];
+  return opt ? opt.textContent.trim() : '';
 }
 
 function startMeterLoop(analyser) {
@@ -1724,6 +1776,16 @@ function startMeterLoop(analyser) {
     rec.level = level;            // ตัวตัดคลิปสดใช้ค่านี้หาจังหวะเงียบ
     rec.peak = Math.max(rec.peak, level);
     if (level >= HEARD_LEVEL) rec.heardAt = Date.now();
+
+    // แต่ละแทร็กแยกกัน — ราคาถูก (fftSize 512) และเป็นข้อมูลเดียวที่บอกได้ว่าใครเงียบ
+    for (const t of Object.values(rec.tracks)) {
+      t.an.getByteTimeDomainData(t.buf);
+      let acc = 0;
+      for (const v of t.buf) { const d = (v - 128) / 128; acc += d * d; }
+      const lv = Math.sqrt(acc / t.buf.length);
+      t.peak = Math.max(t.peak, lv);
+      if (lv >= HEARD_LEVEL) t.heardAt = Date.now();
+    }
 
     if (reducedMotion?.matches || !barCount) {
       if (meterBar) meterBar.style.width = `${Math.min(100, level * 320)}%`;
@@ -1824,6 +1886,7 @@ async function startRecording() {
       const ss = await openInput(sysId, { echo: false });
       rec.streams.push(ss);
       ctx.createMediaStreamSource(ss).connect(dest);
+      watchTrack('system', ss, ctx, pickedLabel('#d-sys'));
       rec.recorders.system = newRecorder(ss, mime);
     }
 
@@ -1837,7 +1900,9 @@ async function startRecording() {
       step = 'สร้างตัวอัดของแทร็กไมค์';
       // ไมค์เดียวก็คือทั้งห้องรวมอยู่แทร็กเดียว = 'mixed' ไม่ใช่ 'mic'
       // ('mic' ฝั่งเซิร์ฟเวอร์ตีเป็น "ฉัน" ทุกประโยค ซึ่งผิดถ้าอีกฝ่ายก็เข้าไมค์ตัวนี้ด้วย)
-      rec.recorders[mode === 'room' ? 'mixed' : 'mic'] = newRecorder(ms, mime);
+      const micName = mode === 'room' ? 'mixed' : 'mic';
+      watchTrack(micName, ms, ctx, pickedLabel('#d-mic'));
+      rec.recorders[micName] = newRecorder(ms, mime);
     }
 
     // ถอนสิทธิ์ไมค์กลางทาง หรือถอดหูฟัง USB ออก = แทร็กตาย ถ้าไม่รู้ตัวจะอัดต่อได้ไฟล์เปล่า
@@ -1859,6 +1924,7 @@ async function startRecording() {
 
     rec.peak = 0;
     rec.heardAt = 0;
+    rec.warned = false;
     rec.muted = false;
     rec.started = Date.now();
     rec.recording = true;
@@ -1884,7 +1950,18 @@ async function startRecording() {
     rec.timer = setInterval(() => {
       const sec = (Date.now() - rec.started) / 1000;
       $('#rec-time').textContent = fmtClock(sec);
-      $('#rec-warn').hidden = !silentWarning();
+      // เดิมตั้งแค่ hidden ทำให้กล่องเปล่าโผล่มาโดยไม่มีข้อความ — ข้อความสามแบบที่
+      // silentWarning() คิดมาอย่างดีจึงไม่เคยถูกแสดงเลยสักครั้ง (BACKLOG #85)
+      const warn = silentWarning();
+      $('#rec-warn').textContent = warn;
+      $('#rec-warn').hidden = !warn;
+      // #rec-warn อยู่ท้ายหน้าและมีแถบลอยทับอยู่ — ถ้าผู้ใช้ยังไม่เลื่อนลงก็ไม่เห็นเลย
+      // แทร็กที่ตายเป็นเรื่องที่ต้องรู้ "เดี๋ยวนี้" ไม่ใช่ตอนเลื่อนไปเจอ จึงดันขึ้นแบนเนอร์
+      // บนสุดหนึ่งครั้งด้วย (ครั้งเดียวต่อการอัด ไม่งั้นทับข้อความอื่นทุกครึ่งวินาที)
+      if (warn && !rec.warned && deadTracks().length) {
+        rec.warned = true;
+        banner(warn);
+      }
     }, 500);
 
     startMeterLoop(analyser);
@@ -1990,6 +2067,10 @@ function stopRecording() {
 
   const seconds = Math.round((Date.now() - rec.started) / 1000);
   const silent = rec.peak < 0.004;
+  // อ่านก่อน cleanupRecording() ล้าง rec.tracks ทิ้ง — และบอกตั้งแต่ตอนนี้ ไม่ใช่รอให้
+  // worker ถอดเสียงเสร็จแล้วตอบว่า "ไฟล์อาจไม่มีเสียงพูด" ซึ่งไม่บอกว่าแทร็กไหน
+  const dead = deadTracks();
+  const deadWhat = dead.length ? deadTrackText(dead) : '';
   let pending = entries.length;
   const tracks = {};
 
@@ -1998,21 +2079,25 @@ function stopRecording() {
       const mime = entry.recorder.mimeType || 'audio/webm';
       const blob = new Blob(entry.chunks, { type: mime });
       if (blob.size) tracks[name] = { blob, ext: extFor(mime) };
-      if (--pending === 0) finishRecording(tracks, seconds, silent);
+      if (--pending === 0) finishRecording(tracks, seconds, silent, deadWhat);
     };
     if (entry.recorder.state !== 'inactive') entry.recorder.stop();
     else entry.recorder.onstop();
   });
 }
 
-async function finishRecording(tracks, seconds, silent) {
+async function finishRecording(tracks, seconds, silent, deadWhat = '') {
   cleanupRecording();
   if (!Object.keys(tracks).length) { banner('ไม่ได้ข้อมูลเสียงเลย — ลองอัดใหม่'); return; }
 
   const stamp = new Date().toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' });
   try {
     await submitMeeting(tracks, { source: 'record', fallbackTitle: `อัดสด ${stamp}` });
-    banner(silent ? 'เตือน: ระดับเสียงตลอดการอัดเบามาก ไฟล์อาจเงียบ' : '');
+    banner(silent
+      ? 'เตือน: ระดับเสียงตลอดการอัดเบามาก ไฟล์อาจเงียบ'
+      : deadWhat
+        ? `เตือน: ไม่ได้ยินเสียงจาก ${deadWhat} เลยตลอดการอัด — แทร็กนั้นจะว่างเปล่า`
+        : '');
   } catch (e) {
     banner(`ส่งไฟล์ที่อัดไม่สำเร็จ: ${e.message}`);
   }
@@ -2022,6 +2107,8 @@ function cleanupRecording() {
   rec.recording = false;
   rec.stopping = false;
   rec.heardAt = 0;
+  rec.tracks = {};
+  rec.warned = false;
   rec.muted = false;
   clearInterval(rec.timer);
   clearTimeout(rec.liveTimer);
