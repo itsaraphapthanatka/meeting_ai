@@ -58,6 +58,7 @@ class TestSilentWarning(unittest.TestCase):
             # BACKLOG #85 ทำให้ silentWarning() พึ่งสองตัวนี้ — ไม่ตัดมาด้วย node จะ
             # โยน ReferenceError แล้วเทสต์ทั้งคลาสล้มโดยไม่เกี่ยวกับสิ่งที่มันตั้งใจวัด
             _cut(r"function deadTracks\(\) \{.*?\n\}"),
+            _cut(r"function stalledTracks\(now\) \{.*?\n\}"),
             _cut(r"function deadTrackText\(names\) \{.*?\n\}"),
             _cut(r"function silentWarning\(now = Date\.now\(\)\) \{.*?\n\}"),
         ])

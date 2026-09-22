@@ -1496,6 +1496,28 @@ function deadTracks() {
   return Object.keys(t).filter((n) => !t[n].heardAt);
 }
 
+/** แทร็กที่ **เคยดังแล้วเงียบยาว** ขณะที่แทร็กอื่นยังได้ยินอยู่.
+
+    ต่างจาก `deadTracks()` ซึ่งจับเฉพาะแทร็กที่ไม่เคยดังเลยตั้งแต่เริ่ม · กรณีนี้คือ
+    ไมค์หลุด/ถูกปิดที่ระดับ OS/Bluetooth สลับโปรไฟล์ กลางการอัด ซึ่ง `track.onended`
+    จับไม่ได้เพราะแทร็กยังมีชีวิตอยู่ แค่ส่งความเงียบมา (บทเรียนเดียวกับ BUG-062)
+
+    `LOST_WARN` เดิมดูจาก `rec.heardAt` ซึ่งเป็นเสียง **ผสม** — อีกแทร็กดังอยู่ตัวเดียว
+    ก็กลบให้มองไม่เห็นทั้งหมด (BACKLOG #86, ต่อจาก #85 ที่แก้ฝั่ง "ไม่เคยดังเลย")
+ */
+function stalledTracks(now) {
+  const t = rec.tracks || {};
+  const names = Object.keys(t);
+  const gone = (n) => t[n].heardAt && (now - t[n].heardAt) / 1000 > SILENT_LOST_SEC;
+  const stalled = names.filter(gone);
+  // ต้องเหลือแทร็กที่ยังได้ยินอยู่จริง ไม่งั้นคือ "เงียบทั้งหมด" ซึ่ง LOST_WARN พูดแล้ว
+  // และการบอกว่า "แทร็กอื่นยังได้ยินอยู่" ตอนที่ไม่มีแทร็กอื่นเลย คือการโกหกผู้ใช้
+  // ด่านนี้ครอบโหมดแทร็กเดียวไปในตัว (แทร็กเดียวที่เงียบ -> alive ว่าง -> ไม่เตือน)
+  // จึงไม่ต้องมีด่าน names.length < 2 แยกอีก ซึ่งเป็นสาขาที่เขียนเทสต์ให้ไม่ได้เลย
+  const alive = names.filter((n) => t[n].heardAt && !gone(n));
+  return alive.length ? stalled : [];
+}
+
 function deadTrackText(names) {
   return names.map((n) => {
     const t = rec.tracks[n] || {};
@@ -1736,6 +1758,13 @@ function silentWarning(now = Date.now()) {
       : '';
   }
   if ((now - rec.heardAt) / 1000 > SILENT_LOST_SEC) return LOST_WARN;
+  // เคยดังแล้วหายไปกลางทาง ขณะที่แทร็กอื่นยังดังอยู่ — เสียงผสมกลบให้มองไม่เห็น
+  const stalled = stalledTracks(now);
+  if (stalled.length) {
+    return `${deadTrackText(stalled)} เงียบมากว่า ${Math.round(SILENT_LOST_SEC / 15) * 15} `
+      + 'วินาทีแล้ว ทั้งที่แทร็กอื่นยังได้ยินอยู่ — อุปกรณ์อาจหลุดหรือถูกปิดกลางทาง '
+      + '(ข้อความนี้จะหายเองเมื่อได้ยินเสียงอีกครั้ง)';
+  }
   // เสียงผสมดังอยู่ แต่แทร็กใดแทร็กหนึ่งอาจเงียบสนิท — มิเตอร์รวมมองไม่เห็น
   // (ถ้าเงียบทุกแทร็ก กรณีข้างบนดูแลไปแล้ว จึงเตือนเฉพาะตอนที่ยังเหลือแทร็กที่ได้ยิน)
   const dead = deadTracks();
