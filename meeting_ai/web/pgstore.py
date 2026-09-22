@@ -1245,6 +1245,63 @@ def workers_forget(max_age_days: int = 7) -> int:
         return cur.rowcount
 
 
+def _claimable_kinds(rows) -> set[str] | None:
+    """ชนิดงานที่เครื่องซึ่งยังมีชีวิตรับได้รวมกัน — `None` = ตัดสินไม่ได้ ต้องงดทั้งรอบ.
+
+    แยกออกมาจาก SQL เพราะนี่คือส่วนที่ตัดสินใจ และต้องเขียนเทสต์ให้ได้โดยไม่ต้องมี
+    Postgres จริง (บทเรียนจาก #82 ที่มุตันต์ของกลไกใน SQL พิสูจน์บนเครื่องเจ้าของไม่ได้)
+
+    งดเมื่อ: ไม่มีเครื่องไหนมีชีวิตเลย (ระบบดับชั่วคราว งานควรรอ) หรือมีเครื่องที่ยังไม่ส่ง
+    `kinds` มา (โค้ดเก่ากว่า #84 — เดาแทนแล้วไปล้มงานของคนอื่น แย่กว่าปล่อยค้าง)
+    """
+    if not rows:
+        return None
+    can: set[str] = set()
+    for (kinds,) in rows:
+        if not isinstance(kinds, list):
+            return None
+        can.update(str(k) for k in kinds)
+    return can
+
+
+def jobs_fail_unclaimable(grace_minutes: int = 30) -> int:
+    """ล้มงานที่ค้างคิวโดยที่ **ไม่มีเครื่องไหนที่ยังมีชีวิตรับชนิดนั้นได้เลย**.
+
+    `jobs_reap()` ดูแลงานที่ถูกหยิบไปแล้วเงียบหาย ส่วนงานที่ยังไม่มีใครหยิบไม่มีใครดูแล
+    ของจริง 2026-09-20: งาน `ask` ค้าง 10 ชม. 28 นาที เพราะโค้ดบนเครื่อง worker เก่ากว่า
+    เซิร์ฟเวอร์และไม่รู้จัก kind นี้ — ไม่มีอะไรบอกใครเลยจนเจ้าของสังเกตเห็นการ์ดค้างเอง
+
+    **สามข้อที่ตัดสินใจไว้** (BACKLOG #87 มีเหตุผลเต็ม):
+
+    1. ล้มเฉพาะงานที่ **พิสูจน์ได้ว่าไม่มีทางถูกหยิบ** ไม่ใช่งานที่แค่รอคิวนาน — คิวยาว
+       เพราะเครื่องไม่ว่างเป็นเรื่องปกติ ห้ามไปยุ่ง
+    2. ต้องมีเครื่องที่ยังมีชีวิต **อย่างน้อยหนึ่งเครื่อง** ถึงจะตัดสิน — ไม่มีเครื่องเลย
+       แปลว่าระบบดับชั่วคราว งานควรรออยู่ในคิวจนกว่าจะเปิดกลับมา
+    3. เครื่องที่ยังไม่ส่ง `kinds` มา (โค้ดเก่ากว่า #84) ทำให้ **งดตัดสินทั้งรอบ** —
+       เดาว่ามันทำอะไรไม่ได้แล้วไปล้มงานของคนอื่น แย่กว่าปล่อยค้าง
+    """
+    with db.connect() as conn:
+        rows = conn.execute(
+            """select caps -> 'kinds' from meeting_ai.workers
+               where last_seen > now() - make_interval(secs => %s)""",
+            (WORKER_STALE_SECONDS,),
+        ).fetchall()
+        can = _claimable_kinds(rows)
+        if can is None:
+            return 0
+        cur = conn.execute(
+            """update meeting_ai.jobs
+               set status = 'error', step = 'ผิดพลาด',
+                   error = 'ไม่มีเครื่องประมวลผลที่ทำงานชนิดนี้ได้มานานแล้ว จึงยกเลิกงานนี้'
+                           ' — เปิดเครื่องที่รองรับแล้วสั่งใหม่ได้'
+               where status = 'queued'
+                 and not (kind = any(%s::text[]))
+                 and created_at < now() - make_interval(mins => %s)""",
+            (sorted(can), grace_minutes),
+        )
+        return cur.rowcount
+
+
 def jobs_reap(stale_minutes: int = 30) -> int:
     """งานที่ worker รับไปแล้วเงียบหายเกินเวลา — คืนกลับคิว.
 
