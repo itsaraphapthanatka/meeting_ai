@@ -294,8 +294,31 @@ def profile_ready() -> bool:
         return False
 
 
-def missing_pieces() -> list[str]:
+# ผลตรวจไม่เปลี่ยนบ่อย แต่ราคาแพง: `_probe_run()` สั่ง `docker run` จริงหนึ่งครั้ง
+# วัดบนเครื่องเจ้าของ (Windows + Docker Desktop, image พร้อม) = **1.05 วินาทีต่อครั้ง**
+# `GET /api/config` เรียกทุกคำขอ ทำให้หน้าเว็บโหมดไฟล์ช้าและงอกคอนเทนเนอร์ทิ้งเรื่อย ๆ
+# และในชุดทดสอบที่เปิดเซิร์ฟเวอร์ใหม่ทุกเทสต์ สวีทพองจาก 251 วินาทีเป็นหลายพัน (BACKLOG #89)
+_MISSING_TTL = 30.0
+_missing_cache: tuple[float, list[str]] | None = None
+_missing_lock = threading.Lock()
+
+
+def missing_pieces(max_age: float = _MISSING_TTL) -> list[str]:
     """สิ่งที่ยังขาดเพื่อให้ส่งบอทเข้าห้องได้ — ว่างเปล่า = พร้อม."""
+    global _missing_cache
+    with _missing_lock:
+        cached = _missing_cache
+    if cached is not None and max_age > 0 and time.monotonic() - cached[0] < max_age:
+        return list(cached[1])
+
+    missing = _probe_missing()
+    with _missing_lock:
+        _missing_cache = (time.monotonic(), list(missing))
+    return missing
+
+
+def _probe_missing() -> list[str]:
+    """ตรวจจริง ๆ ว่าขาดอะไร — ตัวที่แพง ห้ามเรียกตรง ๆ จากเส้นที่ผู้ใช้รอ."""
     missing = []
     exe = shutil.which("docker")
     if not exe:

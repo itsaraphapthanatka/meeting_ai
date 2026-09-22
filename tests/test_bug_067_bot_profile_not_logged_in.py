@@ -37,6 +37,10 @@ class ProfileCase(unittest.TestCase):
         patch = mock.patch.object(bot, "PROFILE_DIR", self.profile)
         patch.start()
         self.addCleanup(patch.stop)
+        # BACKLOG #89 ใส่แคชอายุ 30 วินาทีให้ missing_pieces() — เทสต์ที่ patch ของข้างใน
+        # แล้วคาดว่าจะได้คำตอบสด ๆ ต้องล้างแคชก่อน ไม่งั้นได้ของที่เทสต์ก่อนหน้าทิ้งไว้
+        bot._missing_cache = None
+        self.addCleanup(setattr, bot, "_missing_cache", None)
 
     def _cookies(self, data: bytes = b"SQLite format 3") -> None:
         (self.profile / "Default").mkdir(parents=True, exist_ok=True)
