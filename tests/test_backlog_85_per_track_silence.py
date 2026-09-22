@@ -70,6 +70,7 @@ class TestTheWarningItself(unittest.TestCase):
             _cut(r"const LOST_WARN = .*?;\n"),
             _cut(r"const TRACK_ROLE = \{.*?\};"),
             _cut(r"function deadTracks\(\) \{.*?\n\}"),
+            _cut(r"function stalledTracks\(now\) \{.*?\n\}"),
             _cut(r"function deadTrackText\(names\) \{.*?\n\}"),
             _cut(r"function silentWarning\(now = Date\.now\(\)\) \{.*?\n\}"),
         ])
