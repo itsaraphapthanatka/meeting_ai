@@ -1267,7 +1267,7 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
 /* BACKLOG #84 — เครื่องที่รันโค้ดคนละรุ่นกับเซิร์ฟเวอร์ */
 .wk .wk-old { color: var(--warn); }
 
-/* ---------- คู่มือการใช้งาน (BACKLOG #90) ---------- */
+/* ---------- คู่มือการใช้งาน (BACKLOG #90 · ยกเครื่องหน้าตาใน #91) ---------- */
 
 /* ปุ่ม ? บน topbar — กลมเท่ากับปุ่มบัญชี จะได้ไม่ดัน topbar สูงขึ้นบนจอ 390px */
 .btn-icon {
@@ -1281,33 +1281,90 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
   line-height: 1;
 }
 
-.help { max-width: 760px; }
-.help h2 { margin: 0 0 4px; }
+.help { max-width: 820px; margin: 0 auto; }
 
-/* สารบัญ — แตะแล้วเลื่อนไปหัวข้อ ไม่ใช่เปลี่ยนหน้า (href="#help-..." ไม่ชนกับ router
-   เพราะ applyHash() รู้จักเฉพาะ #help / #home / #new / #devices / #m/<id>) */
+/* ทางกลับ — โผล่เฉพาะตอนเปิดคู่มือจากหน้าเข้าสู่ระบบ ไม่งั้นติดอยู่ในคู่มือจนต้องรีโหลด */
+.help-back { display: none; margin: 0 0 16px; }
+body.auth-only .help-back { display: inline-block; }
+
+.help-hero { margin: 0 0 20px; }
+.help-hero h2 { margin: 0 0 6px; font-size: 26px; }
+.help-brand { color: var(--accent); }
+.help-lead { margin: 0; color: var(--muted); }
+
+/* สารบัญเป็นการ์ด เลขข้อมาจาก <ol> เอง — เพิ่ม/ลบหัวข้อแล้วเลขไม่มีทางเพี้ยน */
 .help-toc {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 14px 0 22px;
-}
-.help-toc a {
-  padding: 5px 11px;
-  border-radius: 999px;
+  margin: 0 0 26px;
+  padding: 16px 18px;
   border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   background: var(--surface);
-  color: var(--text);
-  text-decoration: none;
+}
+.help-toc-t { font-weight: 600; margin: 0 0 10px; }
+.help-toc ol {
+  columns: 2;
+  column-gap: 28px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--muted);
+}
+.help-toc li { margin: 4px 0; break-inside: avoid; }
+.help-toc a { color: var(--accent); text-decoration: none; }
+.help-toc a:hover { text-decoration: underline; }
+
+.help-sec { margin: 0 0 28px; scroll-margin-top: 16px; }
+
+/* หัวข้อเป็นแถบเต็มความกว้าง อ่านแล้วรู้ทันทีว่าขึ้นเรื่องใหม่ โดยไม่ต้องพึ่งขนาดตัวอักษรอย่างเดียว */
+.help-sec > h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--accent-soft);
+  font-size: 17px;
+}
+.help-n {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
   font-size: 13px;
 }
-.help-toc a:hover { filter: brightness(0.96); }
+.help-sec h4 { margin: 18px 0 6px; font-size: 15px; }
 
-.help-sec { margin: 0 0 26px; scroll-margin-top: 16px; }
-.help-sec h3 {
-  margin: 0 0 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
+/* ขั้นตอนมีเลขวงกลมของตัวเอง — ซ่อนเลขของ <ol> แล้ววาดเองด้วย counter ตัวเดียวกัน */
+.help-steps { counter-reset: hstep; margin: 10px 0 0; padding: 0; list-style: none; }
+.help-steps li {
+  position: relative;
+  margin: 0 0 10px;
+  padding-left: 34px;
+  color: var(--muted);
+}
+.help-steps li::before {
+  counter-increment: hstep;
+  content: counter(hstep);
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .help-dl { margin: 10px 0 0; }
@@ -1315,11 +1372,86 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
 .help-dl dd { margin: 0 0 0 2px; color: var(--muted); }
 
 .help-ul { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
-.help-ul li { margin: 6px 0; }
+.help-ul li { margin: 7px 0; }
 
-/* กล่องข้อความที่อยากให้อ่านจริง ๆ — ใช้สีเดียวกับคำเตือนในหน้าอัด จะได้สื่อว่า
-   "อ่านตรงนี้ก่อนจะเสียเวลา" ไม่ใช่สีแดงที่แปลว่าพัง */
-.help-note {
+/* ชื่อปุ่มที่บอกให้กด — เขียนให้ดูเป็นปุ่ม จะได้กวาดตาหาเจอบนหน้าจอจริง */
+.help-k {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* ป้ายบอกว่าหัวข้อนี้มีเฉพาะการติดตั้งที่มีบัญชีผู้ใช้ (โหมดไฟล์ไม่มีให้เห็น) */
+.help-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+
+.help-table {
+  width: 100%;
+  margin: 12px 0 0;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.help-table th, .help-table td {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.help-table th { background: var(--surface-2); font-weight: 600; }
+.help-table td { color: var(--muted); }
+
+/* ตัวอย่างชิ้นส่วนหน้าจอ + คำบรรยาย — ประกอบจากคลาสจริงของแอป (.job/.warn/.seg/.m-chip)
+   ไม่ใช่รูปถ่าย เพราะรูปถ่ายเก่าเงียบ ๆ ส่วนอันนี้เปลี่ยนตามสไตล์จริงเสมอ */
+.help-fig { margin: 14px 0 0; }
+.help-mock {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.help-mock > *:last-child { margin-bottom: 0; }
+.help-fig figcaption { margin: 8px 2px 0; color: var(--muted); font-size: 13px; }
+
+.help-mock-bar { display: flex; align-items: center; gap: 10px; }
+.help-mock-brand { font-weight: 600; }
+.help-mock-sp { flex: 1; }
+
+/* ชิปสถานะตัวจริงถูกซ่อนบนจอกว้าง และกฎสีของจุดอยู่ในมีเดียควีรีของจอแคบด้วย
+   (ดูหัวข้อ "จอแคบ: โชว์ทีละหน้า") ตัวอย่างในคู่มือจึงต้องสั่งให้เห็นเองทั้งสองจอ */
+.help-mock-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.help-mock .m-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 7px 13px 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 13px;
+}
+.help-mock .m-chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.help-mock .m-chip[data-state="down"] .m-chip-dot,
+.help-mock .m-chip[data-state="stuck"] .m-chip-dot { background: var(--warn); }
+.help-mock .seg { display: flex; }
+.help-mock .job:last-child { margin-bottom: 0; }
+
+/* สองกล่องนี้ต่างกันที่เจตนา ไม่ใช่แค่สี:
+   .help-note = "ไม่อ่านแล้วจะเสียเวลา/เสียของ" · .help-tip = "รู้ไว้ดีกว่า" */
+.help-note, .help-tip {
   margin: 12px 0 0;
   padding: 10px 12px;
   border-left: 3px solid var(--warn);
@@ -1327,5 +1459,39 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
   background: var(--surface);
   color: var(--text);
 }
+.help-note::before { content: '⚠️ '; }
+.help-tip { border-left-color: var(--accent); }
+.help-tip::before { content: '💡 '; }
+
+/* คำถามที่พบบ่อย — ย่อไว้ให้กวาดตาหาคำถามของตัวเองเจอก่อน แล้วค่อยกางอ่าน */
+.help-q {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  margin: 0 0 8px;
+}
+.help-q > summary {
+  padding: 10px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style-position: inside;
+}
+.help-q[open] > summary { border-bottom: 1px solid var(--border); }
+.help-q > p { margin: 0; padding: 10px 12px; color: var(--muted); }
+
+.help-foot {
+  margin: 28px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+}
 
 .help b { color: var(--text); }
+
+@media (max-width: 760px) {
+  .help-toc ol { columns: 1; }
+  /* ตารางแคบ ๆ บีบจนอ่านไม่ออก — ให้เลื่อนแนวนอนในกรอบของตัวเองแทน */
+  .help-table { display: block; overflow-x: auto; white-space: nowrap; }
+  .help-table td { white-space: normal; min-width: 150px; }
+}

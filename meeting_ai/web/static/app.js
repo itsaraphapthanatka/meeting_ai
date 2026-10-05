@@ -719,6 +719,9 @@ function showHelp() {
   const panel = $('#panel');
   panel.innerHTML = '';
   panel.append($('#tpl-help').content.cloneNode(true));
+  // คนที่ยังไม่ล็อกอินกดคู่มือแล้วแผงถูกแทนทั้งแผง ไม่เหลืออะไรให้กดกลับ ต้องรีโหลดเอง
+  // (วัดบนเบราว์เซอร์จริงก่อนแก้: เหลือแต่ลิงก์สารบัญ) — CSS โชว์ปุ่มนี้เฉพาะ body.auth-only
+  $('#help-back').onclick = () => { setHash(''); showAuth(); };
   panel.scrollTop = 0;
 }
 
@@ -727,6 +730,13 @@ function applyHash() {
   const m = h.match(/^#m\/([\w-]+)$/);
   if (m) openMeeting(m[1]);
   else if (h === '#help') showHelp();
+  // สมอของหัวข้อในคู่มือ (#help-xxx) ไม่ใช่เส้นทาง — ของเดิมตกไปที่ showNew() ท้ายฟังก์ชัน
+  // กดสารบัญทีไรจึงหลุดออกจากคู่มือไปหน้า "ประชุมใหม่" ทุกครั้ง (วัดบนเบราว์เซอร์จริง BACKLOG #91)
+  else if (h.startsWith('#help-')) {
+    const to = h.slice(1);   // showHelp() เขียนทับ hash ด้วย '#help' ต้องจำไว้ก่อน
+    if (!$('#panel').querySelector('.help')) showHelp();
+    document.getElementById(to)?.scrollIntoView();
+  }
   else if (h === '#devices') showDevices();
   else if (h === '#home') showHome();
   else showNew();
@@ -2647,7 +2657,14 @@ async function loadShares(id) {
   const pendingShare = pendingShareToken();
   await refreshConfig();
   if (pendingShare) return showShareConfirm(pendingShare);
-  if (needsAuth()) { showAuth(); return; }
+  if (needsAuth()) {
+    showAuth();
+    // ลิงก์คู่มือที่ส่งให้คนอื่นมักถูกเปิดโดยคนที่ยังไม่มีบัญชี — ของเดิม applyHash() อยู่หลัง
+    // บรรทัดนี้ ลิงก์ /#help จึงไปจบที่ฟอร์มเข้าสู่ระบบเฉย ๆ (วัดจากโค้ดและเบราว์เซอร์แล้ว)
+    // ครอบทั้ง #help และสมอของหัวข้อ (#help-faq ฯลฯ) — ลิงก์ที่ส่งต่อกันมักชี้หัวข้อตรง ๆ
+    if (location.hash.startsWith('#help')) applyHash();
+    return;
+  }
 
   await refresh();
   // คนถือลิงก์แชร์เปิดได้แค่การประชุมนั้น พาไปเลยไม่ต้องผ่านรายการ

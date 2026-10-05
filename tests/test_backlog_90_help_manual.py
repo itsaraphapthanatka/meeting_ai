@@ -175,9 +175,18 @@ class TestItLooksLikeTheRestOfTheApp(unittest.TestCase):
         self.assertIn('body[data-view="help"] .sidebar', CSS)
 
     def test_the_callouts_use_the_warning_colour_not_the_error_one(self):
-        # ส้ม = "อ่านก่อนจะเสียเวลา" · แดง = "พังแล้ว" — คู่มือไม่มีอะไรพัง
-        self.assertRegex(CSS, r"\.help-note \{[^}]*var\(--warn\)")
-        self.assertNotRegex(CSS, r"\.help-note \{[^}]*var\(--danger\)")
+        """ส้ม = "อ่านก่อนจะเสียเวลา" · แดง = "พังแล้ว" — คู่มือไม่มีอะไรพัง.
+
+        ของเดิมเขียน regex ล็อกไว้ว่ากฎต้องขึ้นต้นด้วย `.help-note {` เป๊ะ ๆ พอ #91
+        รวมกฎเป็น `.help-note, .help-tip { }` ก็ล้มทั้งที่สียังเป็นสีเดิมทุกประการ
+        — ตรึงว่า "กฎที่ประกาศ .help-note ใช้ --warn ไม่ใช่ --danger" ก็พอ
+        """
+        rules = [m.group(2) for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", CSS)
+                 if ".help-note" in [n.strip().split(chr(10))[-1].strip()
+                                     for n in m.group(1).split(",")]]
+        self.assertTrue(rules, "ไม่เจอกฎของ .help-note เลย")
+        self.assertIn("var(--warn)", chr(10).join(rules))
+        self.assertNotIn("var(--danger)", chr(10).join(rules))
 
     def test_the_icon_button_does_not_grow_the_topbar(self):
         """topbar บนจอ 390px เคยสูงเกือบ 80px เพราะปุ่มตัดบรรทัด — ปุ่มนี้ต้องไม่ทำซ้ำ."""
