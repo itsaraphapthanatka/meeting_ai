@@ -1446,6 +1446,16 @@ body.auth-only .help-back { display: inline-block; }
 .help-mock .m-chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 .help-mock .m-chip[data-state="down"] .m-chip-dot,
 .help-mock .m-chip[data-state="stuck"] .m-chip-dot { background: var(--warn); }
+/* ตัวอย่างใช้ <span> ไม่ใช่ <button> จะได้ไม่มีปุ่มที่กดแล้วไม่เกิดอะไรปนอยู่ในคู่มือ
+   — แต่คนที่จัดตัวอักษรให้อยู่กลางปุ่มคือ UA stylesheet ของ <button> เอง <span> จึงได้
+   แค่กล่องเปล่าแล้วตัวอักษรกองมุมซ้ายบน (วัดจริงก่อนแก้: ตัว ? อยู่ที่ (1, -2) ของกล่อง
+   32x32 คือโผล่พ้นวงกลมขึ้นไปข้างบน · ชื่อแท็บทั้งสี่ชิดซ้ายที่ offsetX 0) */
+.help-mock .btn,
+.help-mock .seg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .help-mock .seg { display: flex; }
 .help-mock .job:last-child { margin-bottom: 0; }
 
