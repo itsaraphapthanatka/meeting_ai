@@ -293,8 +293,12 @@ async def join_zoom(page, name, log, passcode=None) -> None:
             log("เขียนรหัสลงช่องไม่ได้ — input ที่มี: " + await describe_inputs(page))
 
     if await page_has(page, ZOOM_BOT_BLOCK, timeout=2500):
+        # เดิมบรรทัดนี้แนะนำให้ `mai bot-login --site zoom` ตามที่หน้าจอของ Zoom เขียนไว้
+        # ถอดออกตาม ADR-004: ถึงผ่านหน้าล็อกอินได้ก็ยังเป็น automated client ที่ Zoom
+        # ประกาศว่าไม่ต้องการ และตั้งแต่ 2 มี.ค. 2026 ห้องของบัญชีภายนอกถูกคุมด้วยกฎ OBF
+        # — ชี้ทางนั้นต่อคือชวนให้ผู้ใช้ไปเสียเวลากับทางตัน
         log("Zoom ปฏิเสธเพราะตรวจพบว่าเป็นบอท (Automated bots aren't allowed) — "
-            "ทางที่ Zoom เปิดให้คือล็อกอินบัญชี Zoom ให้บอทก่อน: mai bot-login --site zoom")
+            "ให้ Zoom อัดเองแล้วอัปโหลดไฟล์ หรือใช้หน้าอัดสดแทน")
     elif await page_has(page, ZOOM_BAD_PWD, timeout=2500):
         log("Zoom ตอบว่ารหัสไม่ผ่าน — ตรวจรหัสตัวเลขของห้องอีกครั้ง "
             "(อีกสาเหตุที่เจอ: ห้องนั้นปิดไปแล้ว)")
