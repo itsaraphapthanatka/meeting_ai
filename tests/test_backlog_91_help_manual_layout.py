@@ -172,6 +172,45 @@ class TestTheExamplesAreBuiltFromTheRealThing(unittest.TestCase):
                         self.assertTrue(f".{one}" in CSS or f'"{one}' in APP_JS,
                                         f"คลาส {one} ไม่มีอยู่จริงในแอป")
 
+    def test_classes_borrowed_from_real_buttons_are_centred_like_buttons(self):
+        """ตัวอย่างใช้ <span> แต่คลาสถูกออกแบบมากับ <button>.
+
+        คนที่จัดตัวอักษรให้อยู่กลางปุ่มคือ UA stylesheet ของ <button> เอง ไม่ใช่ CSS ของเรา
+        — <span> จึงได้แค่กล่องเปล่าแล้วตัวอักษรกองมุมซ้ายบน
+
+        เจ้าของส่งภาพหน้าจอมาให้ดูว่าปุ่ม ? ในรูปตัวอย่างเพี้ยน พอไปวัดจริงพบว่า**ไม่ใช่
+        ปุ่มเดียว**: ตัว ? อยู่ที่ (1, -2) ของกล่อง 32x32 คือโผล่พ้นวงกลมขึ้นไปข้างบน
+        และชื่อแท็บทั้งสี่ชิดซ้ายที่ offsetX 0 ด้วย — หลังแก้ ทั้งเก้าชิ้นอยู่กลางทุกแกน
+        ทั้งธีมสว่างและมืด
+
+        เทสต์นี้จึงไม่ได้ตรึงปุ่มใดปุ่มหนึ่ง แต่ไล่ทุก <span> ในตัวอย่างที่ยืมคลาสของ
+        <button> จริงมาใช้ — เพิ่มชิ้นส่วนใหม่ทีหลังก็ถูกตรวจเองโดยไม่ต้องแก้เทสต์
+        """
+        on_buttons = set()
+        for src in (HTML, APP_JS):
+            for m in re.finditer(r'<button[^>]*class="([^"]+)"', src):
+                on_buttons.update(m.group(1).split())
+        self.assertIn("btn", on_buttons, "สมมติฐานเปลี่ยน: หาคลาสของปุ่มจริงไม่เจอ")
+
+        checked = 0
+        for i, mock in enumerate(MOCKS):
+            for m in re.finditer(r'<span class="([^"]+)"', mock):
+                classes = [c for c in m.group(1).split() if c in on_buttons]
+                if not classes:
+                    continue
+                checked += 1
+                rules = ""
+                for c in classes:
+                    try:
+                        rules += css_rule(f".help-mock .{c}")
+                    except AssertionError:
+                        pass
+                with self.subTest(mock=i, classes=" ".join(classes)):
+                    self.assertRegex(rules, r"display: (inline-)?flex",
+                                     "กล่องไม่ได้เป็น flex ตัวอักษรจะไม่อยู่กลาง")
+                    self.assertIn("align-items: center", rules)
+        self.assertGreaterEqual(checked, 5, "ไม่ได้ตรวจอะไรเลย — ตัวอย่างเปลี่ยนโครงไปแล้ว?")
+
     def test_the_status_chip_example_uses_the_states_the_code_sets(self):
         used = set(re.findall(r'<span class="m-chip" data-state="(\w+)"', HELP))
         real = set(re.findall(r"chip\.dataset\.state = [^;]+", APP_JS)[0]
