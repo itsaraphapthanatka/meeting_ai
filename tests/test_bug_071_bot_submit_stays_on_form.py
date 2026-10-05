@@ -61,10 +61,18 @@ class TestWhyItMattered(unittest.TestCase):
     """ปักหมุดเหตุผล — ถ้าจอแคบเลิกซ่อน sidebar แล้ว เหตุของบั๊กนี้ก็หายไป."""
 
     def test_narrow_screens_hide_the_sidebar_on_the_new_view(self):
-        self.assertRegex(
-            STYLE,
-            r'body\[data-view="new"\] \.sidebar,\s*\n\s*body\[data-view="meeting"\] \.sidebar'
-            r' \{ display: none; \}')
+        """ตรึง **เจตนา** ไม่ใช่รูปแบบ.
+
+        ของเดิมเขียน regex ครอบ selector สองตัวที่ติดกันเป๊ะ ๆ พอ BACKLOG #90 เพิ่ม
+        หน้าคู่มือเข้าไปในกลุ่มเดียวกัน เทสต์ก็ล้มทั้งที่พฤติกรรมไม่ได้เปลี่ยนเลยสักนิด
+        """
+        rule = re.search(
+            r"((?:body\[data-view=[^]]+\] \.sidebar,\s*)*"
+            r"body\[data-view=[^]]+\] \.sidebar \{ display: none; \})", STYLE)
+        self.assertIsNotNone(rule, "ไม่เจอกฎที่ซ่อน sidebar บนจอแคบเลย")
+        for view in ("new", "meeting"):
+            with self.subTest(view=view):
+                self.assertIn(f'body[data-view="{view}"] .sidebar', rule.group(1))
 
     def test_the_job_cards_live_in_that_sidebar(self):
         index = (ROOT / "meeting_ai" / "web" / "static" / "index.html").read_text(
