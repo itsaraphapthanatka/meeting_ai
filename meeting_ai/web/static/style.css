@@ -1227,6 +1227,7 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
   body[data-view="home"] #workers { display: none; }
 
   body[data-view="new"] .sidebar,
+  body[data-view="help"] .sidebar,
   body[data-view="meeting"] .sidebar { display: none; }
 
   /* หน้าเครื่องประมวลผล: เหลือเฉพาะกล่อง #workers ในคอลัมน์เดียวกัน */
@@ -1265,3 +1266,66 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
 
 /* BACKLOG #84 — เครื่องที่รันโค้ดคนละรุ่นกับเซิร์ฟเวอร์ */
 .wk .wk-old { color: var(--warn); }
+
+/* ---------- คู่มือการใช้งาน (BACKLOG #90) ---------- */
+
+/* ปุ่ม ? บน topbar — กลมเท่ากับปุ่มบัญชี จะได้ไม่ดัน topbar สูงขึ้นบนจอ 390px */
+.btn-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.help { max-width: 760px; }
+.help h2 { margin: 0 0 4px; }
+
+/* สารบัญ — แตะแล้วเลื่อนไปหัวข้อ ไม่ใช่เปลี่ยนหน้า (href="#help-..." ไม่ชนกับ router
+   เพราะ applyHash() รู้จักเฉพาะ #help / #home / #new / #devices / #m/<id>) */
+.help-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 22px;
+}
+.help-toc a {
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+}
+.help-toc a:hover { filter: brightness(0.96); }
+
+.help-sec { margin: 0 0 26px; scroll-margin-top: 16px; }
+.help-sec h3 {
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.help-dl { margin: 10px 0 0; }
+.help-dl dt { font-weight: 600; margin: 12px 0 2px; }
+.help-dl dd { margin: 0 0 0 2px; color: var(--muted); }
+
+.help-ul { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
+.help-ul li { margin: 6px 0; }
+
+/* กล่องข้อความที่อยากให้อ่านจริง ๆ — ใช้สีเดียวกับคำเตือนในหน้าอัด จะได้สื่อว่า
+   "อ่านตรงนี้ก่อนจะเสียเวลา" ไม่ใช่สีแดงที่แปลว่าพัง */
+.help-note {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn);
+  border-radius: 0 8px 8px 0;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.help b { color: var(--text); }

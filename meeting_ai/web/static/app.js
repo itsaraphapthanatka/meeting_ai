@@ -679,6 +679,7 @@ const VIEW_BAR = {
   home:    { title: 'การประชุม', back: false },
   new:     { title: 'ประชุมใหม่', back: true },
   devices: { title: 'เครื่องประมวลผล', back: true },
+  help:    { title: 'คู่มือการใช้งาน', back: true },
   // หน้ารายละเอียดไม่ใส่ชื่อบนแถบ เพราะชื่อการประชุมในเนื้อหาแก้ไขได้ (contenteditable)
   // มีสองที่จะสับสนว่าต้องแก้อันไหน
   meeting: { title: '', back: true, action: '⋯' },
@@ -708,10 +709,24 @@ function showDevices() {
   setView('devices');
 }
 
+/** คู่มือการใช้งาน — เนื้อหาทั้งหมดเป็น static อยู่ใน <template> ไม่มีการเรียก API
+    จึงเปิดได้แม้ยังไม่ได้ล็อกอินหรือเซิร์ฟเวอร์ตอบ /api/* ไม่ได้ (BACKLOG #90) */
+function showHelp() {
+  state.current = null;
+  state.meeting = null;
+  setHash('#help');
+  setView('help');
+  const panel = $('#panel');
+  panel.innerHTML = '';
+  panel.append($('#tpl-help').content.cloneNode(true));
+  panel.scrollTop = 0;
+}
+
 function applyHash() {
   const h = location.hash;
   const m = h.match(/^#m\/([\w-]+)$/);
   if (m) openMeeting(m[1]);
+  else if (h === '#help') showHelp();
   else if (h === '#devices') showDevices();
   else if (h === '#home') showHome();
   else showNew();
@@ -2559,6 +2574,7 @@ $('#search').oninput = (e) => {
 };
 
 $('#btn-new').onclick = () => showNew();
+$('#btn-help').onclick = () => showHelp();
 
 // ปุ่มย้อนกลับของมือถือ — ทุกหน้ากลับไปที่รายการ (ไม่ใช้ history.back() เพราะผู้ใช้อาจเข้ามา
 // ที่ #m/<id> ตรง ๆ จากลิงก์แชร์ แล้วย้อนกลับจะหลุดออกจากเว็บไปเลย)
