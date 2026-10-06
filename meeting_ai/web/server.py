@@ -21,6 +21,7 @@ import time
 import traceback
 import urllib.parse
 import webbrowser
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -153,6 +154,38 @@ def worker_kinds(w: dict) -> list[str] | None:
     """
     kinds = w.get("kinds")
     return list(kinds) if isinstance(kinds, list) else None
+
+
+def _users_summary(users: list[dict]) -> dict:
+    """ตัวเลขหัวหน้าเพจ — นับจากรายการเดียวกับที่ส่งไป ไม่ยิง query เพิ่ม.
+
+    นับ "ใหม่ใน N วัน" จาก created_at ที่เป็น ISO string ของ UTC — เทียบกับ
+    now(UTC) ไม่ใช่เวลาเครื่อง เพราะเคยพลาดมาแล้วตอนรายงานว่างานค้าง 17 ชั่วโมง
+    ทั้งที่เทียบ UTC กับเวลาไทย (+07) คนละฐาน
+    """
+    now = datetime.now(timezone.utc)
+    def _age_days(u: dict) -> float | None:
+        raw = u.get("created_at")
+        if not raw:
+            return None
+        try:
+            when = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return (now - when).total_seconds() / 86400.0
+
+    ages = [_age_days(u) for u in users]
+    return {
+        "total": len(users),
+        "admins": sum(1 for u in users if u.get("is_admin")),
+        "new_7d": sum(1 for a in ages if a is not None and a <= 7),
+        "new_30d": sum(1 for a in ages if a is not None and a <= 30),
+        # คนที่สมัครแล้วยังไม่เคยเข้าใช้เลย = รหัสเชิญถูกใช้ไปแต่ไม่มีใครตามต่อ
+        "never_logged_in": sum(1 for u in users if not u.get("last_login")),
+        "with_meetings": sum(1 for u in users if (u.get("meetings") or 0) > 0),
+    }
 
 
 def worker_outdated(w: dict) -> bool:
@@ -1011,6 +1044,19 @@ class Handler(BaseHTTPRequestHandler):
             if backend.cloud and self.user:
                 out["workers"] = self._workers_view()
             return self._json(out)
+
+        # รายชื่อผู้สมัคร — ข้อมูลส่วนบุคคลของคนทั้งระบบ จึงเป็นของแอดมินเท่านั้น
+        # และมีความหมายเฉพาะโหมดที่มีบัญชีผู้ใช้ (โหมดไฟล์ไม่มีตาราง users เลย)
+        # วางหลังบล็อกตรวจล็อกอินด้านบน จึงไม่มีทางถูกเรียกโดยคนที่ยังไม่ล็อกอิน
+        if parts == ["admin", "users"] and get:
+            if not backend.cloud:
+                return self._error(HTTPStatus.NOT_FOUND,
+                                   "โหมดนี้ไม่มีระบบบัญชีผู้ใช้")
+            if not (self.user and self.user.get("is_admin")):
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   "ต้องเป็นแอดมินจึงดูรายชื่อผู้ใช้ได้")
+            users = store.users_list()
+            return self._json({"users": users, "summary": _users_summary(users)})
 
         if parts == ["workers"] and get:
             if not backend.cloud:

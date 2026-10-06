@@ -1228,6 +1228,7 @@ body:not(.cap-rec).has-floatbar .panel { padding-bottom: 16px; }
 
   body[data-view="new"] .sidebar,
   body[data-view="help"] .sidebar,
+  body[data-view="users"] .sidebar,
   body[data-view="meeting"] .sidebar { display: none; }
 
   /* หน้าเครื่องประมวลผล: เหลือเฉพาะกล่อง #workers ในคอลัมน์เดียวกัน */
@@ -1504,4 +1505,69 @@ body.auth-only .help-back { display: inline-block; }
   /* ตารางแคบ ๆ บีบจนอ่านไม่ออก — ให้เลื่อนแนวนอนในกรอบของตัวเองแทน */
   .help-table { display: block; overflow-x: auto; white-space: nowrap; }
   .help-table td { white-space: normal; min-width: 150px; }
+}
+
+/* ---------- dashboard ผู้สมัคร (BACKLOG #94) ---------- */
+
+.users { max-width: 900px; margin: 0 auto; }
+.users h2 { margin: 0 0 4px; }
+
+/* แถวตัวเลขสรุป — auto-fit ให้ยุบจาก 6 ช่องเหลือ 2 ช่องเองบนจอแคบ
+   โดยไม่ต้องมีมีเดียควีรีแยก */
+.utiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 10px;
+  margin: 16px 0 20px;
+}
+.utile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.utile-n { font-size: 22px; font-weight: 600; line-height: 1.1; }
+.utile-l { color: var(--muted); font-size: 12px; }
+
+.utable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.utable th, .utable td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.utable th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.utable td { color: var(--text); }
+.utable tbody tr:last-child td { border-bottom: 0; }
+.u-num { text-align: right; }
+
+/* อีเมลใต้ชื่อ — ชื่อคือสิ่งที่คนกวาดตาหา อีเมลคือสิ่งที่ใช้ยืนยันว่าใคร */
+.u-mail { display: block; color: var(--muted); font-size: 12px; }
+
+.u-badge {
+  /* บนจอแคบช่องชื่อเป็น white-space: normal ป้ายจึงถูกตัดกลางคำเป็น "แอ/ดมิน" */
+  white-space: nowrap;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+/* คนที่สมัครแล้วเงียบหาย = รหัสเชิญถูกใช้ไปแต่ไม่มีใครตามต่อ ใช้สีเดียวกับคำเตือน
+   ที่แปลว่า "ควรทำอะไรสักอย่าง" ไม่ใช่สีแดงที่แปลว่าพัง */
+.u-never { color: var(--warn); }
+.utable tr.u-cold td:first-child { box-shadow: inset 2px 0 0 var(--warn); }
+
+@media (max-width: 760px) {
+  /* ตารางห้าคอลัมน์บนจอ 375px บีบจนอ่านไม่ออก — ให้เลื่อนแนวนอนในกรอบของตัวเอง
+     เหมือนตารางในคู่มือ (BACKLOG #91) ไม่ใช่ดันทั้งหน้า */
+  .utable { display: block; overflow-x: auto; white-space: nowrap; }
+  .utable td:first-child { white-space: normal; min-width: 150px; }
 }

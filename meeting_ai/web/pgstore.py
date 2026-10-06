@@ -72,6 +72,47 @@ def ensure_user(email: str, name: str | None = None, is_admin: bool = False) -> 
     return {"id": str(row[0]), "email": row[1], "name": row[2], "is_admin": row[3]}
 
 
+def users_list() -> list[dict]:
+    """ผู้ใช้ทั้งหมดพร้อมตัวเลขที่แอดมินใช้ตัดสินใจ — เรียงคนสมัครล่าสุดขึ้นก่อน.
+
+    รวมทุกอย่างไว้ใน query เดียว เพราะหน้านี้เรียกทีเดียวแล้วจบ และ pooler ของ
+    production เป็น transaction mode — ยิงหลาย query ต่อหนึ่งคำขอแปลว่าหลาย
+    round-trip ข้ามทวีป
+
+    `invited_by` อ่านจากตาราง invites ไม่ใช่เดาจากเวลาสมัคร — คนที่สมัครเป็นคนแรก
+    ของระบบไม่มีรหัสเชิญ ค่าจึงเป็น None ตามจริง ไม่ใช่ช่องว่างที่แปลว่า "ไม่รู้"
+    """
+    with db.connect() as conn:
+        rows = conn.execute(
+            """select u.id, u.email, u.name, u.is_admin, u.created_at,
+                      (select count(*) from meeting_ai.meetings m
+                        where m.owner_id = u.id) as meetings,
+                      (select max(s.created_at) from meeting_ai.sessions s
+                        where s.user_id = u.id) as last_login,
+                      (select count(*) from meeting_ai.sessions s
+                        where s.user_id = u.id and s.expires_at > now()) as sessions,
+                      (select iu.email from meeting_ai.invites i
+                         join meeting_ai.users iu on iu.id = i.created_by
+                        where i.used_by = u.id
+                        order by i.used_at desc limit 1) as invited_by,
+                      u.password_hash is not null as has_password
+               from meeting_ai.users u
+               order by u.created_at desc"""
+        ).fetchall()
+    return [{
+        "id": str(r[0]),
+        "email": r[1],
+        "name": r[2],
+        "is_admin": r[3],
+        "created_at": r[4].isoformat(timespec="seconds") if r[4] else None,
+        "meetings": r[5],
+        "last_login": r[6].isoformat(timespec="seconds") if r[6] else None,
+        "sessions": r[7],
+        "invited_by": r[8],
+        "has_password": r[9],
+    } for r in rows]
+
+
 def count_users() -> int:
     with db.connect() as conn:
         return conn.execute("select count(*) from meeting_ai.users").fetchone()[0]

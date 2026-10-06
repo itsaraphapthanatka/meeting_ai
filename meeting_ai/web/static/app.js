@@ -460,6 +460,7 @@ function renderUserBox() {
     box.innerHTML = `<span class="who">${esc(state.user.name || state.user.email)}</span>`
       + (isAdmin() ? `<button id="btn-live-toggle" class="btn btn-sm" type="button">${liveToggleLabel()}</button>` : '')
       + (isAdmin() ? '<button id="btn-invite" class="btn btn-sm" type="button">เชิญสมาชิก</button>' : '')
+      + (isAdmin() ? '<button id="btn-users" class="btn btn-sm" type="button">ผู้ใช้</button>' : '')
       + '<button id="btn-logout" class="btn btn-sm" type="button">ออกจากระบบ</button>';
     $('#btn-logout').onclick = async () => {
       await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
@@ -467,6 +468,8 @@ function renderUserBox() {
     };
     const inv = $('#btn-invite');
     if (inv) inv.onclick = inviteMember;
+    const usr = $('#btn-users');
+    if (usr) usr.onclick = () => showUsers();
     const lt = $('#btn-live-toggle');
     if (lt) lt.onclick = toggleLiveRecording;
   } else if (state.share) {
@@ -679,6 +682,7 @@ const VIEW_BAR = {
   home:    { title: 'การประชุม', back: false },
   new:     { title: 'ประชุมใหม่', back: true },
   devices: { title: 'เครื่องประมวลผล', back: true },
+  users:   { title: 'ผู้ใช้ที่สมัครเข้ามา', back: true },
   help:    { title: 'คู่มือการใช้งาน', back: true },
   // หน้ารายละเอียดไม่ใส่ชื่อบนแถบ เพราะชื่อการประชุมในเนื้อหาแก้ไขได้ (contenteditable)
   // มีสองที่จะสับสนว่าต้องแก้อันไหน
@@ -709,6 +713,85 @@ function showDevices() {
   setView('devices');
 }
 
+/** dashboard ผู้สมัคร — แอดมินเท่านั้น (เซิร์ฟเวอร์ก็กันอีกชั้น ไม่ได้พึ่งการซ่อนปุ่ม) */
+async function showUsers() {
+  state.current = null;
+  state.meeting = null;
+  setHash('#users');
+  setView('users');
+  const panel = $('#panel');
+  panel.innerHTML = '<div class="users"><p class="muted">กำลังโหลด…</p></div>';
+  panel.scrollTop = 0;
+  try {
+    const out = await api('/api/admin/users');
+    renderUsers(out.users || [], out.summary || {});
+  } catch (e) {
+    // ข้อความจากเซิร์ฟเวอร์เป็นของผู้ใช้อยู่แล้ว (ไม่มี path/traceback) โชว์ได้ตรง ๆ
+    panel.innerHTML = `<div class="users"><h2>ผู้ใช้ที่สมัครเข้ามา</h2>`
+      + `<p class="notice">${esc(e.message)}</p></div>`;
+  }
+}
+
+/** ช่วงเวลาแบบอ่านง่าย — หน้านี้สนใจ "นานแค่ไหนแล้ว" มากกว่าวันที่เป๊ะ ๆ */
+function sinceText(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days < 0) return '';
+  if (days === 0) return 'วันนี้';
+  if (days === 1) return 'เมื่อวาน';
+  if (days < 30) return `${days} วันก่อน`;
+  if (days < 365) return `${Math.floor(days / 30)} เดือนก่อน`;
+  return `${Math.floor(days / 365)} ปีก่อน`;
+}
+
+const USER_TILES = [
+  ['total', 'ทั้งหมด'],
+  ['new_7d', 'สมัครใน 7 วัน'],
+  ['new_30d', 'สมัครใน 30 วัน'],
+  ['with_meetings', 'เริ่มใช้งานแล้ว'],
+  ['never_logged_in', 'ยังไม่เคยเข้าใช้'],
+  ['admins', 'แอดมิน'],
+];
+
+function renderUsers(users, summary) {
+  const tiles = USER_TILES.map(([key, label]) =>
+    `<div class="utile"><span class="utile-n">${Number(summary[key] || 0)}</span>`
+    + `<span class="utile-l">${esc(label)}</span></div>`).join('');
+
+  const rows = users.map((u) => {
+    // ยังไม่เคยเข้าใช้ = รหัสเชิญถูกใช้ไปแล้วแต่ไม่มีใครตามต่อ ต้องเห็นได้ด้วยการกวาดตา
+    const cold = !u.last_login;
+    // ป้ายต้องอยู่ติดชื่อบรรทัดเดียวกัน — .u-mail เป็น block ถ้าวางป้ายไว้ท้ายสุด
+    // มันจะตกไปอยู่บรรทัดที่สามใต้อีเมล (เห็นตอนดูจริงบนเบราว์เซอร์)
+    const badge = u.is_admin ? '<span class="u-badge">แอดมิน</span>' : '';
+    const who = u.name
+      ? `${esc(u.name)}${badge}<span class="u-mail">${esc(u.email)}</span>`
+      : `${esc(u.email)}${badge}`;
+    return `<tr${cold ? ' class="u-cold"' : ''}>
+      <td>${who}</td>
+      <td title="${esc(fmtDate(u.created_at))}">${esc(sinceText(u.created_at)) || '—'}</td>
+      <td title="${esc(fmtDate(u.last_login))}">${
+        cold ? '<span class="u-never">ยังไม่เคยเข้าใช้</span>'
+             : esc(sinceText(u.last_login))}</td>
+      <td class="u-num">${Number(u.meetings || 0)}</td>
+      <td>${u.invited_by ? esc(u.invited_by) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  $('#panel').innerHTML = `<div class="users">
+    <h2>ผู้ใช้ที่สมัครเข้ามา</h2>
+    <p class="muted">เรียงคนที่สมัครล่าสุดขึ้นก่อน · แตะวันที่เพื่อดูเวลาเต็ม</p>
+    <div class="utiles">${tiles}</div>
+    ${users.length ? `<table class="utable">
+      <thead><tr><th>ผู้ใช้</th><th>สมัครเมื่อ</th><th>เข้าใช้ล่าสุด</th>
+        <th class="u-num">ประชุม</th><th>เชิญโดย</th></tr></thead>
+      <tbody>${rows}</tbody></table>`
+      : '<p class="muted">ยังไม่มีใครสมัคร</p>'}
+  </div>`;
+}
+
 /** คู่มือการใช้งาน — เนื้อหาทั้งหมดเป็น static อยู่ใน <template> ไม่มีการเรียก API
     จึงเปิดได้แม้ยังไม่ได้ล็อกอินหรือเซิร์ฟเวอร์ตอบ /api/* ไม่ได้ (BACKLOG #90) */
 function showHelp() {
@@ -737,6 +820,7 @@ function applyHash() {
     if (!$('#panel').querySelector('.help')) showHelp();
     document.getElementById(to)?.scrollIntoView();
   }
+  else if (h === '#users') showUsers();
   else if (h === '#devices') showDevices();
   else if (h === '#home') showHome();
   else showNew();

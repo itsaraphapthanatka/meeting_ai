@@ -537,6 +537,32 @@ class FakeStore:
                 existing["name"] = name
             return {k: v for k, v in existing.items() if k != "password_hash"}
 
+    def users_list(self) -> list[dict]:
+        """ตรง pgstore.users_list — คีย์ชุดเดียวกันเป๊ะ ไม่งั้นหน้าเว็บจะพังเฉพาะบน production.
+
+        FakeStore ไม่มี created_at ของจริง จึงเรียงตามลำดับที่ถูกสร้าง (dict รักษาลำดับ)
+        แล้วกลับหัวให้เหมือน "ล่าสุดขึ้นก่อน"
+        """
+        with self._user_lock:
+            users = list(self.users.values())
+        out = []
+        for u in reversed(users):
+            out.append({
+                "id": u["id"],
+                "email": u["email"],
+                "name": u.get("name"),
+                "is_admin": u.get("is_admin", False),
+                "created_at": u.get("created_at"),
+                "meetings": sum(1 for m in self.meetings.values()
+                                if m.get("owner_id") == u["id"]),
+                "last_login": None,
+                "sessions": sum(1 for s in self.sessions.values()
+                                if s.get("id") == u["id"]),
+                "invited_by": u.get("invited_by"),
+                "has_password": u.get("password_hash") is not None,
+            })
+        return out
+
     def set_password(self, user_id: str, password: str) -> None:
         """ตรง pgstore.set_password — เก็บแค่ hash (sha256 พอสำหรับ fake) ไม่เก็บรหัสผ่านจริง."""
         with self._user_lock:
