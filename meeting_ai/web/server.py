@@ -21,6 +21,7 @@ import time
 import traceback
 import urllib.parse
 import webbrowser
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -90,6 +91,8 @@ _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
 _CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD = 8
+# เพดานจำนวนคนต่อรหัสเชิญหนึ่งใบ (BACKLOG #95)
+INVITE_MAX_USES = 50
 
 # โควตาของเส้นที่ยิงได้โดยไม่ต้องล็อกอินและเรียก scrypt (~16 MB + CPU ต่อครั้ง) — มีสองถัง
 # ต่อ IP เพราะถังเดียวไม่พอ (ดู docs/tickets/BUG-010 รอบรีวิวที่ 1):
@@ -153,6 +156,38 @@ def worker_kinds(w: dict) -> list[str] | None:
     """
     kinds = w.get("kinds")
     return list(kinds) if isinstance(kinds, list) else None
+
+
+def _users_summary(users: list[dict]) -> dict:
+    """ตัวเลขหัวหน้าเพจ — นับจากรายการเดียวกับที่ส่งไป ไม่ยิง query เพิ่ม.
+
+    นับ "ใหม่ใน N วัน" จาก created_at ที่เป็น ISO string ของ UTC — เทียบกับ
+    now(UTC) ไม่ใช่เวลาเครื่อง เพราะเคยพลาดมาแล้วตอนรายงานว่างานค้าง 17 ชั่วโมง
+    ทั้งที่เทียบ UTC กับเวลาไทย (+07) คนละฐาน
+    """
+    now = datetime.now(timezone.utc)
+    def _age_days(u: dict) -> float | None:
+        raw = u.get("created_at")
+        if not raw:
+            return None
+        try:
+            when = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return (now - when).total_seconds() / 86400.0
+
+    ages = [_age_days(u) for u in users]
+    return {
+        "total": len(users),
+        "admins": sum(1 for u in users if u.get("is_admin")),
+        "new_7d": sum(1 for a in ages if a is not None and a <= 7),
+        "new_30d": sum(1 for a in ages if a is not None and a <= 30),
+        # คนที่สมัครแล้วยังไม่เคยเข้าใช้เลย = รหัสเชิญถูกใช้ไปแต่ไม่มีใครตามต่อ
+        "never_logged_in": sum(1 for u in users if not u.get("last_login")),
+        "with_meetings": sum(1 for u in users if (u.get("meetings") or 0) > 0),
+    }
 
 
 def worker_outdated(w: dict) -> bool:
@@ -1012,6 +1047,19 @@ class Handler(BaseHTTPRequestHandler):
                 out["workers"] = self._workers_view()
             return self._json(out)
 
+        # รายชื่อผู้สมัคร — ข้อมูลส่วนบุคคลของคนทั้งระบบ จึงเป็นของแอดมินเท่านั้น
+        # และมีความหมายเฉพาะโหมดที่มีบัญชีผู้ใช้ (โหมดไฟล์ไม่มีตาราง users เลย)
+        # วางหลังบล็อกตรวจล็อกอินด้านบน จึงไม่มีทางถูกเรียกโดยคนที่ยังไม่ล็อกอิน
+        if parts == ["admin", "users"] and get:
+            if not backend.cloud:
+                return self._error(HTTPStatus.NOT_FOUND,
+                                   "โหมดนี้ไม่มีระบบบัญชีผู้ใช้")
+            if not (self.user and self.user.get("is_admin")):
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   "ต้องเป็นแอดมินจึงดูรายชื่อผู้ใช้ได้")
+            users = store.users_list()
+            return self._json({"users": users, "summary": _users_summary(users)})
+
         if parts == ["workers"] and get:
             if not backend.cloud:
                 return self._json({"workers": []})
@@ -1234,8 +1282,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.FORBIDDEN, "ต้องเป็นแอดมินจึงเชิญคนอื่นได้")
             body = self._body_json()
             email = (str(body.get("email") or "").strip().lower()) or None
-            code = store.create_invite(self.user["id"], email=email)
-            return self._json({"code": code, "email": email})
+            # จำนวนคนที่ใช้รหัสใบนี้ได้ (BACKLOG #95) — ค่ามาจากผู้ใช้ จึงต้องคุมขอบ
+            # ก่อนลงฐาน ไม่ใช่ไปพึ่ง max() ใน store อย่างเดียว เพดาน 50 กัน
+            # การเผลอพิมพ์เลขยาวแล้วได้รหัสที่ใครก็สมัครได้ไม่จำกัด
+            # `or 1` กลืนเลข 0 ให้กลายเป็น 1 เงียบ ๆ — ค่าที่ผู้ใช้ส่งผิดต้องถูกปฏิเสธ
+            # ไม่ใช่ถูกแก้ให้เองแล้วตอบ 200 (เทสต์จับได้ตอนเขียน)
+            raw_uses = body.get("max_uses", 1)
+            try:
+                max_uses = 1 if raw_uses is None else int(raw_uses)
+            except (TypeError, ValueError):
+                return self._error(HTTPStatus.BAD_REQUEST, "จำนวนคนต้องเป็นตัวเลข")
+            if not 1 <= max_uses <= INVITE_MAX_USES:
+                return self._error(HTTPStatus.BAD_REQUEST,
+                                   f"จำนวนคนต้องอยู่ระหว่าง 1 ถึง {INVITE_MAX_USES}")
+            # ผูกอีเมลไว้แล้วจะเชิญหลายคนด้วยรหัสใบเดียวไม่ได้ — อีเมลเดียวสมัครได้ครั้งเดียว
+            # รหัสที่เหลือจะค้างใช้ไม่ได้ และคนออกรหัสจะเข้าใจผิดว่าเชิญไปแล้ว N คน
+            if email and max_uses > 1:
+                return self._error(HTTPStatus.BAD_REQUEST,
+                                   "ผูกอีเมลไว้แล้วใช้ได้คนเดียว — เว้นอีเมลว่างถ้าจะเชิญหลายคน")
+            code = store.create_invite(self.user["id"], email=email, max_uses=max_uses)
+            return self._json({"code": code, "email": email, "max_uses": max_uses})
 
         self._error(HTTPStatus.NOT_FOUND, "ไม่พบ endpoint นี้")
 

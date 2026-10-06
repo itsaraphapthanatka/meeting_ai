@@ -72,6 +72,47 @@ def ensure_user(email: str, name: str | None = None, is_admin: bool = False) -> 
     return {"id": str(row[0]), "email": row[1], "name": row[2], "is_admin": row[3]}
 
 
+def users_list() -> list[dict]:
+    """ผู้ใช้ทั้งหมดพร้อมตัวเลขที่แอดมินใช้ตัดสินใจ — เรียงคนสมัครล่าสุดขึ้นก่อน.
+
+    รวมทุกอย่างไว้ใน query เดียว เพราะหน้านี้เรียกทีเดียวแล้วจบ และ pooler ของ
+    production เป็น transaction mode — ยิงหลาย query ต่อหนึ่งคำขอแปลว่าหลาย
+    round-trip ข้ามทวีป
+
+    `invited_by` อ่านจากตาราง invites ไม่ใช่เดาจากเวลาสมัคร — คนที่สมัครเป็นคนแรก
+    ของระบบไม่มีรหัสเชิญ ค่าจึงเป็น None ตามจริง ไม่ใช่ช่องว่างที่แปลว่า "ไม่รู้"
+    """
+    with db.connect() as conn:
+        rows = conn.execute(
+            """select u.id, u.email, u.name, u.is_admin, u.created_at,
+                      (select count(*) from meeting_ai.meetings m
+                        where m.owner_id = u.id) as meetings,
+                      (select max(s.created_at) from meeting_ai.sessions s
+                        where s.user_id = u.id) as last_login,
+                      (select count(*) from meeting_ai.sessions s
+                        where s.user_id = u.id and s.expires_at > now()) as sessions,
+                      (select iu.email from meeting_ai.invites i
+                         join meeting_ai.users iu on iu.id = i.created_by
+                        where i.used_by = u.id
+                        order by i.used_at desc limit 1) as invited_by,
+                      u.password_hash is not null as has_password
+               from meeting_ai.users u
+               order by u.created_at desc"""
+        ).fetchall()
+    return [{
+        "id": str(r[0]),
+        "email": r[1],
+        "name": r[2],
+        "is_admin": r[3],
+        "created_at": r[4].isoformat(timespec="seconds") if r[4] else None,
+        "meetings": r[5],
+        "last_login": r[6].isoformat(timespec="seconds") if r[6] else None,
+        "sessions": r[7],
+        "invited_by": r[8],
+        "has_password": r[9],
+    } for r in rows]
+
+
 def count_users() -> int:
     with db.connect() as conn:
         return conn.execute("select count(*) from meeting_ai.users").fetchone()[0]
@@ -262,14 +303,45 @@ def rate_reset(key: str) -> None:
 
 # ---------- คำเชิญ ----------
 
-def create_invite(created_by: str | None, email: str | None = None, days: int = 14) -> str:
+# คอลัมน์โควตาของรหัสเชิญ (BACKLOG #95) มาทีหลัง และ **deploy ถึง production ก่อน
+# db-init เสมอ** — ถ้าโค้ดอ้างคอลัมน์ที่ยังไม่มี การสมัครสมาชิกจะพังทั้งระบบ
+# ไม่ใช่แค่ฟีเจอร์ใหม่ใช้ไม่ได้ จึงถามฐานครั้งเดียวต่อโพรเซสแล้วเลือก SQL ให้เหมาะ
+_quota_ready: bool | None = None
+
+
+def invites_have_quota() -> bool:
+    """ฐานนี้มีคอลัมน์ max_uses/used_count แล้วหรือยัง — ถามครั้งเดียวต่อโพรเซส."""
+    global _quota_ready
+    if _quota_ready is None:
+        with db.connect() as conn:
+            row = conn.execute(
+                """select count(*) from information_schema.columns
+                    where table_schema = 'meeting_ai' and table_name = 'invites'
+                      and column_name in ('max_uses', 'used_count')"""
+            ).fetchone()
+        _quota_ready = bool(row and row[0] == 2)
+    return _quota_ready
+
+
+def create_invite(created_by: str | None, email: str | None = None, days: int = 14,
+                  max_uses: int = 1) -> str:
     code = secrets.token_urlsafe(12)
+    max_uses = max(1, int(max_uses or 1))
     with db.connect() as conn:
-        conn.execute(
-            """insert into meeting_ai.invites (code_hash, email, created_by, expires_at)
-               values (%s, %s, %s, %s)""",
-            (_hash(code), (email or None), created_by, _now() + timedelta(days=days)),
-        )
+        if invites_have_quota():
+            conn.execute(
+                """insert into meeting_ai.invites
+                          (code_hash, email, created_by, expires_at, max_uses)
+                   values (%s, %s, %s, %s, %s)""",
+                (_hash(code), (email or None), created_by,
+                 _now() + timedelta(days=days), max_uses),
+            )
+        else:
+            conn.execute(
+                """insert into meeting_ai.invites (code_hash, email, created_by, expires_at)
+                   values (%s, %s, %s, %s)""",
+                (_hash(code), (email or None), created_by, _now() + timedelta(days=days)),
+            )
     return code
 
 
@@ -281,16 +353,32 @@ def claim_invite(code: str, email: str) -> bool:
     เงื่อนไขทั้งหมด (มีจริง / ยังไม่ถูกจอง / ยังไม่หมดอายุ / อีเมลตรงกับที่ผูกไว้) อยู่ใน where
     ให้ Postgres ล็อกแถวตัดสินเอง — used_at คือรอยจอง ส่วน used_by ค่อยผูกด้วย attach_invite()
     """
+    wanted = (email or "").strip().lower()
     with db.connect() as conn:
-        row = conn.execute(
-            """update meeting_ai.invites
-               set used_at = now()
-               where code_hash = %s and used_by is null and used_at is null
-                 and (expires_at is null or expires_at > now())
-                 and (invites.email is null or invites.email = %s)
-               returning code_hash""",
-            (_hash(code), (email or "").strip().lower()),
-        ).fetchone()
+        if invites_have_quota():
+            # used_at = เวลาที่ถูกใช้ครั้งแรก (coalesce จึงไม่ถูกเขียนทับ)
+            # ตัวตัดสินสิทธิ์คือ used_count < max_uses ซึ่งอยู่ใน where ของ update เดียวกัน
+            # Postgres ล็อกแถวให้เอง N คนยิงพร้อมกันจึงผ่านได้ไม่เกินโควตา (BUG-012)
+            row = conn.execute(
+                """update meeting_ai.invites
+                   set used_at = coalesce(used_at, now()),
+                       used_count = used_count + 1
+                   where code_hash = %s and used_count < max_uses
+                     and (expires_at is null or expires_at > now())
+                     and (invites.email is null or invites.email = %s)
+                   returning code_hash""",
+                (_hash(code), wanted),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """update meeting_ai.invites
+                   set used_at = now()
+                   where code_hash = %s and used_by is null and used_at is null
+                     and (expires_at is null or expires_at > now())
+                     and (invites.email is null or invites.email = %s)
+                   returning code_hash""",
+                (_hash(code), wanted),
+            ).fetchone()
     return row is not None
 
 
@@ -316,12 +404,20 @@ def invite_email(code: str) -> tuple[bool, str | None]:
     การตัดสินอยู่ที่ claim_invite() — เงื่อนไขตรงกันทุกข้อ (รวม used_at) เพื่อไม่ให้ข้อความหลอกกัน
     """
     with db.connect() as conn:
-        row = conn.execute(
-            """select email from meeting_ai.invites
-               where code_hash = %s and used_by is null and used_at is null
-                 and (expires_at is null or expires_at > now())""",
-            (_hash(code),),
-        ).fetchone()
+        if invites_have_quota():
+            row = conn.execute(
+                """select email from meeting_ai.invites
+                   where code_hash = %s and used_count < max_uses
+                     and (expires_at is null or expires_at > now())""",
+                (_hash(code),),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """select email from meeting_ai.invites
+                   where code_hash = %s and used_by is null and used_at is null
+                     and (expires_at is null or expires_at > now())""",
+                (_hash(code),),
+            ).fetchone()
     return (row is not None, row[0] if row else None)
 
 

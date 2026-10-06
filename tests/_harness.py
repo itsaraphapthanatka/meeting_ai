@@ -393,10 +393,12 @@ class FakeStore:
     def drop_session(self, token: str) -> None:
         self.sessions.pop(token, None)
 
-    def create_invite(self, created_by: str | None, email: str | None = None) -> str:
+    def create_invite(self, created_by: str | None, email: str | None = None,
+                      max_uses: int = 1) -> str:
         code = f"inv-{len(self.invites) + 1}"
         self.invites[code] = {"email": (email.strip().lower() if email else None),
-                              "used_at": False, "used_by": None, "expired": False}
+                              "used_at": False, "used_by": None, "expired": False,
+                              "max_uses": max(1, int(max_uses or 1)), "used_count": 0}
         return code
 
     # ---------- rate limit ชั้น "Postgres" จำลอง (BUG-010) ----------
@@ -444,7 +446,7 @@ class FakeStore:
         }
 
     def add_invite(self, code: str, email: str | None = None, expired: bool = False,
-                   used_by: str | None = None) -> None:
+                   used_by: str | None = None, max_uses: int = 1) -> None:
         """เตรียมรหัสเชิญให้เทสต์ — email=None แปลว่าใช้กับอีเมลไหนก็ได้.
 
         used_by ตั้งไว้ล่วงหน้าได้เพื่อจำลอง "ถูกใช้ไปแล้ว" (used_at ก็ถูกตั้งตามไปด้วย
@@ -453,6 +455,7 @@ class FakeStore:
         self.invites[code] = {
             "email": (email.strip().lower() if email else None),
             "used_at": bool(used_by), "used_by": used_by, "expired": expired,
+            "max_uses": max(1, int(max_uses or 1)), "used_count": 1 if used_by else 0,
         }
 
     # ---------- signup / invite atomic (BUG-012) ----------
@@ -463,7 +466,9 @@ class FakeStore:
     def invite_email(self, code: str) -> tuple[bool, str | None]:
         """pre-check เท่านั้น (ตรง pgstore.invite_email) — ไม่ใช่จุดตัดสินสิทธิ์ ไม่ต้องล็อก."""
         inv = self.invites.get(code)
-        if inv is None or inv["used_by"] is not None or inv["used_at"] or inv["expired"]:
+        if inv is None or inv["expired"]:
+            return (False, None)
+        if inv.get("used_count", 0) >= inv.get("max_uses", 1):
             return (False, None)
         return (True, inv["email"])
 
@@ -492,12 +497,14 @@ class FakeStore:
         email = (email or "").strip().lower()
         with self._invite_lock:
             inv = self.invites.get(code)
-            if inv is None:
+            if inv is None or inv["expired"]:
                 return False
-            if inv["used_by"] is not None or inv["used_at"] or inv["expired"]:
+            # ตรง pgstore: ตัวตัดสินคือโควตา ไม่ใช่ used_at (ซึ่งเป็นแค่รอยใช้ครั้งแรก)
+            if inv.get("used_count", 0) >= inv.get("max_uses", 1):
                 return False
             if inv["email"] is not None and inv["email"] != email:
                 return False
+            inv["used_count"] = inv.get("used_count", 0) + 1
             inv["used_at"] = True
             return True
 
@@ -536,6 +543,32 @@ class FakeStore:
             elif name is not None:
                 existing["name"] = name
             return {k: v for k, v in existing.items() if k != "password_hash"}
+
+    def users_list(self) -> list[dict]:
+        """ตรง pgstore.users_list — คีย์ชุดเดียวกันเป๊ะ ไม่งั้นหน้าเว็บจะพังเฉพาะบน production.
+
+        FakeStore ไม่มี created_at ของจริง จึงเรียงตามลำดับที่ถูกสร้าง (dict รักษาลำดับ)
+        แล้วกลับหัวให้เหมือน "ล่าสุดขึ้นก่อน"
+        """
+        with self._user_lock:
+            users = list(self.users.values())
+        out = []
+        for u in reversed(users):
+            out.append({
+                "id": u["id"],
+                "email": u["email"],
+                "name": u.get("name"),
+                "is_admin": u.get("is_admin", False),
+                "created_at": u.get("created_at"),
+                "meetings": sum(1 for m in self.meetings.values()
+                                if m.get("owner_id") == u["id"]),
+                "last_login": None,
+                "sessions": sum(1 for s in self.sessions.values()
+                                if s.get("id") == u["id"]),
+                "invited_by": u.get("invited_by"),
+                "has_password": u.get("password_hash") is not None,
+            })
+        return out
 
     def set_password(self, user_id: str, password: str) -> None:
         """ตรง pgstore.set_password — เก็บแค่ hash (sha256 พอสำหรับ fake) ไม่เก็บรหัสผ่านจริง."""

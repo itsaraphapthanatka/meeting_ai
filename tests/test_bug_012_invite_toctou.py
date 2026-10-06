@@ -203,7 +203,13 @@ class TestPgstoreClaimSqlShape(unittest.TestCase):
     หลุดเงื่อนไขไปโดยไม่ต้องมี Postgres จริง (รูปแบบเดียวกับ TestPgstoreJobActiveSqlShape ในตั๋ว P0)
     """
 
-    def _capture(self, fn, *args):
+    def _capture(self, fn, *args, quota: bool | None = False):
+        """จับ SQL ที่ fn ยิงออกไปหนึ่งคำสั่ง โดยไม่ต่อ DB จริง.
+
+        `quota` บอกว่าให้ทำเหมือนฐานมีคอลัมน์ max_uses/used_count แล้วหรือยัง
+        (BACKLOG #95) — ต้องตรึงทั้งสองทาง เพราะทั้งคู่ shipped พร้อมกัน:
+        deploy ถึง production ก่อน db-init เสมอ ช่วงนั้นโค้ดต้องเดินทางเก่าได้
+        """
         calls: list[tuple] = []
 
         class FakeCursor:
@@ -211,7 +217,8 @@ class TestPgstoreClaimSqlShape(unittest.TestCase):
                 return None
 
         class FakeConn:
-            def execute(self, sql, params):
+            # params เป็น optional เพราะ query ที่ไม่มีพารามิเตอร์ก็มี (เช่นตัวตรวจคอลัมน์)
+            def execute(self, sql, params=None):
                 calls.append((sql, params))
                 return FakeCursor()
 
@@ -219,13 +226,16 @@ class TestPgstoreClaimSqlShape(unittest.TestCase):
         def fake_connect():
             yield FakeConn()
 
-        with mock.patch.object(pgstore.db, "connect", fake_connect):
+        with mock.patch.object(pgstore.db, "connect", fake_connect), \
+             mock.patch.object(pgstore, "_quota_ready", quota):
             fn(*args)
         self.assertEqual(len(calls), 1, calls)
         return calls[0]
 
     def test_claim_invite_where_covers_all_four_conditions(self):
-        sql, params = self._capture(pgstore.claim_invite, "code123", "Foo@Example.com")
+        """ทางเก่า (ฐานยังไม่มีคอลัมน์โควตา) — หนึ่งใบหนึ่งคน."""
+        sql, params = self._capture(pgstore.claim_invite, "code123", "Foo@Example.com",
+                                    quota=False)
         self.assertEqual(sql.count("%s"), 2)
         self.assertEqual(len(params), 2)
         self.assertEqual(params[0], pgstore._hash("code123"))
@@ -235,6 +245,28 @@ class TestPgstoreClaimSqlShape(unittest.TestCase):
                         "invites.email is null or invites.email = %s",
                         "returning code_hash"):
             self.assertIn(fragment, sql)
+
+    def test_claim_invite_with_quota_still_decides_in_one_statement(self):
+        """ทางใหม่ (BACKLOG #95) — ตัวตัดสินย้ายไปที่ used_count < max_uses.
+
+        สิ่งที่ห้ามหายไปคือ **การตัดสินอยู่ใน where ของ update เดียวกัน** ถ้าเผลอแยกเป็น
+        select-แล้ว-update เมื่อไหร่ ช่องแข่งกันของ BUG-012 จะกลับมาทันที แค่คราวนี้
+        แทนที่จะเกิน 1 คน จะเกินโควตาที่ตั้งไว้แทน
+        """
+        sql, params = self._capture(pgstore.claim_invite, "code123", "Foo@Example.com",
+                                    quota=True)
+        self.assertEqual(sql.count("%s"), 2)
+        self.assertEqual(params[0], pgstore._hash("code123"))
+        self.assertEqual(params[1], "foo@example.com")
+        self.assertTrue(sql.lstrip().lower().startswith("update"), sql)
+        for fragment in ("used_count < max_uses",
+                        "used_count = used_count + 1",
+                        "expires_at is null or expires_at > now()",
+                        "invites.email is null or invites.email = %s",
+                        "returning code_hash"):
+            self.assertIn(fragment, sql)
+        # used_at คือรอยใช้ครั้งแรก ห้ามถูกเขียนทับทุกครั้งที่มีคนใช้
+        self.assertIn("coalesce(used_at, now())", sql)
 
     def test_attach_invite_requires_already_claimed_not_yet_owned(self):
         sql, params = self._capture(pgstore.attach_invite, "code123", "user-9")
