@@ -304,22 +304,36 @@ def rate_reset(key: str) -> None:
 # ---------- คำเชิญ ----------
 
 # คอลัมน์โควตาของรหัสเชิญ (BACKLOG #95) มาทีหลัง และ **deploy ถึง production ก่อน
-# db-init เสมอ** — ถ้าโค้ดอ้างคอลัมน์ที่ยังไม่มี การสมัครสมาชิกจะพังทั้งระบบ
-# ไม่ใช่แค่ฟีเจอร์ใหม่ใช้ไม่ได้ จึงถามฐานครั้งเดียวต่อโพรเซสแล้วเลือก SQL ให้เหมาะ
+# db-init เสมอ** — ถ้าโค้ดอ้างคอลัมน์ที่ยังไม่มี **การสมัครสมาชิกจะพังทั้งระบบ**
+# ไม่ใช่แค่ฟีเจอร์ใหม่ใช้ไม่ได้ จึงต้องถามฐานก่อนแล้วเลือก SQL ให้เหมาะ
+#
+# จังหวะการแคชตามแพตเทิร์นเดียวกับ _has_peaks()/_has_action_items() เป๊ะ:
+# จำ True ตลอดอายุโพรเซส (คอลัมน์ไม่หายไปเอง) แต่ถ้ายังเป็น False ให้ลองใหม่ทุก 60 วินาที
+# — ไม่งั้นเซิร์ฟเวอร์ที่รันยาวจะไม่มีวันรู้ว่า migrate แล้ว ต้อง redeploy ถึงจะใช้ได้
 _quota_ready: bool | None = None
+_quota_checked_at = 0.0
 
 
 def invites_have_quota() -> bool:
-    """ฐานนี้มีคอลัมน์ max_uses/used_count แล้วหรือยัง — ถามครั้งเดียวต่อโพรเซส."""
-    global _quota_ready
-    if _quota_ready is None:
-        with db.connect() as conn:
-            row = conn.execute(
-                """select count(*) from information_schema.columns
-                    where table_schema = 'meeting_ai' and table_name = 'invites'
-                      and column_name in ('max_uses', 'used_count')"""
-            ).fetchone()
-        _quota_ready = bool(row and row[0] == 2)
+    """ฐานนี้มีคอลัมน์ max_uses/used_count ครบทั้งสองตัวแล้วหรือยัง.
+
+    ต้องครบ **ทั้งสอง** ถึงจะนับว่าพร้อม — มีมาตัวเดียวแปลว่า migration ไม่จบ
+    (db-init ล้มกลางคัน หรือมีคนเพิ่มเอง) แล้วโค้ดจะไปพังที่อีกคอลัมน์หนึ่ง
+    """
+    global _quota_ready, _quota_checked_at
+    now = time.monotonic()
+    if _quota_ready is True:
+        return True
+    if _quota_ready is False and (now - _quota_checked_at) < _PEAKS_RECHECK_SEC:
+        return False
+    with db.connect() as conn:
+        row = conn.execute(
+            """select count(*) from information_schema.columns
+                where table_schema = 'meeting_ai' and table_name = 'invites'
+                  and column_name in ('max_uses', 'used_count')"""
+        ).fetchone()
+    _quota_ready = bool(row and row[0] == 2)
+    _quota_checked_at = now
     return _quota_ready
 
 
