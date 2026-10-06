@@ -45,6 +45,18 @@ create table if not exists meeting_ai.invites (
     created_at  timestamptz not null default now()
 );
 
+-- รหัสเชิญใบเดียวใช้ได้หลายคน (BACKLOG #95) — ของเดิมใบละคนเสมอ
+-- เพิ่มแยกเป็น alter เพื่อให้ฐานเก่าอัปเกรดได้ และโค้ดฝั่ง pgstore ทำงานได้
+-- แม้คอลัมน์สองตัวนี้ยังไม่มี (deploy ถึง production ก่อน db-init เสมอ)
+alter table meeting_ai.invites add column if not exists max_uses integer not null default 1;
+alter table meeting_ai.invites add column if not exists used_count integer not null default 0;
+
+-- แถวที่ถูกใช้ไปแล้วก่อนมีคอลัมน์นี้ ต้องนับเป็นใช้แล้ว 1 ครั้ง ไม่งั้นพอ migrate
+-- เสร็จ รหัสเก่าทุกใบจะกลับมาใช้ได้อีกรอบ (used_count = 0 < max_uses = 1)
+-- เงื่อนไข used_count = 0 ทำให้รันซ้ำได้โดยไม่ไปทับของที่นับไปแล้ว
+update meeting_ai.invites set used_count = 1
+ where used_at is not null and used_count = 0;
+
 -- ---------- การประชุม ----------
 
 create table if not exists meeting_ai.meetings (

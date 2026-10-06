@@ -487,13 +487,26 @@ function renderUserBox() {
 }
 
 async function inviteMember() {
-  const email = prompt('เชิญอีเมลไหน? (เว้นว่าง = ใครก็ใช้รหัสนี้ได้)', '');
+  // ข้อความเดิมเขียนว่า "เว้นว่าง = ใครก็ใช้รหัสนี้ได้" ซึ่งอ่านแล้วเข้าใจว่าใช้ได้หลายคน
+  // ทั้งที่ของเดิมรหัสใบหนึ่งใช้ได้คนเดียวเสมอ (BACKLOG #95)
+  const email = prompt('เชิญอีเมลไหน? (เว้นว่าง = ใครก็ได้ แต่ยังใช้ได้ตามจำนวนที่กำหนด)', '');
   if (email === null) return;
+  let uses = 1;
+  if (!email.trim()) {
+    const answer = prompt('ให้รหัสนี้ใช้ได้กี่คน? (1-50 · รหัสหมดอายุใน 14 วัน)', '1');
+    if (answer === null) return;
+    uses = parseInt(answer, 10);
+    if (!(uses >= 1 && uses <= 50)) return banner('จำนวนคนต้องอยู่ระหว่าง 1 ถึง 50');
+  }
   try {
-    const out = await api('/api/auth/invite', jsonPost({ email: email.trim() || null }));
+    const out = await api('/api/auth/invite',
+      jsonPost({ email: email.trim() || null, max_uses: uses }));
     const link = `${location.origin}/?invite=${encodeURIComponent(out.code)}`;
     await copyText(out.code);
-    banner(`รหัสเชิญ (คัดลอกให้แล้ว): ${out.code}${out.email ? ' — สำหรับ ' + out.email : ''}`);
+    // บอกจำนวนคนและวันหมดอายุไปด้วย ไม่งั้นคนออกรหัสไม่มีทางรู้ว่าใบนี้ใช้ได้กี่ครั้ง
+    const who = out.email ? ` — สำหรับ ${out.email}`
+      : ` — ใช้ได้ ${out.max_uses || 1} คน`;
+    banner(`รหัสเชิญ (คัดลอกให้แล้ว): ${out.code}${who} · หมดอายุใน 14 วัน`);
     console.log('ลิงก์สมัคร:', link);
   } catch (e) { banner(`สร้างรหัสเชิญไม่สำเร็จ: ${e.message}`); }
 }

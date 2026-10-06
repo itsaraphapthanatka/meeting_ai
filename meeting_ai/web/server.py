@@ -91,6 +91,8 @@ _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
 _CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD = 8
+# เพดานจำนวนคนต่อรหัสเชิญหนึ่งใบ (BACKLOG #95)
+INVITE_MAX_USES = 50
 
 # โควตาของเส้นที่ยิงได้โดยไม่ต้องล็อกอินและเรียก scrypt (~16 MB + CPU ต่อครั้ง) — มีสองถัง
 # ต่อ IP เพราะถังเดียวไม่พอ (ดู docs/tickets/BUG-010 รอบรีวิวที่ 1):
@@ -1280,8 +1282,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.FORBIDDEN, "ต้องเป็นแอดมินจึงเชิญคนอื่นได้")
             body = self._body_json()
             email = (str(body.get("email") or "").strip().lower()) or None
-            code = store.create_invite(self.user["id"], email=email)
-            return self._json({"code": code, "email": email})
+            # จำนวนคนที่ใช้รหัสใบนี้ได้ (BACKLOG #95) — ค่ามาจากผู้ใช้ จึงต้องคุมขอบ
+            # ก่อนลงฐาน ไม่ใช่ไปพึ่ง max() ใน store อย่างเดียว เพดาน 50 กัน
+            # การเผลอพิมพ์เลขยาวแล้วได้รหัสที่ใครก็สมัครได้ไม่จำกัด
+            # `or 1` กลืนเลข 0 ให้กลายเป็น 1 เงียบ ๆ — ค่าที่ผู้ใช้ส่งผิดต้องถูกปฏิเสธ
+            # ไม่ใช่ถูกแก้ให้เองแล้วตอบ 200 (เทสต์จับได้ตอนเขียน)
+            raw_uses = body.get("max_uses", 1)
+            try:
+                max_uses = 1 if raw_uses is None else int(raw_uses)
+            except (TypeError, ValueError):
+                return self._error(HTTPStatus.BAD_REQUEST, "จำนวนคนต้องเป็นตัวเลข")
+            if not 1 <= max_uses <= INVITE_MAX_USES:
+                return self._error(HTTPStatus.BAD_REQUEST,
+                                   f"จำนวนคนต้องอยู่ระหว่าง 1 ถึง {INVITE_MAX_USES}")
+            # ผูกอีเมลไว้แล้วจะเชิญหลายคนด้วยรหัสใบเดียวไม่ได้ — อีเมลเดียวสมัครได้ครั้งเดียว
+            # รหัสที่เหลือจะค้างใช้ไม่ได้ และคนออกรหัสจะเข้าใจผิดว่าเชิญไปแล้ว N คน
+            if email and max_uses > 1:
+                return self._error(HTTPStatus.BAD_REQUEST,
+                                   "ผูกอีเมลไว้แล้วใช้ได้คนเดียว — เว้นอีเมลว่างถ้าจะเชิญหลายคน")
+            code = store.create_invite(self.user["id"], email=email, max_uses=max_uses)
+            return self._json({"code": code, "email": email, "max_uses": max_uses})
 
         self._error(HTTPStatus.NOT_FOUND, "ไม่พบ endpoint นี้")
 
