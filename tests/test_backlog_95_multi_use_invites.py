@@ -165,6 +165,60 @@ class TestItSurvivesADeployBeforeTheMigration(unittest.TestCase):
                     for p in patches:
                         p.stop()
 
+    def test_a_long_running_server_notices_the_migration_without_a_redeploy(self):
+        """จังหวะแคชต้องเหมือน _has_peaks()/_has_action_items() ที่มีอยู่ก่อนแล้ว.
+
+        จำ True ตลอดอายุโพรเซส (คอลัมน์ไม่หายไปเอง) แต่ถ้ายังเป็น False ให้ลองใหม่
+        ทุก 60 วินาที — แคชถาวรแปลว่าเซิร์ฟเวอร์ที่รันยาวจะไม่มีวันรู้ว่า migrate แล้ว
+        ต้อง redeploy ถึงจะใช้ได้ ซึ่งเป็นสิ่งที่แพตเทิร์นนี้มีไว้กันตั้งแต่ BACKLOG #53
+        """
+        import time as _t
+        from contextlib import contextmanager
+
+        calls = []
+
+        def conn_with(n):
+            class FakeCursor:
+                def fetchone(self):
+                    return (n,)
+
+            class FakeConn:
+                def execute(self, sql, params=None):
+                    calls.append(1)
+                    return FakeCursor()
+
+            @contextmanager
+            def _c():
+                yield FakeConn()
+            return _c
+
+        def probe(columns, cached, age):
+            calls.clear()
+            at = 0.0 if cached is None else _t.monotonic() - age
+            patches = (mock.patch.object(pgstore.db, "connect", conn_with(columns)),
+                       mock.patch.object(pgstore, "_quota_ready", cached),
+                       mock.patch.object(pgstore, "_quota_checked_at", at))
+            for p in patches:
+                p.start()
+            try:
+                return pgstore.invites_have_quota(), len(calls)
+            finally:
+                for p in patches:
+                    p.stop()
+
+        # จำ True ไว้ ไม่ถามซ้ำ
+        self.assertEqual(probe(2, True, 0), (True, 0))
+        # False ที่เพิ่งถามไป ยังไม่ถามซ้ำ
+        self.assertEqual(probe(2, False, 1), (False, 0))
+        # False ที่เก่าเกิน 60 วินาที ถามซ้ำ และเจอว่า migrate แล้ว
+        self.assertEqual(probe(2, False, 61), (True, 1))
+
+    def test_it_reuses_the_recheck_window_the_project_already_has(self):
+        """ค่าคงที่ตัวเดียวกัน ไม่ตั้งเลขใหม่ให้มีสองที่ต้องตามแก้."""
+        body = PGSTORE[PGSTORE.index("def invites_have_quota"):]
+        body = body[:body.index(chr(10) + "def ", 10)]
+        self.assertIn("_PEAKS_RECHECK_SEC", body)
+
     def test_both_paths_exist_in_claim_invite(self):
         body = PGSTORE[PGSTORE.index("def claim_invite"):]
         body = body[:body.index("\ndef ", 10)]
