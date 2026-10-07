@@ -63,7 +63,17 @@ def auth_required() -> bool:
 
 
 def health() -> dict:
+    """สถานะระบบ — โหมด cloud ต้อง **ต่อฐานจริง** ไม่ใช่แค่ดูว่ามีตัวแปรครบ.
+
+    ของเดิมดูแค่ `missing_pieces()` (มี DATABASE_URL ไหม + import psycopg ได้ไหม)
+    ซึ่งเป็นจริงตลอดแม้ฐานจะล่ม — วันที่ 2026-10-06/07 รหัสผ่านฐานถูกเปลี่ยน ระบบล่ม
+    17 ชั่วโมง 17 นาที และเส้นนี้ตอบ `ok: true` ตลอดเวลานั้น ชี้คนไล่ปัญหาไปผิดทาง
+    """
     info = {"mode": mode(), "auth": auth_required()}
     if cloud:
         info["db_missing"] = db.missing_pieces()
+        ok, err = db.ping_cached()
+        info["db"] = "ok" if ok else "fail"
+        if not ok:
+            info["db_error"] = err
     return info

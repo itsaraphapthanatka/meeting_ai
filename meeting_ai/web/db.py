@@ -8,12 +8,19 @@ from __future__ import annotations
 import os
 import socket
 import threading
+import time
 import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 CONNECT_TIMEOUT = 15
+# เวลาที่ยอมรอตอนตรวจสุขภาพ — สั้นกว่าพูลปกติ (CONNECT_TIMEOUT + 10) มาก เพราะ
+# /api/health มีไว้ตอบเร็ว ๆ ว่า 'ยังดีอยู่ไหม' ไม่ใช่รอจนหมดเวลาเชื่อมต่อจริง
+PING_TIMEOUT = 3.0
+# ผลการตรวจถูกแคชไว้สั้น ๆ เพราะ /api/health เป็นเส้นสาธารณะ ใครยิงก็ได้ และพูลมีแค่
+# 4 คอนเนกชัน ถ้าตรวจจริงทุกคำขอ คนนอกยิงรัว ๆ จะดูดคอนเนกชันจนเว็บจริงใช้ไม่ได้
+PING_CACHE_SEC = 5.0
 
 _pool = None
 _pool_error: str | None = None
@@ -146,6 +153,38 @@ def meeting_count() -> int | None:
         if row is None:
             return None
         return conn.execute("select count(*) from meeting_ai.meetings").fetchone()[0]
+
+
+_ping_at = 0.0
+_ping_result: tuple[bool, str] | None = None
+
+
+def ping(timeout: float = PING_TIMEOUT) -> tuple[bool, str]:
+    """ต่อฐานจริงแล้ว `select 1` — คืน (ผ่านไหม, ชื่อคลาสของข้อผิดพลาด).
+
+    คืน **ชื่อคลาส** ไม่ใช่ข้อความของข้อยกเว้น เพราะข้อความของ psycopg พ่วงโฮสต์/ชื่อฐาน/
+    ผู้ใช้มาด้วย ซึ่งเป็นของที่ไม่ควรหลุดออกไปทาง endpoint สาธารณะ
+    """
+    gaps = missing_pieces()
+    if gaps:
+        return False, "missing_config"
+    try:
+        with _get_pool().connection(timeout=timeout) as conn:
+            conn.execute("select 1").fetchone()
+        return True, ""
+    except Exception as e:
+        return False, type(e).__name__
+
+
+def ping_cached(ttl: float = PING_CACHE_SEC) -> tuple[bool, str]:
+    """ผลการตรวจล่าสุดภายใน ttl วินาที — กันไม่ให้เส้นสาธารณะกลายเป็นช่องดูดคอนเนกชัน."""
+    global _ping_at, _ping_result
+    now = time.monotonic()
+    if _ping_result is not None and (now - _ping_at) < ttl:
+        return _ping_result
+    _ping_result = ping()
+    _ping_at = now
+    return _ping_result
 
 
 def schema_hint() -> str:
