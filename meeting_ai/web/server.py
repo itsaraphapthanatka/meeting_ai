@@ -975,9 +975,15 @@ class Handler(BaseHTTPRequestHandler):
             # ที่ใช้ได้จริงตอนไล่ปัญหา "เว็บขึ้นแต่ฐานล่ม" ซึ่งเดิมดูได้จากการลองล็อกอินเท่านั้น
             info = backend.health()
             # รายชื่อสิ่งที่ยังขาด บอกโครงสร้างระบบให้คนนอกฟรี ๆ — ให้เฉพาะแอดมิน
+            # ชื่อคลาสของข้อผิดพลาดก็เหมือนกัน (บอกว่าใช้ psycopg และล้มแบบไหน)
             if not (self.user and self.user.get("is_admin")):
                 info.pop("db_missing", None)
-            return self._json({"ok": True, **info})
+                info.pop("db_error", None)
+            # ok ต้องสะท้อนสถานะจริง ไม่ใช่ค่าคงที่ — และตอบ 503 เพื่อให้ตัวเฝ้าระวัง
+            # ภายนอกจับได้เองโดยไม่ต้องอ่าน body (ไม่มีใครรู้เลยว่าระบบล่ม 17 ชม.)
+            healthy = info.get("db") != "fail"
+            return self._json({"ok": healthy, **info},
+                              200 if healthy else HTTPStatus.SERVICE_UNAVAILABLE)
 
         if parts == ["config"] and get:
             # โหมด worker แยกเครื่อง: คนทำงานจริงคือ worker ไม่ใช่เซิร์ฟเวอร์นี้

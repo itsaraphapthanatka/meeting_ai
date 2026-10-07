@@ -9,7 +9,10 @@ import time
 import urllib.error
 import urllib.request
 
+from . import log as _log
 from .config import config
+
+log = _log.get(__name__)
 
 # โค้ด HTTP ที่ถือว่าชั่วคราว ลองใหม่ได้ (524 = Cloudflare timeout ฝั่ง origin LLM)
 _RETRY_CODES = {429, 500, 502, 503, 504, 520, 522, 524}
@@ -315,6 +318,27 @@ def _request(messages: list[dict], temperature: float, timeout: int,
             method="POST",
         )
 
+    # ข้อความที่ผู้ใช้เห็นต้องเป็นของผู้ใช้ ไม่ใช่ของคนดูแลเครื่อง (CLAUDE.md ข้อ 2)
+    #
+    # ของเดิมแปะ body ดิบ 500 ตัวอักษรลงในข้อความที่ไหลไปถึงหน้าเว็บ ซึ่งวันที่ 2026-10-07
+    # ทำให้ผู้ใช้เห็น `sk-...ea09` กับเวลาหมดอายุของคีย์ LiteLLM โผล่บนจอ — เป็นลายนิ้วมือ
+    # ของคีย์และโครงสร้างภายในของระบบที่คนนอกไม่ควรได้
+    #
+    # **ต้องคง `HTTP <code>` ไว้ในข้อความ** เพราะ _worth_chunking() อ่านเลขนี้ไปตัดสินว่า
+    # ควรลองแบ่งก้อนไหม (และจงใจไม่อ่าน body — ADR-001 ข้อ 2.4)
+    def _http_message(code: int, body: str) -> str:
+        log.warning(f"LLM ตอบ HTTP {code} — คำตอบดิบ: {body[:500]}")
+        if code in (401, 403):
+            why = ("เครื่องประมวลผลยืนยันตัวกับบริการ AI ไม่ผ่าน "
+                   "(คีย์หมดอายุหรือถูกเพิกถอน) — แจ้งผู้ดูแลเครื่องประมวลผล")
+        elif code == 429:
+            why = "บริการ AI ปฏิเสธเพราะถูกเรียกถี่เกินไป — ลองใหม่อีกครั้ง"
+        elif code >= 500:
+            why = "บริการ AI ขัดข้องชั่วคราว — ลองใหม่อีกครั้ง"
+        else:
+            why = "บริการ AI ไม่รับคำขอนี้"
+        return f"LLM ตอบกลับผิดพลาด HTTP {code} — {why}"
+
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -325,16 +349,19 @@ def _request(messages: list[dict], temperature: float, timeout: int,
                 last_err = RuntimeError(f"HTTP {e.code}")
                 time.sleep(2 * (attempt + 1))
                 continue
-            raise RuntimeError(f"LLM ตอบกลับผิดพลาด HTTP {e.code}: {body[:500]}") from e
+            raise RuntimeError(_http_message(e.code, body)) from e
         except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
             reason = getattr(e, "reason", e)
             if attempt < retries:
                 last_err = RuntimeError(f"ต่อ LLM ไม่สำเร็จ: {reason}")
                 time.sleep(2 * (attempt + 1))
                 continue
-            raise RuntimeError(f"ต่อ LLM endpoint ไม่ได้: {reason}") from e
+            log.warning(f"ต่อ LLM endpoint ไม่ได้ — สาเหตุดิบ: {reason}")
+            raise RuntimeError("ต่อบริการ AI ไม่ได้ — ตรวจที่เครื่องประมวลผล") from e
 
-    raise RuntimeError(f"เรียก LLM ไม่สำเร็จหลังลอง {retries + 1} ครั้ง: {last_err}")
+    # last_err เป็นของรอบก่อน ๆ ที่ยอมให้ลองใหม่ — อาจมีสาเหตุดิบติดมา เก็บไว้ที่ log
+    log.warning(f"เรียก LLM ไม่สำเร็จหลังลอง {retries + 1} ครั้ง — ครั้งสุดท้าย: {last_err}")
+    raise RuntimeError(f"เรียก LLM ไม่สำเร็จหลังลอง {retries + 1} ครั้ง")
 
 
 def _stream_chat(req: urllib.request.Request, timeout: int) -> tuple[str, str]:
