@@ -544,6 +544,11 @@ class FakeStore:
                 existing["name"] = name
             return {k: v for k, v in existing.items() if k != "password_hash"}
 
+    def meetings_of(self, owner_id: str) -> list[dict]:
+        """ตรง pgstore.meetings_of — ไม่กรอง visibility เพราะด่านอยู่ที่ชั้น endpoint."""
+        out = [m for m in self.meetings.values() if m.get("owner_id") == owner_id]
+        return list(reversed(out))
+
     def users_list(self) -> list[dict]:
         """ตรง pgstore.users_list — คีย์ชุดเดียวกันเป๊ะ ไม่งั้นหน้าเว็บจะพังเฉพาะบน production.
 

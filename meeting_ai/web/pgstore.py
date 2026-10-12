@@ -972,6 +972,22 @@ def search(query: str = "", user_id: str | None = None) -> list[dict]:
     return out
 
 
+def meetings_of(owner_id: str) -> list[dict]:
+    """การประชุมทั้งหมดที่ผู้ใช้คนนี้เป็นเจ้าของ — เรียงใหม่สุดก่อน.
+
+    ต่างจาก `search()` ตรงที่**ไม่กรองด้วย visibility** เพราะผู้เรียกเดียวคือหน้าแอดมิน
+    ซึ่งผ่านด่าน is_admin มาแล้ว (BACKLOG #99) — การกรองสิทธิ์อยู่ที่ชั้น endpoint
+    ไม่ใช่ที่นี่ จะได้ไม่มีสองที่ที่ต้องถูกต้องพร้อมกัน
+    """
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"""select {_META_COLS} from meeting_ai.meetings
+                where owner_id = %s order by created_at desc limit 500""",
+            (owner_id,),
+        ).fetchall()
+    return [_meta_from_row(r) for r in rows]
+
+
 def stats(user_id: str | None = None) -> dict:
     with db.connect() as conn:
         row = conn.execute(
