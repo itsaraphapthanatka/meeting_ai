@@ -501,13 +501,14 @@ async function inviteMember() {
   try {
     const out = await api('/api/auth/invite',
       jsonPost({ email: email.trim() || null, max_uses: uses }));
+    // **คัดลอกลิงก์ ไม่ใช่รหัสเปล่า** — ของเดิมสร้างลิงก์นี้ไว้แล้วแต่ส่งเข้า console.log
+    // คนกดเชิญจึงได้แต่รหัสที่ต้องอธิบายเองว่าเอาไปใส่ตรงไหน และคนรับก็ไปไม่ถูก
     const link = `${location.origin}/?invite=${encodeURIComponent(out.code)}`;
-    await copyText(out.code);
+    await copyText(link);
     // บอกจำนวนคนและวันหมดอายุไปด้วย ไม่งั้นคนออกรหัสไม่มีทางรู้ว่าใบนี้ใช้ได้กี่ครั้ง
-    const who = out.email ? ` — สำหรับ ${out.email}`
-      : ` — ใช้ได้ ${out.max_uses || 1} คน`;
-    banner(`รหัสเชิญ (คัดลอกให้แล้ว): ${out.code}${who} · หมดอายุใน 14 วัน`);
-    console.log('ลิงก์สมัคร:', link);
+    const who = out.email ? ` สำหรับ ${out.email}`
+      : ` ใช้ได้ ${out.max_uses || 1} คน`;
+    banner(`คัดลอกลิงก์เชิญให้แล้ว — ส่งให้ได้เลย ·${who} · หมดอายุใน 14 วัน`);
   } catch (e) { banner(`สร้างรหัสเชิญไม่สำเร็จ: ${e.message}`); }
 }
 
@@ -556,9 +557,16 @@ function showShareConfirm(token) {
   $('#sc-cancel').onclick = () => location.replace('/');
 }
 
+/** รหัสเชิญที่ติดมากับ URL (`/?invite=...`) — ใช้ตัดสินว่าจะเปิดหน้าไหนด้วย */
+const inviteFromUrl = () => new URLSearchParams(location.search).get('invite') || '';
+
 function showAuth(mode) {
   // ครั้งแรกของระบบยังไม่มีใคร ต้องสมัครก่อน
-  const signup = mode === 'signup' || (mode === undefined && state.firstRun);
+  // คนที่เปิดลิงก์เชิญคือคนที่**ยังไม่มีบัญชี** — ของเดิมพาไปหน้า 'เข้าสู่ระบบ' ซึ่งซ่อน
+  // ช่องรหัสเชิญไว้และไม่เติมโค้ดให้ ต้องไปสังเกตลิงก์เล็ก ๆ ท้ายฟอร์มเองถึงจะไปต่อได้
+  // (วัดจริงบนเบราว์เซอร์: หัวข้อ 'เข้าสู่ระบบ' · ช่องรหัสเชิญ display:none · ค่าว่าง)
+  const signup = mode === 'signup'
+    || (mode === undefined && (state.firstRun || !!inviteFromUrl()));
   document.body.classList.add('auth-only');
   const panel = $('#panel');
   panel.innerHTML = '';
@@ -581,7 +589,7 @@ function showAuth(mode) {
   $('#a-switch').onclick = () => showAuth(signup ? 'login' : 'signup');
 
   // รหัสเชิญมาทาง ?invite= ก็เติมให้เลย
-  const fromUrl = new URLSearchParams(location.search).get('invite');
+  const fromUrl = inviteFromUrl();
   if (fromUrl && signup) $('#a-invite').value = fromUrl;
 
   const fail = (msg) => {
