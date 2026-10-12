@@ -23,6 +23,7 @@ test_bug_012_concurrent_signups_* — ได้บัญชี/แอดมิ�
 from __future__ import annotations
 
 import threading
+import time
 import unittest
 from contextlib import contextmanager
 from unittest import mock
@@ -209,6 +210,13 @@ class TestPgstoreClaimSqlShape(unittest.TestCase):
         `quota` บอกว่าให้ทำเหมือนฐานมีคอลัมน์ max_uses/used_count แล้วหรือยัง
         (BACKLOG #95) — ต้องตรึงทั้งสองทาง เพราะทั้งคู่ shipped พร้อมกัน:
         deploy ถึง production ก่อน db-init เสมอ ช่วงนั้นโค้ดต้องเดินทางเก่าได้
+
+        ต้องตรึง `_quota_checked_at` ด้วย ไม่ใช่แค่ `_quota_ready`: ฝั่ง False ของ
+        `invites_have_quota()` จะลองใหม่เมื่อผลเก่าเกิน 60 วินาที ไม่ตรึงเวลาไว้
+        มันจะยิง query ตรวจคอลัมน์เพิ่มมาอีกหนึ่ง แล้วเทสต์นี้จะแดงแบบขึ้นกับ
+        *ลำดับและความเร็ว* ของสวีท — ของจริงที่เจอ: รันทั้งสวีทในเครื่องเขียว
+        (เทสต์ #95 ที่รันก่อนหน้าเพิ่ง warm ค่านี้ไว้) แต่ CI แดงทั้ง windows
+        และ postgres เพราะช่วงห่างเกิน 60 วินาที
         """
         calls: list[tuple] = []
 
@@ -227,7 +235,8 @@ class TestPgstoreClaimSqlShape(unittest.TestCase):
             yield FakeConn()
 
         with mock.patch.object(pgstore.db, "connect", fake_connect), \
-             mock.patch.object(pgstore, "_quota_ready", quota):
+             mock.patch.object(pgstore, "_quota_ready", quota), \
+             mock.patch.object(pgstore, "_quota_checked_at", time.monotonic()):
             fn(*args)
         self.assertEqual(len(calls), 1, calls)
         return calls[0]
