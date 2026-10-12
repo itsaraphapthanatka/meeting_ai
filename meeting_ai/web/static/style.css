@@ -1560,6 +1560,15 @@ body.auth-only .help-back { display: inline-block; }
   vertical-align: 1px;
 }
 
+/* แถวในตารางผู้ใช้กดได้ — บอกด้วย cursor และสีพื้นตอนชี้ ไม่ใช่ให้เดาเอา */
+.utable tr.u-row { cursor: pointer; }
+.utable tr.u-row:hover td,
+.utable tr.u-row:focus-visible td { background: var(--accent-soft); }
+.utable tr.u-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ป้าย 'เฉพาะฉัน' ไม่ใช่สถานะพิเศษ เป็นค่าเริ่มต้น — อย่าให้เด่นกว่าชื่อการประชุม */
+.u-badge-quiet { background: var(--surface-2); color: var(--muted); font-weight: 500; }
+
 /* คนที่สมัครแล้วเงียบหาย = รหัสเชิญถูกใช้ไปแต่ไม่มีใครตามต่อ ใช้สีเดียวกับคำเตือน
    ที่แปลว่า "ควรทำอะไรสักอย่าง" ไม่ใช่สีแดงที่แปลว่าพัง */
 .u-never { color: var(--warn); }

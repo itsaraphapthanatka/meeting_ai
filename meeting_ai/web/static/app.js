@@ -782,7 +782,8 @@ function renderUsers(users, summary) {
     const who = u.name
       ? `${esc(u.name)}${badge}<span class="u-mail">${esc(u.email)}</span>`
       : `${esc(u.email)}${badge}`;
-    return `<tr${cold ? ' class="u-cold"' : ''}>
+    return `<tr class="u-row${cold ? ' u-cold' : ''}" data-uid="${esc(u.id)}"
+      data-name="${esc(u.name || u.email)}" tabindex="0">
       <td>${who}</td>
       <td title="${esc(fmtDate(u.created_at))}">${esc(sinceText(u.created_at)) || '—'}</td>
       <td title="${esc(fmtDate(u.last_login))}">${
@@ -803,6 +804,57 @@ function renderUsers(users, summary) {
       <tbody>${rows}</tbody></table>`
       : '<p class="muted">ยังไม่มีใครสมัคร</p>'}
   </div>`;
+
+  // กดที่แถวเพื่อดูการประชุมของคนนั้น — ผูกที่ตาราง ไม่ใช่ทีละแถว
+  // (แถวถูกวาดใหม่ทุกครั้งที่โหลด ผูกทีละแถวจะพอกพูน)
+  const table = $('#panel .utable');
+  if (table) {
+    const open = (tr) => tr && showUserMeetings(tr.dataset.uid, tr.dataset.name);
+    table.onclick = (e) => open(e.target.closest('tr.u-row'));
+    table.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open(e.target.closest('tr.u-row'));
+      }
+    };
+  }
+}
+
+/** การประชุมของผู้ใช้คนหนึ่ง — แอดมินเท่านั้น (เซิร์ฟเวอร์กันอีกชั้น) */
+async function showUserMeetings(uid, name) {
+  if (!uid) return;
+  const panel = $('#panel');
+  panel.innerHTML = '<div class="users"><p class="muted">กำลังโหลด…</p></div>';
+  panel.scrollTop = 0;
+  try {
+    const out = await api(`/api/admin/users/${encodeURIComponent(uid)}/meetings`);
+    const rows = (out.meetings || []).map((m) => `<tr>
+      <td><button class="linkbtn um-open" data-id="${esc(m.id)}">${esc(m.title)}</button>
+        ${m.visibility === 'team' ? '<span class="u-badge">👥 ทั้งทีม</span>'
+          : '<span class="u-badge u-badge-quiet">🔒 เฉพาะฉัน</span>'}</td>
+      <td title="${esc(fmtDate(m.created))}">${esc(sinceText(m.created)) || '—'}</td>
+      <td class="u-num">${esc(fmtDuration(m.duration))}</td>
+      <td class="u-num">${Number(m.segments || 0)}</td>
+    </tr>`).join('');
+
+    panel.innerHTML = `<div class="users">
+      <button id="um-back" class="btn btn-sm" type="button">‹ กลับไปรายชื่อผู้ใช้</button>
+      <h2>การประชุมของ ${esc(name || 'ผู้ใช้')}</h2>
+      <p class="muted">แอดมินเปิดอ่านได้ทุกอัน · การเปิดดูถูกบันทึกไว้ที่เซิร์ฟเวอร์</p>
+      ${rows ? `<table class="utable">
+        <thead><tr><th>ชื่อการประชุม</th><th>เมื่อไหร่</th>
+          <th class="u-num">ความยาว</th><th class="u-num">ประโยค</th></tr></thead>
+        <tbody>${rows}</tbody></table>`
+        : '<p class="muted">คนนี้ยังไม่มีการประชุม</p>'}
+    </div>`;
+    $('#um-back').onclick = () => showUsers();
+    $$('#panel .um-open').forEach((b) => {
+      b.onclick = () => openMeeting(b.dataset.id);
+    });
+  } catch (e) {
+    panel.innerHTML = `<div class="users"><h2>การประชุมของ ${esc(name || 'ผู้ใช้')}</h2>`
+      + `<p class="notice">${esc(e.message)}</p></div>`;
+  }
 }
 
 /** คู่มือการใช้งาน — เนื้อหาทั้งหมดเป็น static อยู่ใน <template> ไม่มีการเรียก API

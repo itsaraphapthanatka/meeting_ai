@@ -90,6 +90,8 @@ _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
 # proxy ข้างหน้าอ่านไม่เหมือนเรา (parser differential = ทางเปิดให้ request smuggling)
 _CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# uuid ของผู้ใช้ (ของจริง) และ id แบบสั้นที่ FakeStore ใช้ในเทสต์
+_USER_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 MIN_PASSWORD = 8
 # เพดานจำนวนคนต่อรหัสเชิญหนึ่งใบ (BACKLOG #95)
 INVITE_MAX_USES = 50
@@ -606,20 +608,31 @@ class Handler(BaseHTTPRequestHandler):
         return (self.user or {}).get("id")
 
     def _level(self, mid: str) -> str:
-        """สิทธิ์กับการประชุมนี้: owner | team | share-edit | share-read | none.
+        """สิทธิ์กับการประชุมนี้: owner | team | admin-read | share-edit | share-read | none.
 
         ห้ามคืน owner/team แค่เพราะล็อกอินอยู่ — ไม่งั้นใครก็เดา id เปิดของคนอื่นได้
+
+        `admin-read` เป็นระดับของตัวเอง **ไม่ใช่ owner/team** โดยตั้งใจ: `_may_write()`
+        เช็กรายชื่อระดับที่เขียนได้แบบระบุชื่อ แอดมินจึงอ่านได้อย่างเดียว แก้/ลบ/แชร์ไม่ได้
+        เจ้าของระบบสั่งให้แอดมินดูได้ทั้งหมด 2026-10-12 — คู่มือถูกแก้ให้ตรงด้วยแล้ว
         """
         if self.user:
             lvl = store.access(mid, self.user_id)
             if lvl != "none":
                 return lvl
+            if self.user.get("is_admin") and store.get(mid) is not None:
+                return "admin-read"
         if self.share and self.share.get("meeting_id") == mid:
             return "share-edit" if self.share.get("can_edit") else "share-read"
         return "none"
 
     def _may_read(self, mid: str) -> bool:
-        return self._level(mid) != "none"
+        lvl = self._level(mid)
+        # อำนาจที่ไม่มีใครตรวจสอบได้คือของที่ย้อนกลับมาเจ็บทีหลัง — แอดมินเปิดของคนอื่น
+        # เมื่อไหร่ ลง log ของเซิร์ฟเวอร์ไว้เสมอ (ไม่ใช่ของผู้ใช้ จึงไม่ขึ้นหน้าเว็บ)
+        if lvl == "admin-read":
+            log.info(f"[admin-read] {self.user.get('email', '?')} เปิดการประชุม {mid}")
+        return lvl != "none"
 
     def _may_write(self, mid: str) -> bool:
         return self._level(mid) in ("owner", "team", "share-edit")
@@ -659,7 +672,12 @@ class Handler(BaseHTTPRequestHandler):
         # ห้ามเทียบตรงๆ: คนถือลิงก์แชร์ไม่ได้ล็อกอิน user_id เป็น None จะไปตรงกับงานที่ไม่มีเจ้าของ
         if owner and owner == self.user_id:
             return True
-        return self._may_read(job.get("meeting_id") or job["id"])
+        # ใช้ _level() ตรง ๆ ไม่ผ่าน _may_read() ด้วยเหตุผลสองข้อ (BACKLOG #99):
+        # 1. admin-read ต้องไม่นับว่า "ของฉัน" ไม่งั้นป้าย "คิวระบบ" ของ #41 หายไปทั้งหมด
+        #    แอดมินจะแยกงานตัวเองจากงานคนอื่นไม่ออก ซึ่งเป็นเหตุผลที่ป้ายนั้นมีอยู่
+        # 2. ฟังก์ชันนี้ถูกเรียกทุกงานทุกครั้งที่หน้าเว็บ poll คิว (ทุก 1.5 วินาที)
+        #    ถ้าผ่าน _may_read() ร่องรอยการเข้าดูของแอดมินจะท่วม log จนหาของจริงไม่เจอ
+        return self._level(job.get("meeting_id") or job["id"]) not in ("none", "admin-read")
 
     def _may_read_job(self, job: dict) -> bool:
         """ดูสถานะงานนี้ได้ไหม — เดิมใครก็เปิด /api/jobs/{id} ของคนอื่นได้ถ้ารู้ id.
@@ -1056,6 +1074,27 @@ class Handler(BaseHTTPRequestHandler):
         # รายชื่อผู้สมัคร — ข้อมูลส่วนบุคคลของคนทั้งระบบ จึงเป็นของแอดมินเท่านั้น
         # และมีความหมายเฉพาะโหมดที่มีบัญชีผู้ใช้ (โหมดไฟล์ไม่มีตาราง users เลย)
         # วางหลังบล็อกตรวจล็อกอินด้านบน จึงไม่มีทางถูกเรียกโดยคนที่ยังไม่ล็อกอิน
+        # การประชุมของผู้ใช้คนหนึ่ง — แอดมินเท่านั้น (BACKLOG #99)
+        # id มาจาก URL จึงต้องผ่าน valid_id() ก่อนเอาไปใช้ แม้จะส่งต่อให้ SQL ที่ bind ค่าก็ตาม
+        if (len(parts) == 4 and parts[0] == "admin" and parts[1] == "users"
+                and parts[3] == "meetings" and get):
+            if not backend.cloud:
+                return self._error(HTTPStatus.NOT_FOUND, "โหมดนี้ไม่มีระบบบัญชีผู้ใช้")
+            if not (self.user and self.user.get("is_admin")):
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   "ต้องเป็นแอดมินจึงดูการประชุมของคนอื่นได้")
+            uid = parts[2]
+            # `store.valid_id()` เป็นรูปแบบของ **id การประชุม** (YYYYMMDD-HHMMSS-hex)
+            # ไม่ใช่ uuid ของผู้ใช้ — ใช้ตัวนั้นจะปฏิเสธทุกค่าที่ถูกต้อง
+            # ค่านี้ถูก bind เข้า SQL อยู่แล้ว ที่ต้องกันคือความยาวเกินเหตุกับอักขระ
+            # ที่ไปโผล่ใน log ได้ (log injection) จึงจำกัดชุดอักขระให้แคบไว้ก่อน
+            if not _USER_ID_RE.fullmatch(uid):
+                return self._error(HTTPStatus.BAD_REQUEST, "รหัสผู้ใช้ไม่ถูกต้อง")
+            rows = store.meetings_of(uid)
+            log.info(f"[admin-read] {self.user.get('email', '?')} "
+                     f"ดูรายการการประชุมของ {uid} ({len(rows)} รายการ)")
+            return self._json({"meetings": rows})
+
         if parts == ["admin", "users"] and get:
             if not backend.cloud:
                 return self._error(HTTPStatus.NOT_FOUND,
