@@ -22,13 +22,19 @@ import getpass
 import http.cookiejar
 import io
 import json
+import string
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 EMAIL_COLUMNS = ("work_email", "email")
 SESSION_COOKIE = "mai_session"
+# ตัวอักษรที่ค่าคุกกี้มีได้ — token ของ create_session() เป็น url-safe base64
+# ถ้าไม่กรองตรงนี้ ค่าที่วางผิด (เช่นภาษาไทย) จะไปพังที่ http.client เป็น
+# UnicodeEncodeError ดิบ ๆ แทนที่จะบอกคนใช้ว่าวางผิด (เทสต์จับได้ตอนเขียน)
+_COOKIE_CHARS = frozenset(string.ascii_letters + string.digits + "-._~+/=%*")
 
 
 def read_csv_emails(path: Path) -> list[dict]:
@@ -110,6 +116,27 @@ class Client:
             raise SystemExit("ล็อกอินผ่านแต่ไม่ได้คุกกี้ session กลับมา — หยุดไว้ก่อน")
         return user
 
+    def use_cookie(self, value: str) -> None:
+        """ใช้ session ที่ล็อกอินไว้แล้วแทนการล็อกอินใหม่.
+
+        ยัดคุกกี้เข้า jar เองแทนที่จะแปะ header Cookie ดิบ ๆ เพราะ urllib จะได้
+        จัดการ redirect/โดเมนให้ตามกติกาเดียวกับตอนล็อกอินปกติ
+        """
+        value = value.strip()
+        if not (8 <= len(value) <= 512 and set(value) <= _COOKIE_CHARS):
+            raise SystemExit("ค่าคุกกี้ไม่ถูกรูป — คัดลอกเฉพาะค่าของ mai_session "
+                             "ไม่เอาชื่อคุกกี้ เครื่องหมาย = หรือช่องว่าง")
+        host = urlsplit(self.base).hostname or ""
+        self.jar.set_cookie(http.cookiejar.Cookie(
+            version=0, name=SESSION_COOKIE, value=value, port=None,
+            port_specified=False, domain=host, domain_specified=False,
+            domain_initial_dot=False, path="/", path_specified=True,
+            secure=False, expires=None, discard=True, comment=None,
+            comment_url=None, rest={}, rfc2109=False))
+
+    def me(self) -> dict:
+        return self._call("GET", "/api/auth/me").get("user") or {}
+
     def users(self) -> list[dict]:
         return self._call("GET", "/api/admin/users").get("users") or []
 
@@ -127,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apply", action="store_true", help="ออกรหัสจริง (ไม่ใส่ = ซ้อมอย่างเดียว)")
     ap.add_argument("--out", type=Path, default=None, help="ไฟล์ผลลัพธ์ (ค่าเริ่มต้น: ข้าง CSV)")
     ap.add_argument("--admin", default="", help="อีเมลแอดมินที่ใช้ล็อกอิน (ไม่ใส่จะถาม)")
+    ap.add_argument("--cookie", action="store_true",
+                    help="ใช้คุกกี้ mai_session จากเบราว์เซอร์แทนการล็อกอินด้วยรหัสผ่าน")
     args = ap.parse_args(argv)
 
     if not args.csv.is_file():
@@ -134,11 +163,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     rows = read_csv_emails(args.csv)
-    admin_email = args.admin or input("อีเมลแอดมิน: ").strip()
-    password = getpass.getpass("รหัสผ่าน (ไม่แสดงบนจอ): ")
-
     c = Client(args.base)
-    me = c.login(admin_email, password)
+    if args.cookie:
+        # รับทางพรอมต์ ไม่ใช่ทาง argv — ค่าใน argv ติดอยู่ใน history ของเชลล์
+        # และโผล่ในรายการโพรเซส ซึ่งคุกกี้ session ก็ใช้แทนรหัสผ่านได้เต็ม ๆ
+        c.use_cookie(getpass.getpass("วางค่าคุกกี้ mai_session (ไม่แสดงบนจอ): "))
+        me = c.me()
+        if not me:
+            print("คุกกี้นี้ใช้ไม่ได้หรือหมดอายุแล้ว — ล็อกอินใหม่ในเบราว์เซอร์แล้วคัดลอกมาอีกครั้ง")
+            return 1
+        print(f"ใช้ session ของ {me.get('email') or me.get('id')}")
+    else:
+        admin_email = args.admin or input("อีเมลแอดมิน: ").strip()
+        password = getpass.getpass("รหัสผ่าน (ไม่แสดงบนจอ): ")
+        me = c.login(admin_email, password)
     if not me.get("is_admin"):
         print("บัญชีนี้ไม่ใช่แอดมิน — ออกรหัสเชิญไม่ได้")
         return 1
