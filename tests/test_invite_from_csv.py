@@ -53,9 +53,14 @@ class _Stub(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def _authed(self):
-        return "mai_session=tok-1" in (self.headers.get("Cookie") or "")
+        return "mai_session=tok-abcdef12" in (self.headers.get("Cookie") or "")
 
     def do_GET(self):
+        if self.path == "/api/auth/me":
+            if not self._authed():
+                return self._json(200, {"user": None, "first_run": False})
+            return self._json(200, {"user": {"id": "u1", "email": "Admin@x.co",
+                                             "is_admin": type(self).admin}})
         if self.path == "/api/admin/users":
             if not self._authed():
                 return self._json(403, {"error": "ต้องเป็นแอดมิน"})
@@ -68,7 +73,7 @@ class _Stub(BaseHTTPRequestHandler):
         if self.path == "/api/auth/login":
             if body.get("password") != "pw":
                 return self._json(401, {"error": "อีเมลหรือรหัสผ่านไม่ถูกต้อง"})
-            cookie = "mai_session=tok-1; Path=/; HttpOnly" if type(self).set_cookie else None
+            cookie = "mai_session=tok-abcdef12; Path=/; HttpOnly" if type(self).set_cookie else None
             return self._json(200, {"user": {"id": "u1", "email": body["email"],
                                              "is_admin": type(self).admin}}, cookie=cookie)
         if self.path == "/api/auth/invite":
@@ -198,6 +203,65 @@ class TestApply(_ServerCase):
         self.assertEqual(rc, 0)
         self.assertEqual(_Stub.issued, [])
         self.assertFalse(self.out.exists())
+
+
+class TestCookieLogin(_ServerCase):
+    """ทางเลี่ยงรหัสผ่าน — ใช้ session ที่ล็อกอินค้างไว้ในเบราว์เซอร์.
+
+    มีไว้เพราะของจริงเกิดแล้ว: เจ้าของรันแล้วได้ 401 จากหน้าล็อกอิน การไล่หาว่า
+    รหัสผ่านตัวไหนถูกไม่ควรเป็นเงื่อนไขของการออกรหัสเชิญ
+    """
+
+    def run_cookie(self, value, *extra):
+        out = io.StringIO()
+        with mock.patch.object(inv.getpass, "getpass", return_value=value):
+            with mock.patch("sys.stdout", out):
+                rc = inv.main([str(self.csv), "--base", self.base, "--cookie", *extra])
+        return rc, out.getvalue()
+
+    def test_a_valid_cookie_replaces_the_password(self):
+        rc, _ = self.run_cookie("tok-abcdef12", "--apply", "--out", str(self.out))
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(_Stub.issued), ["b@x.co", "c@x.co"])
+
+    def test_an_expired_cookie_stops_before_issuing_anything(self):
+        rc, said = self.run_cookie("tok-expired99", "--apply", "--out", str(self.out))
+        self.assertEqual(rc, 1)
+        self.assertEqual(_Stub.issued, [])
+        self.assertIn("คุกกี้", said)
+
+    def test_a_paste_that_is_not_a_cookie_value_says_so(self):
+        """วางผิดเป็นภาษาไทยเคยพังเป็น UnicodeEncodeError ดิบ ๆ ที่ http.client
+
+        — header เป็น latin-1 เท่านั้น ข้อความ error ที่ขึ้นหน้าจอเป็นของผู้ใช้
+        ไม่ใช่ traceback ของ Python (กติกาข้อ 2 ของ CLAUDE.md)
+        """
+        with mock.patch.object(inv.getpass, "getpass", return_value="วางผิดมาเป็นภาษาไทย"):
+            with mock.patch("sys.stdout", io.StringIO()):
+                with self.assertRaises(SystemExit) as e:
+                    inv.main([str(self.csv), "--base", self.base, "--cookie", "--apply"])
+        self.assertIn("ค่าคุกกี้ไม่ถูกรูป", str(e.exception))
+        self.assertEqual(_Stub.issued, [])
+
+    def test_a_non_admin_session_still_cannot_issue(self):
+        _Stub.admin = False
+        rc, _ = self.run_cookie("tok-abcdef12", "--apply", "--out", str(self.out))
+        self.assertEqual(rc, 1)
+        self.assertEqual(_Stub.issued, [])
+
+    def test_the_cookie_is_never_an_argv_value(self):
+        """ค่าใน argv ติด history ของเชลล์และโผล่ในรายการโพรเซส.
+
+        ต้องดูด้วยว่า *argparse* เป็นคนปฏิเสธ (exit code 2) ไม่ใช่แค่ "มี SystemExit"
+        — ถ้า --cookie รับค่าได้ โปรแกรมก็ยังจบด้วย SystemExit จากตัวกรองค่าคุกกี้
+        อยู่ดี เทสต์รุ่นแรกจึงเขียวทั้งที่กลไกถูกถอดออก (เจอตอนกลับกลไก)
+        """
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            with self.assertRaises(SystemExit) as e:
+                inv.main([str(self.csv), "--base", self.base, "--cookie", "tok-abcdef12"])
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("unrecognized arguments", err.getvalue())
 
 
 class TestItRefusesWhenItShould(_ServerCase):
