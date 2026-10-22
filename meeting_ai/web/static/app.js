@@ -461,6 +461,7 @@ function renderUserBox() {
       + (isAdmin() ? `<button id="btn-live-toggle" class="btn btn-sm" type="button">${liveToggleLabel()}</button>` : '')
       + (isAdmin() ? '<button id="btn-invite" class="btn btn-sm" type="button">เชิญสมาชิก</button>' : '')
       + (isAdmin() ? '<button id="btn-users" class="btn btn-sm" type="button">ผู้ใช้</button>' : '')
+      + (isAdmin() ? '<button id="btn-invites" class="btn btn-sm" type="button">รหัสเชิญ</button>' : '')
       + '<button id="btn-logout" class="btn btn-sm" type="button">ออกจากระบบ</button>';
     $('#btn-logout').onclick = async () => {
       await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
@@ -470,6 +471,8 @@ function renderUserBox() {
     if (inv) inv.onclick = inviteMember;
     const usr = $('#btn-users');
     if (usr) usr.onclick = () => showUsers();
+    const invs = $('#btn-invites');
+    if (invs) invs.onclick = () => showInvites();
     const lt = $('#btn-live-toggle');
     if (lt) lt.onclick = toggleLiveRecording;
   } else if (state.share) {
@@ -731,6 +734,7 @@ const VIEW_BAR = {
   new:     { title: 'ประชุมใหม่', back: true },
   devices: { title: 'เครื่องประมวลผล', back: true },
   users:   { title: 'ผู้ใช้ที่สมัครเข้ามา', back: true },
+  invites: { title: 'รหัสเชิญที่ออกไปแล้ว', back: true },
   help:    { title: 'คู่มือการใช้งาน', back: true },
   // หน้ารายละเอียดไม่ใส่ชื่อบนแถบ เพราะชื่อการประชุมในเนื้อหาแก้ไขได้ (contenteditable)
   // มีสองที่จะสับสนว่าต้องแก้อันไหน
@@ -778,6 +782,107 @@ async function showUsers() {
     panel.innerHTML = `<div class="users"><h2>ผู้ใช้ที่สมัครเข้ามา</h2>`
       + `<p class="notice">${esc(e.message)}</p></div>`;
   }
+}
+
+/** รหัสเชิญที่ออกไปแล้ว — แอดมินเท่านั้น (เซิร์ฟเวอร์กันอีกชั้น ไม่ได้พึ่งการซ่อนปุ่ม).
+ *
+ *  หน้านี้ **ไม่มีทางแสดงตัวรหัส** เพราะเซิร์ฟเวอร์เก็บไว้เป็น sha256 ตั้งแต่ตอนออก
+ *  มันตอบได้แค่ "ออกไปกี่ใบ ใครใช้ไปแล้ว เหลือโควตาเท่าไร" กับให้ยกเลิกใบที่ไม่ใช้แล้ว
+ *  (BACKLOG #102 — เกิดจากใบ 30 คนที่หายไปกับคลิปบอร์ดใน #101)
+ */
+async function showInvites() {
+  state.current = null;
+  state.meeting = null;
+  setHash('#invites');
+  setView("invites");
+  const panel = $("#panel");
+  panel.innerHTML = '<div class="users"><p class="muted">กำลังโหลด…</p></div>';
+  panel.scrollTop = 0;
+  try {
+    const out = await api("/api/admin/invites");
+    renderInvites(out.invites || []);
+  } catch (e) {
+    panel.innerHTML = '<div class="users"><h2>รหัสเชิญที่ออกไปแล้ว</h2>'
+      + `<p class="notice">${esc(e.message)}</p></div>`;
+  }
+}
+
+/** "อีกกี่วันจะหมดอายุ" — คนละอย่างกับ sinceText() ที่ตอบ "ผ่านมานานแค่ไหน".
+ *
+ *  ใช้ sinceText() กับคอลัมน์วันหมดอายุไม่ได้: มันคืนค่าว่างสำหรับทุกเวลาในอนาคต
+ *  คอลัมน์เลยขึ้น "—" ทุกแถวที่ยังไม่หมดอายุ ซึ่งคือทุกแถวที่สำคัญ
+ *  (เห็นตอนเปิดดูจริงบนเบราว์เซอร์ ไม่ใช่ตอนเขียน)
+ */
+function untilText(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const days = Math.ceil((d.getTime() - Date.now()) / 86400000);
+  if (days < 0) return "หมดแล้ว";
+  if (days === 0) return "วันนี้";
+  if (days === 1) return "พรุ่งนี้";
+  if (days < 30) return `อีก ${days} วัน`;
+  return `อีก ${Math.floor(days / 30)} เดือน`;
+}
+
+/** นาฬิกาของเซิร์ฟเวอร์อาจล้ำหน้าเบราว์เซอร์ไปไม่กี่ชั่วโมง ใบที่เพิ่งออกจึงเป็น
+ *  "อนาคต" ในสายตา sinceText() แล้วได้ค่าว่าง — ของที่เพิ่งเกิดคือ "วันนี้" */
+const agoText = (iso) => (iso ? (sinceText(iso) || "วันนี้") : "");
+
+const INVITE_STATUS = {
+  open:    { label: "ใช้ได้อยู่", cls: "u-badge" },
+  used:    { label: "ใช้ครบแล้ว", cls: "u-badge u-badge-quiet" },
+  expired: { label: "หมดอายุ", cls: "u-badge u-badge-quiet" },
+};
+
+function renderInvites(invites) {
+  const count = (st) => invites.filter((i) => i.status === st).length;
+  const rows = invites.map((i) => {
+    const st = INVITE_STATUS[i.status] || INVITE_STATUS.open;
+    // ใบที่ผูกอีเมลไว้ใช้ได้คนเดียวเสมอ การโชว์ "0/1" จึงไม่ได้บอกอะไรเพิ่ม
+    const used = i.max_uses > 1 ? `${i.used_count}/${i.max_uses}` : (i.used_count ? "ใช้แล้ว" : "—");
+    return `<tr class="u-row${i.status === "open" ? "" : " u-cold"}">
+      <td>${i.email ? esc(i.email) : '<span class="u-never">ใครก็ได้</span>'}</td>
+      <td title="${esc(fmtDate(i.created_at))}">${esc(agoText(i.created_at)) || "—"}</td>
+      <td title="${esc(fmtDate(i.expires_at))}">${esc(untilText(i.expires_at)) || "—"}</td>
+      <td class="u-num">${esc(used)}</td>
+      <td><span class="${st.cls}">${esc(st.label)}</span></td>
+      <td>${i.used_by ? esc(i.used_by) : "—"}</td>
+      <td><button class="btn btn-sm btn-danger inv-revoke" data-ref="${esc(i.ref)}"
+          type="button">ยกเลิก</button></td>
+    </tr>`;
+  }).join("");
+
+  $("#panel").innerHTML = `<div class="users">
+    <h2>รหัสเชิญที่ออกไปแล้ว</h2>
+    <p class="muted">ทั้งหมด ${invites.length} ใบ · ใช้ได้อยู่ ${count("open")}
+      · ใช้ครบแล้ว ${count("used")} · หมดอายุ ${count("expired")}</p>
+    <p class="help-note"><b>ดูตัวรหัสย้อนหลังไม่ได้</b> — ระบบเก็บไว้เป็นลายนิ้วมือ
+      (hash) ตั้งแต่ตอนออก ไม่ได้เก็บตัวรหัส ถ้าลิงก์หาย ให้ยกเลิกใบเดิมแล้วออกใบใหม่</p>
+    ${invites.length ? `<table class="utable">
+      <thead><tr><th>ออกให้</th><th>ออกเมื่อ</th><th>หมดอายุ</th>
+        <th class="u-num">ใช้ไป</th><th>สถานะ</th><th>ใช้โดย</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>`
+      : '<p class="muted">ยังไม่เคยออกรหัสเชิญ</p>'}
+  </div>`;
+
+  // ผูกที่ตาราง ไม่ใช่ทีละปุ่ม — แถวถูกวาดใหม่ทุกครั้งที่โหลด
+  const table = $("#panel .utable");
+  if (table) table.onclick = (e) => {
+    const btn = e.target.closest(".inv-revoke");
+    if (btn) revokeInvite(btn.dataset.ref);
+  };
+}
+
+/** ยกเลิกรหัสเชิญหนึ่งใบ — ถามก่อนเสมอ เพราะคนที่ถือลิงก์อยู่จะเข้าไม่ได้ทันที */
+async function revokeInvite(ref) {
+  if (!ref) return;
+  if (!confirm("ยกเลิกรหัสเชิญใบนี้? คนที่ถือลิงก์อยู่จะใช้ไม่ได้ทันที")) return;
+  try {
+    await api(`/api/admin/invites/${encodeURIComponent(ref)}`, { method: "DELETE" });
+    banner("ยกเลิกรหัสเชิญแล้ว");
+    await showInvites();
+  } catch (e) { banner(`ยกเลิกไม่สำเร็จ: ${e.message}`); }
 }
 
 /** ช่วงเวลาแบบอ่านง่าย — หน้านี้สนใจ "นานแค่ไหนแล้ว" มากกว่าวันที่เป๊ะ ๆ */
@@ -921,6 +1026,7 @@ function applyHash() {
     document.getElementById(to)?.scrollIntoView();
   }
   else if (h === '#users') showUsers();
+  else if (h === '#invites') showInvites();
   else if (h === '#devices') showDevices();
   else if (h === '#home') showHome();
   else showNew();

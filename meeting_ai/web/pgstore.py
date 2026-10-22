@@ -337,6 +337,89 @@ def invites_have_quota() -> bool:
     return _quota_ready
 
 
+# ตัวชี้แถวรหัสเชิญที่เอาออกหน้าเว็บได้ — 16 ตัวแรกของ sha256(code) ในรูป hex
+#
+# ตาราง invites ไม่มีคอลัมน์ id (pk คือ code_hash) และการเพิ่มคอลัมน์ใหม่แปลว่า
+# ทางอ่านของ main ต้องพึ่ง migration ซึ่งห้ามตามกติกา deploy-มาก่อน-migration
+# จึงใช้คำนำหน้าของ hash แทน: ไม่ใช่ตัวรหัส (กู้กลับไม่ได้) และ 64 บิตนี้ไม่ได้
+# ทำให้เดารหัส 96 บิตง่ายขึ้นจนใช้การได้ ส่วนคนที่เห็นมันก็มีแค่แอดมิน
+INVITE_REF_LEN = 16
+
+
+def invite_status(used: int, max_uses: int, expires, now) -> str:
+    """สถานะของรหัสเชิญหนึ่งใบ — แยกออกมาเป็นฟังก์ชันล้วนเพื่อให้เทสต์เรียกของจริงได้.
+
+    ไม่งั้นตรรกะนี้จะมีอยู่สองที่ (ที่นี่กับ FakeStore ของเทสต์) แล้วเทสต์ก็ทดสอบ
+    แต่สำเนาของตัวเอง — กลับกลไกที่นี่แล้วสวีทยังเขียว (เจอตอนกลับกลไกจริง)
+
+    ลำดับการตัดสินสำคัญ: ใบที่ใช้ครบแล้วและหมดอายุด้วย ให้รายงานว่า "ใช้ครบแล้ว"
+    เพราะนั่นคือเรื่องที่เกิดขึ้นจริง ส่วนหมดอายุเป็นแค่สิ่งที่ตามมาทีหลัง
+    """
+    if used >= max_uses:
+        return "used"
+    if expires is not None and expires <= now:
+        return "expired"
+    return "open"
+
+
+def invites_list() -> list[dict]:
+    """รหัสเชิญทุกใบ ใหม่สุดก่อน — **ไม่มีตัวรหัสอยู่ในผลลัพธ์**.
+
+    รหัสถูกเก็บเป็น sha256 ตั้งแต่ตอนออก ฝั่งเซิร์ฟเวอร์จึงไม่มีทางรู้ว่าใบไหนคือรหัสอะไร
+    หน้านี้ตอบได้แค่ว่า "ออกไปกี่ใบ ใครใช้ไปแล้ว เหลือโควตาเท่าไร" (BACKLOG #102)
+    ใครทำลิงก์หาย = ออกใบใหม่สถานเดียว ของเดิมได้แต่ยกเลิกทิ้ง
+    """
+    quota = invites_have_quota()
+    uses = ("i.max_uses, i.used_count" if quota
+            else "1 as max_uses, (case when i.used_at is null then 0 else 1 end) as used_count")
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"""select left(encode(i.code_hash, 'hex'), {INVITE_REF_LEN}) as ref,
+                      i.email, i.created_at, i.expires_at, i.used_at, {uses},
+                      cu.email as created_by, uu.email as used_by
+                 from meeting_ai.invites i
+                 left join meeting_ai.users cu on cu.id = i.created_by
+                 left join meeting_ai.users uu on uu.id = i.used_by
+                order by i.created_at desc limit 500"""
+        ).fetchall()
+    now = _now()
+    out = []
+    for r in rows:
+        max_uses, used = int(r[5] or 1), int(r[6] or 0)
+        expires = r[3]
+        status = invite_status(used, max_uses, expires, now)
+        out.append({
+            "ref": r[0],
+            "email": r[1],
+            "created_at": r[2].isoformat(timespec="seconds") if r[2] else None,
+            "expires_at": expires.isoformat(timespec="seconds") if expires else None,
+            "used_at": r[4].isoformat(timespec="seconds") if r[4] else None,
+            "max_uses": max_uses,
+            "used_count": used,
+            "left": max(0, max_uses - used),
+            "status": status,
+            "created_by": r[7],
+            "used_by": r[8],
+        })
+    return out
+
+
+def revoke_invite(ref: str) -> bool:
+    """ลบรหัสเชิญทิ้งตามตัวชี้ — คืน True ถ้ามีแถวถูกลบจริง.
+
+    ลบทิ้งไม่ใช่ทำเครื่องหมายว่ายกเลิก เพราะแถวนี้ไม่มีอะไรให้ตรวจย้อนหลังนอกจาก
+    "เคยออกใบหนึ่งไป" และการเก็บ hash ของรหัสที่ไม่ใช้แล้วไว้ก็ไม่มีประโยชน์อะไร
+    """
+    with db.connect() as conn:
+        row = conn.execute(
+            f"""delete from meeting_ai.invites
+                 where left(encode(code_hash, 'hex'), {INVITE_REF_LEN}) = %s
+             returning code_hash""",
+            (ref,),
+        ).fetchone()
+    return row is not None
+
+
 def create_invite(created_by: str | None, email: str | None = None, days: int = 14,
                   max_uses: int = 1) -> str:
     code = secrets.token_urlsafe(12)
