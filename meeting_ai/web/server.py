@@ -92,6 +92,8 @@ _CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # uuid ของผู้ใช้ (ของจริง) และ id แบบสั้นที่ FakeStore ใช้ในเทสต์
 _USER_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# ตัวชี้รหัสเชิญเป็น hex ล้วนความยาวคงที่ — ตรงนี้คุมรูปก่อนถึง SQL เสมอ
+_INVITE_REF_RE = re.compile(r"[0-9a-f]{16}")
 MIN_PASSWORD = 8
 # เพดานจำนวนคนต่อรหัสเชิญหนึ่งใบ (BACKLOG #95)
 INVITE_MAX_USES = 50
@@ -1094,6 +1096,33 @@ class Handler(BaseHTTPRequestHandler):
             log.info(f"[admin-read] {self.user.get('email', '?')} "
                      f"ดูรายการการประชุมของ {uid} ({len(rows)} รายการ)")
             return self._json({"meetings": rows})
+
+        if parts == ["admin", "invites"] and get:
+            if not backend.cloud:
+                return self._error(HTTPStatus.NOT_FOUND,
+                                   "โหมดนี้ไม่มีระบบบัญชีผู้ใช้")
+            if not (self.user and self.user.get("is_admin")):
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   "ต้องเป็นแอดมินจึงดูรหัสเชิญได้")
+            return self._json({"invites": store.invites_list()})
+
+        if (len(parts) == 3 and parts[0] == "admin" and parts[1] == "invites"
+                and self.command == "DELETE"):
+            if not backend.cloud:
+                return self._error(HTTPStatus.NOT_FOUND,
+                                   "โหมดนี้ไม่มีระบบบัญชีผู้ใช้")
+            if not (self.user and self.user.get("is_admin")):
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   "ต้องเป็นแอดมินจึงยกเลิกรหัสเชิญได้")
+            if not _INVITE_REF_RE.fullmatch(parts[2]):
+                return self._error(HTTPStatus.BAD_REQUEST, "ตัวชี้รหัสเชิญไม่ถูกต้อง")
+            if not store.revoke_invite(parts[2]):
+                return self._error(HTTPStatus.NOT_FOUND, "ไม่พบรหัสเชิญใบนี้")
+            # ลง log ทุกครั้ง: ยกเลิกรหัสเชิญเป็นการตัดทางเข้าของคนที่กำลังรออยู่
+            # ถ้ามีคนบ่นว่าลิงก์ใช้ไม่ได้ ต้องตอบได้ว่าใครเป็นคนยกเลิกและเมื่อไหร่
+            log.info(f"[invite-revoke] {self.user.get('email', '?')} "
+                     f"ยกเลิกรหัสเชิญ {parts[2]}")
+            return self._json({"ok": True})
 
         if parts == ["admin", "users"] and get:
             if not backend.cloud:

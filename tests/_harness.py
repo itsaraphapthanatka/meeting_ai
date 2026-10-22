@@ -401,6 +401,46 @@ class FakeStore:
                               "max_uses": max(1, int(max_uses or 1)), "used_count": 0}
         return code
 
+    def invites_list(self) -> list[dict]:
+        """ตรง pgstore.invites_list — **ไม่มีตัวรหัสในผลลัพธ์** มีแต่ตัวชี้ที่มาจาก hash."""
+        out = []
+        for code, inv in self.invites.items():
+            max_uses = int(inv.get("max_uses") or 1)
+            used = int(inv.get("used_count") or 0)
+            if used >= max_uses:
+                status = "used"
+            elif inv.get("expired"):
+                status = "expired"
+            else:
+                status = "open"
+            out.append({
+                "ref": self.invite_ref(code),
+                "email": inv.get("email"),
+                "created_at": "2026-10-20T10:00:00+00:00",
+                "expires_at": ("2026-10-20T10:00:00+00:00" if inv.get("expired")
+                               else "2026-11-20T10:00:00+00:00"),
+                "used_at": "2026-10-21T10:00:00+00:00" if inv.get("used_at") else None,
+                "max_uses": max_uses,
+                "used_count": used,
+                "left": max(0, max_uses - used),
+                "status": status,
+                "created_by": "adm@example.com",
+                "used_by": inv.get("used_by"),
+            })
+        return out
+
+    @staticmethod
+    def invite_ref(code: str) -> str:
+        """ตัวชี้เดียวกับ pgstore: 16 ตัวแรกของ sha256(code) เป็น hex."""
+        return hashlib.sha256(code.encode("utf-8")).hexdigest()[:16]
+
+    def revoke_invite(self, ref: str) -> bool:
+        for code in list(self.invites):
+            if self.invite_ref(code) == ref:
+                del self.invites[code]
+                return True
+        return False
+
     # ---------- rate limit ชั้น "Postgres" จำลอง (BUG-010) ----------
     # fixed window เหมือน pgstore.rate_hit เป๊ะ (ดู pgstore.py) แต่เก็บในหน่วยความจำของ
     # อินสแตนซ์ FakeStore เอง (คนละที่กับ web/ratelimit.py) เพื่อพิสูจน์ว่าชั้นนี้บล็อกได้เอง
