@@ -504,12 +504,39 @@ async function inviteMember() {
     // **คัดลอกลิงก์ ไม่ใช่รหัสเปล่า** — ของเดิมสร้างลิงก์นี้ไว้แล้วแต่ส่งเข้า console.log
     // คนกดเชิญจึงได้แต่รหัสที่ต้องอธิบายเองว่าเอาไปใส่ตรงไหน และคนรับก็ไปไม่ถูก
     const link = `${location.origin}/?invite=${encodeURIComponent(out.code)}`;
-    await copyText(link);
+    const copied = await copyText(link);
     // บอกจำนวนคนและวันหมดอายุไปด้วย ไม่งั้นคนออกรหัสไม่มีทางรู้ว่าใบนี้ใช้ได้กี่ครั้ง
     const who = out.email ? ` สำหรับ ${out.email}`
       : ` ใช้ได้ ${out.max_uses || 1} คน`;
-    banner(`คัดลอกลิงก์เชิญให้แล้ว — ส่งให้ได้เลย ·${who} · หมดอายุใน 14 วัน`);
+    // กางลิงก์ให้เห็นเสมอ ไม่ใช่เฉพาะตอนคัดลอกไม่สำเร็จ — คลิปบอร์ดเป็นที่ที่มองไม่เห็น
+    // คนออกรหัสจึงตรวจไม่ได้ว่าได้อะไรมา และถ้าเผลอคัดลอกอย่างอื่นทับก็จบ (BACKLOG #101)
+    showInviteLink(link, `ลิงก์เชิญ${who} · หมดอายุใน 14 วัน`);
+    banner(copied
+      ? `คัดลอกลิงก์เชิญให้แล้ว — ส่งให้ได้เลย ·${who} · หมดอายุใน 14 วัน`
+      : 'ออกลิงก์เชิญแล้ว — เบราว์เซอร์ไม่ให้คัดลอกเอง คัดลอกจากช่องด้านบนได้เลย');
   } catch (e) { banner(`สร้างรหัสเชิญไม่สำเร็จ: ${e.message}`); }
+}
+
+/** กางลิงก์เชิญที่เพิ่งออกให้เห็นและคัดลอกซ้ำได้.
+ *
+ *  รหัสเชิญถูกเก็บเป็น hash ฝั่งเซิร์ฟเวอร์ และไม่มี endpoint ให้ดูย้อนหลัง —
+ *  ถ้าค่านี้หลุดมือตอนนี้ ก็หายถาวร ต้องออกใบใหม่ ช่องนี้จึงเป็นที่เดียวที่กู้ได้
+ */
+function showInviteLink(link, note) {
+  const box = $('#invite-box');
+  const input = $('#invite-link');
+  if (!box || !input) return;          // โหมดไฟล์ไม่มีกล่องนี้ในหน้า
+  input.value = link;
+  $('#invite-note').textContent = note;
+  box.hidden = false;
+  input.focus();
+  input.select();
+  $('#invite-copy').onclick = async () => {
+    input.select();
+    banner(await copyText(input.value) ? 'คัดลอกแล้ว' : 'กด Ctrl+C เพื่อคัดลอก');
+  };
+  // ล้างค่าตอนปิดด้วย ไม่ใช่แค่ซ่อน — ลิงก์เชิญที่ค้างอยู่ในหน้าคือของที่คนเดินผ่านอ่านได้
+  $('#invite-close').onclick = () => { box.hidden = true; input.value = ''; };
 }
 
 async function copyText(text) {
