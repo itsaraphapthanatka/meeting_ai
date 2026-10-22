@@ -57,6 +57,20 @@ alter table meeting_ai.invites add column if not exists used_count integer not n
 update meeting_ai.invites set used_count = 1
  where used_at is not null and used_count = 0;
 
+-- ---------- ลิงก์ตั้งรหัสผ่านใหม่ (BACKLOG #103) ----------
+-- โปรเจกต์นี้ไม่มีช่องทางส่งอีเมล ลิงก์จึงออกโดยแอดมินแล้วส่งต่อทางแชทเหมือนลิงก์เชิญ
+-- เก็บเป็น hash เหมือน invites/sessions — ฐานข้อมูลไม่เคยมีตัวโทเคนอยู่เลย
+create table if not exists meeting_ai.password_resets (
+    token_hash  bytea primary key,
+    user_id     uuid not null references meeting_ai.users(id) on delete cascade,
+    created_by  uuid references meeting_ai.users(id) on delete set null,
+    used_at     timestamptz,
+    expires_at  timestamptz not null,
+    created_at  timestamptz not null default now()
+);
+create index if not exists password_resets_user_idx
+    on meeting_ai.password_resets (user_id);
+
 -- ---------- การประชุม ----------
 
 create table if not exists meeting_ai.meetings (

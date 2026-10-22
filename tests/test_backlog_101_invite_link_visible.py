@@ -72,24 +72,28 @@ class TestTheBannerTellsTheTruth(unittest.TestCase):
 
 
 class TestTheLinkIsOnScreen(unittest.TestCase):
-    """คลิปบอร์ดเป็นที่ที่มองไม่เห็น — ลิงก์ที่กู้ไม่ได้ต้องถูกกางให้เห็น."""
+    """คลิปบอร์ดเป็นที่ที่มองไม่เห็น — ลิงก์ที่กู้ไม่ได้ต้องถูกกางให้เห็น.
+
+    #103 เปลี่ยนชื่อกล่องจาก invite-* เป็น linkbox-* เพราะมีผู้ใช้สองราย
+    (ลิงก์เชิญ กับ ลิงก์ตั้งรหัสผ่านใหม่) ข้อกำหนดเดิมไม่เปลี่ยน
+    """
 
     def test_the_link_is_shown_every_time_not_only_on_failure(self):
         body = fn("async function inviteMember()")
-        call = body.index("showInviteLink(")
+        call = body.index("showLinkBox(")
         after = body[call:]
         self.assertNotIn("if (!copied)", body[:call],
                          "กางลิงก์เฉพาะตอนคัดลอกพลาด = ตรวจไม่ได้ว่าได้อะไรมา")
         self.assertIn("link", after[:60])
 
     def test_the_box_exists_in_the_markup(self):
-        for ident in ("invite-box", "invite-link", "invite-copy", "invite-close",
-                      "invite-note"):
+        for ident in ("linkbox", "linkbox-link", "linkbox-copy", "linkbox-close",
+                      "linkbox-note"):
             self.assertIn(f'id="{ident}"', HTML, f"ไม่มี #{ident} ในหน้า")
 
     def test_the_field_is_readonly(self):
         """แก้ค่าในช่องแล้วส่งต่อ = ส่งลิงก์ที่ใช้ไม่ได้ให้คนอื่น."""
-        m = re.search(r'<input id="invite-link"[^>]*>', HTML)
+        m = re.search(r'<input id="linkbox-link"[^>]*>', HTML)
         self.assertIsNotNone(m)
         self.assertIn("readonly", m.group(0))
 
@@ -97,30 +101,30 @@ class TestTheLinkIsOnScreen(unittest.TestCase):
         """บทเรียนจาก #99: เปลี่ยนชื่อ id ที่เดียวแล้วปุ่มกลายเป็นปุ่มตาย เทสต์ที่หา
         แค่สตริงจับไม่ได้ — ตรงนี้จึงไล่จากสิ่งที่โค้ด *เรียกจริง* ไปหามาร์กอัป
         """
-        body = fn("function showInviteLink(")
+        body = fn("function showLinkBox(")
         used = set(re.findall(r"\$\('#([\w-]+)'\)", body))
-        self.assertTrue(used, "showInviteLink ไม่ได้อ้าง element ไหนเลย")
+        self.assertTrue(used, "showLinkBox ไม่ได้อ้าง element ไหนเลย")
         for ident in used:
             self.assertIn(f'id="{ident}"', HTML, f"โค้ดเรียก #{ident} แต่ในหน้าไม่มี")
 
     def test_the_box_has_its_own_margin(self):
         """มันอยู่ระดับบนสุดของหน้า ไม่ได้อยู่ในพาเนลเหมือน .share-box เดิม."""
-        self.assertRegex(CSS, r"#invite-box\s*\{[^}]*margin")
+        self.assertRegex(CSS, r"#linkbox\s*\{[^}]*margin")
 
 
 class TestClosingItClearsTheValue(unittest.TestCase):
     def test_closing_hides_and_clears(self):
         """ซ่อนอย่างเดียวไม่พอ — ลิงก์เชิญที่ค้างในหน้าคือของที่คนเดินผ่านอ่านได้."""
-        body = fn("function showInviteLink(")
-        m = re.search(r"invite-close'\)\.onclick = \(\) => \{([^}]*)\}", body)
+        body = fn("function showLinkBox(")
+        m = re.search(r"linkbox-close'\)\.onclick = \(\) => \{([^}]*)\}", body)
         self.assertIsNotNone(m, "ปุ่มปิดไม่ได้ถูกผูกเหตุการณ์")
         self.assertIn("hidden = true", m.group(1))
         self.assertRegex(m.group(1), r"value = ''")
 
     def test_the_copy_button_can_be_used_again(self):
         """คนที่คัดลอกทับไปแล้วต้องเอากลับมาได้ โดยไม่ต้องออกรหัสใบใหม่."""
-        body = fn("function showInviteLink(")
-        m = re.search(r"invite-copy'\)\.onclick = async \(\) => \{(.*?)\n  \};",
+        body = fn("function showLinkBox(")
+        m = re.search(r"linkbox-copy'\)\.onclick = async \(\) => \{(.*?)\n  \};",
                       body, re.S)
         self.assertIsNotNone(m, "ปุ่มคัดลอกไม่ได้ถูกผูกเหตุการณ์")
         self.assertIn("copyText(", m.group(1))

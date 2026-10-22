@@ -83,7 +83,7 @@ SESSION_COOKIE = "mai_session"
 # endpoint ที่เข้าได้ก่อนล็อกอิน (ไม่งั้นจะล็อกอินไม่ได้เลย)
 # ("auth", "share") = ยืนยันเปิดลิงก์แชร์ ต้องเรียกได้ทั้งที่ยังไม่มีคุกกี้อะไรเลย (BACKLOG #16)
 PUBLIC_API = {("config",), ("health",), ("auth", "me"), ("auth", "login"),
-              ("auth", "signup"), ("auth", "share")}
+              ("auth", "signup"), ("auth", "share"), ("auth", "reset")}
 
 _SAFE_TITLE_RE = re.compile(r"[\r\n\t]+")
 # Content-Length ต้องเป็นเลขล้วนตาม RFC 9110 — int() ยอมรับ "1_0", "+10", " 10 " ซึ่ง
@@ -1097,6 +1097,26 @@ class Handler(BaseHTTPRequestHandler):
                      f"ดูรายการการประชุมของ {uid} ({len(rows)} รายการ)")
             return self._json({"meetings": rows})
 
+        if (len(parts) == 4 and parts[0] == "admin" and parts[1] == "users"
+                and parts[3] == "reset" and self.command == "POST"):
+            if not backend.cloud:
+                return self._error(HTTPStatus.NOT_FOUND, "โหมดนี้ไม่มีระบบบัญชีผู้ใช้")
+            if not (self.user and self.user.get("is_admin")):
+                return self._error(HTTPStatus.FORBIDDEN,
+                                   "ต้องเป็นแอดมินจึงออกลิงก์ตั้งรหัสผ่านใหม่ได้")
+            uid = parts[2]
+            if not _USER_ID_RE.fullmatch(uid):
+                return self._error(HTTPStatus.BAD_REQUEST, "รหัสผู้ใช้ไม่ถูกต้อง")
+            token = store.create_reset(uid, self.user["id"])
+            if token is None:
+                # ตารางยังไม่เกิดเพราะ deploy มาก่อน db-init — บอกให้รู้ว่าต้องทำอะไร
+                # ไม่ใช่ปล่อย 500 ที่อ่านไม่ออกว่าเกิดอะไรขึ้น
+                return self._error(HTTPStatus.SERVICE_UNAVAILABLE,
+                                   "ระบบยังไม่พร้อม — ฐานข้อมูลยังไม่มีตารางลิงก์ตั้งรหัสผ่าน")
+            log.info(f"[password-reset] {self.user.get('email', '?')} "
+                     f"ออกลิงก์ตั้งรหัสผ่านใหม่ให้ {uid}")
+            return self._json({"token": token, "hours": store.RESET_HOURS})
+
         if parts == ["admin", "invites"] and get:
             if not backend.cloud:
                 return self._error(HTTPStatus.NOT_FOUND,
@@ -1349,6 +1369,9 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ["login"] and self.command == "POST":
             return self._login()
 
+        if rest == ["reset"] and self.command == "POST":
+            return self._reset_password()
+
         if rest == ["invite"] and self.command == "POST":
             if not self.user:
                 return self._error(HTTPStatus.UNAUTHORIZED, "ต้องเข้าสู่ระบบก่อน")
@@ -1402,6 +1425,38 @@ class Handler(BaseHTTPRequestHandler):
             # ไม่บอกว่าอีเมลผิดหรือรหัสผิด กัน enumerate อีเมลในระบบ
             return self._error(HTTPStatus.UNAUTHORIZED, "อีเมลหรือรหัสผ่านไม่ถูกต้อง")
         self._rate_ok("login")
+        self._login_response(user)
+
+    def _reset_password(self) -> None:
+        """POST /api/auth/reset — ตั้งรหัสผ่านใหม่ด้วยโทเคนจากลิงก์ที่แอดมินออกให้.
+
+        เส้นสาธารณะ ภัยคือ "เดาโทเคน" ได้ไม่จำกัด จึงคิดโควตาแยกถังจากล็อกอิน/สมัคร
+        (เส้นนี้ยิงเข้าฐานทุกครั้งแม้โทเคนผิด และ set_password ทำ scrypt ต่อด้วย)
+        """
+        wait = self._rate_limited("reset")
+        if wait:
+            return self._too_many(wait)
+        body = self._body_json()
+        token = str(body.get("token") or "").strip()
+        password = str(body.get("password") or "")
+        if len(password) < MIN_PASSWORD:
+            return self._error(HTTPStatus.BAD_REQUEST,
+                               f"รหัสผ่านต้องยาวอย่างน้อย {MIN_PASSWORD} ตัวอักษร")
+        user = store.claim_reset(token)
+        if user is None:
+            # ไม่แยกว่า "ไม่มีโทเคนนี้" กับ "หมดอายุ/ถูกใช้ไปแล้ว" — ทั้งคู่แปลว่า
+            # ใช้ไม่ได้ และการแยกให้ก็คือบอกคนเดาว่าเดาใกล้แล้ว
+            return self._error(HTTPStatus.FORBIDDEN,
+                               "ลิงก์นี้ใช้ไม่ได้แล้ว — ขอลิงก์ใหม่จากแอดมิน")
+        store.set_password(user["id"], password)
+        # เตะ session เก่าทิ้งทั้งหมด **ก่อน** ออกใบใหม่ให้คนที่เพิ่งตั้งรหัส ไม่งั้นคนที่
+        # ขโมย session ไปแล้วยังอยู่ต่อได้ ทั้งที่การรีเซ็ตมีไว้เพื่อตัดเขาออกโดยเฉพาะ
+        dropped = store.drop_sessions_of(user["id"])
+        self._rate_ok("reset")
+        log.info(f"[password-reset] ตั้งรหัสผ่านใหม่สำเร็จ {user['id']} "
+                 f"(เตะ {dropped} session)")
+        # ล็อกอินให้เลย — คนที่ถือโทเคนพิสูจน์สิทธิ์ครบเท่ากับที่สมัครด้วยรหัสเชิญ
+        # และการให้เขาไปพิมพ์รหัสที่เพิ่งตั้งอีกรอบไม่ได้เพิ่มความปลอดภัยอะไร
         self._login_response(user)
 
     def _signup(self) -> None:

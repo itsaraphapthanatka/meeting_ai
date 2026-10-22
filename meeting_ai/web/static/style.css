@@ -760,9 +760,9 @@ body.auth-only #stats { display: none; }
 
 .share-row { display: flex; gap: 8px; margin-bottom: 10px; }
 
-/* กล่องลิงก์เชิญอยู่ระดับบนสุดของหน้า ไม่ได้อยู่ในพาเนลรายละเอียดเหมือน .share-box
+/* กล่องลิงก์อยู่ระดับบนสุดของหน้า ไม่ได้อยู่ในพาเนลรายละเอียดเหมือน .share-box
    เดิม จึงต้องมีระยะขอบด้านข้างเอง ไม่งั้นมันชนขอบจอ */
-#invite-box { margin: 12px 16px 0; }
+#linkbox { margin: 12px 16px 0; }
 
 .share-row input {
   flex: 1 1 auto;

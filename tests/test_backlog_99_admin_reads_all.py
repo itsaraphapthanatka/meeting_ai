@@ -223,9 +223,12 @@ class TestTheScreen(unittest.TestCase):
         ซึ่ง `table.onclick = null` ก็ผ่าน (เจอตอนกลับกลไก)
         """
         body = fn("function renderUsers(")
-        m = re.search(r"table\.onclick = ([^;]+);", body)
-        self.assertIsNotNone(m, "ไม่ได้ผูก onclick ไว้ที่ตาราง")
-        self.assertIn("open(", m.group(1))
+        # #103 เพิ่มปุ่มรีเซ็ตในแถว ตัวจัดการจึงกลายเป็นบล็อกหลายบรรทัด
+        # (ของเดิมเป็น arrow เดียวจบบรรทัด) แต่ข้อกำหนดเดิมไม่เปลี่ยน:
+        # ผูกที่ตาราง และกดแล้วต้องเปิดรายการประชุมของคนนั้นจริง ๆ
+        i = body.index("table.onclick =")
+        handler = body[i:body.index("};", i)]
+        self.assertIn("open(", handler)
         self.assertIn("showUserMeetings(", body)
 
     def test_everything_shown_is_escaped(self):

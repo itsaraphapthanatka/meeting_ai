@@ -513,33 +513,33 @@ async function inviteMember() {
       : ` ใช้ได้ ${out.max_uses || 1} คน`;
     // กางลิงก์ให้เห็นเสมอ ไม่ใช่เฉพาะตอนคัดลอกไม่สำเร็จ — คลิปบอร์ดเป็นที่ที่มองไม่เห็น
     // คนออกรหัสจึงตรวจไม่ได้ว่าได้อะไรมา และถ้าเผลอคัดลอกอย่างอื่นทับก็จบ (BACKLOG #101)
-    showInviteLink(link, `ลิงก์เชิญ${who} · หมดอายุใน 14 วัน`);
+    showLinkBox(link, `ลิงก์เชิญ${who} · หมดอายุใน 14 วัน`);
     banner(copied
       ? `คัดลอกลิงก์เชิญให้แล้ว — ส่งให้ได้เลย ·${who} · หมดอายุใน 14 วัน`
       : 'ออกลิงก์เชิญแล้ว — เบราว์เซอร์ไม่ให้คัดลอกเอง คัดลอกจากช่องด้านบนได้เลย');
   } catch (e) { banner(`สร้างรหัสเชิญไม่สำเร็จ: ${e.message}`); }
 }
 
-/** กางลิงก์เชิญที่เพิ่งออกให้เห็นและคัดลอกซ้ำได้.
+/** กางลิงก์ที่เพิ่งออกให้เห็นและคัดลอกซ้ำได้ (ลิงก์เชิญ #101 · ตั้งรหัสผ่านใหม่ #103).
  *
  *  รหัสเชิญถูกเก็บเป็น hash ฝั่งเซิร์ฟเวอร์ และไม่มี endpoint ให้ดูย้อนหลัง —
  *  ถ้าค่านี้หลุดมือตอนนี้ ก็หายถาวร ต้องออกใบใหม่ ช่องนี้จึงเป็นที่เดียวที่กู้ได้
  */
-function showInviteLink(link, note) {
-  const box = $('#invite-box');
-  const input = $('#invite-link');
+function showLinkBox(link, note) {
+  const box = $('#linkbox');
+  const input = $('#linkbox-link');
   if (!box || !input) return;          // โหมดไฟล์ไม่มีกล่องนี้ในหน้า
   input.value = link;
-  $('#invite-note').textContent = note;
+  $('#linkbox-note').textContent = note;
   box.hidden = false;
   input.focus();
   input.select();
-  $('#invite-copy').onclick = async () => {
+  $('#linkbox-copy').onclick = async () => {
     input.select();
     banner(await copyText(input.value) ? 'คัดลอกแล้ว' : 'กด Ctrl+C เพื่อคัดลอก');
   };
   // ล้างค่าตอนปิดด้วย ไม่ใช่แค่ซ่อน — ลิงก์เชิญที่ค้างอยู่ในหน้าคือของที่คนเดินผ่านอ่านได้
-  $('#invite-close').onclick = () => { box.hidden = true; input.value = ''; };
+  $('#linkbox-close').onclick = () => { box.hidden = true; input.value = ''; };
 }
 
 async function copyText(text) {
@@ -589,20 +589,67 @@ function showShareConfirm(token) {
 
 /** รหัสเชิญที่ติดมากับ URL (`/?invite=...`) — ใช้ตัดสินว่าจะเปิดหน้าไหนด้วย */
 const inviteFromUrl = () => new URLSearchParams(location.search).get('invite') || '';
+/** โทเคนตั้งรหัสผ่านใหม่ที่ติดมากับ URL (`/?reset=...`) — ตัวอ่านตัวเดียวเหมือน
+ *  inviteFromUrl() เพราะอ่านสองที่แล้วแก้ที่เดียวคือทางที่เคยพลาดมาแล้ว (#98) */
+const resetFromUrl = () => new URLSearchParams(location.search).get('reset') || '';
+
+/** ฟอร์มตั้งรหัสผ่านใหม่ — ใช้เทมเพลตเดียวกับหน้าล็อกอิน ซ่อนช่องที่ไม่เกี่ยว.
+ *
+ *  ไม่ถามอีเมล: โทเคนผูกกับบัญชีอยู่แล้ว การถามอีเมลซ้ำมีแต่จะทำให้พิมพ์ผิดแล้วงง
+ *  ว่าทำไมไม่ผ่าน และยังเป็นช่องให้เดาว่าอีเมลไหนมีบัญชีอยู่ (BACKLOG #103)
+ */
+function showResetForm(token) {
+  $('#a-title').textContent = 'ตั้งรหัสผ่านใหม่';
+  $('#a-note').textContent = 'ตั้งรหัสผ่านใหม่แล้วเข้าใช้งานได้เลย — ลิงก์นี้ใช้ได้ครั้งเดียว';
+  $('#a-email-wrap').hidden = true;
+  $('#a-name-wrap').hidden = true;
+  $('#a-invite-wrap').hidden = true;
+  $('#a-password').autocomplete = 'new-password';
+  $('#a-password').placeholder = 'รหัสผ่านใหม่ อย่างน้อย 8 ตัวอักษร';
+  $('#a-submit').textContent = 'ตั้งรหัสผ่านและเข้าใช้งาน';
+  $('.auth-switch').hidden = true;
+
+  const fail = (msg) => {
+    const el = $('#a-error');
+    el.hidden = false;
+    el.textContent = msg;
+  };
+  const submit = async () => {
+    const password = $('#a-password').value;
+    if (!password) return fail('กรอกรหัสผ่านใหม่');
+    $('#a-error').hidden = true;
+    $('#a-submit').disabled = true;
+    try {
+      await api('/api/auth/reset', jsonPost({ token, password }));
+      location.href = '/';   // ทิ้งโทเคนไว้ใน URL ไม่ได้ — มันอยู่ใน history ของเบราว์เซอร์
+    } catch (e) {
+      fail(e.message);
+      $('#a-submit').disabled = false;
+    }
+  };
+  $('#a-submit').onclick = submit;
+  $('#a-password').onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  $('#a-password').focus();
+}
 
 function showAuth(mode) {
   // ครั้งแรกของระบบยังไม่มีใคร ต้องสมัครก่อน
   // คนที่เปิดลิงก์เชิญคือคนที่**ยังไม่มีบัญชี** — ของเดิมพาไปหน้า 'เข้าสู่ระบบ' ซึ่งซ่อน
   // ช่องรหัสเชิญไว้และไม่เติมโค้ดให้ ต้องไปสังเกตลิงก์เล็ก ๆ ท้ายฟอร์มเองถึงจะไปต่อได้
   // (วัดจริงบนเบราว์เซอร์: หัวข้อ 'เข้าสู่ระบบ' · ช่องรหัสเชิญ display:none · ค่าว่าง)
-  const signup = mode === 'signup'
-    || (mode === undefined && (state.firstRun || !!inviteFromUrl()));
+  // โหมดที่สาม: มาจากลิงก์ตั้งรหัสผ่านใหม่ที่แอดมินออกให้ (BACKLOG #103)
+  // ต้องชนะทุกโหมด — คนที่ถือลิงก์นี้คือคนที่เข้าไม่ได้อยู่แล้ว การพาไปหน้าล็อกอิน
+  // คือพาไปที่ที่เขาเพิ่งทำไม่สำเร็จ (บทเรียนเดียวกับลิงก์เชิญใน #98)
+  const resetToken = resetFromUrl();
+  const signup = !resetToken && (mode === 'signup'
+    || (mode === undefined && (state.firstRun || !!inviteFromUrl())));
   document.body.classList.add('auth-only');
   const panel = $('#panel');
   panel.innerHTML = '';
   panel.append($('#tpl-auth').content.cloneNode(true));
 
   const first = state.firstRun;
+  if (resetToken) return showResetForm(resetToken);
   $('#a-title').textContent = signup ? (first ? 'สร้างบัญชีแรก' : 'สมัครสมาชิก') : 'เข้าสู่ระบบ';
   $('#a-note').textContent = signup
     ? (first ? 'ยังไม่มีใครในระบบ — บัญชีแรกจะเป็นแอดมินและเชิญคนอื่นได้'
@@ -931,6 +978,8 @@ function renderUsers(users, summary) {
              : esc(sinceText(u.last_login))}</td>
       <td class="u-num">${Number(u.meetings || 0)}</td>
       <td>${u.invited_by ? esc(u.invited_by) : '—'}</td>
+      <td><button class="btn btn-sm u-reset" data-uid="${esc(u.id)}"
+          data-name="${esc(u.name || u.email)}" type="button">รีเซ็ตรหัสผ่าน</button></td>
     </tr>`;
   }).join('');
 
@@ -940,7 +989,7 @@ function renderUsers(users, summary) {
     <div class="utiles">${tiles}</div>
     ${users.length ? `<table class="utable">
       <thead><tr><th>ผู้ใช้</th><th>สมัครเมื่อ</th><th>เข้าใช้ล่าสุด</th>
-        <th class="u-num">ประชุม</th><th>เชิญโดย</th></tr></thead>
+        <th class="u-num">ประชุม</th><th>เชิญโดย</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table>`
       : '<p class="muted">ยังไม่มีใครสมัคร</p>'}
   </div>`;
@@ -950,7 +999,13 @@ function renderUsers(users, summary) {
   const table = $('#panel .utable');
   if (table) {
     const open = (tr) => tr && showUserMeetings(tr.dataset.uid, tr.dataset.name);
-    table.onclick = (e) => open(e.target.closest('tr.u-row'));
+    table.onclick = (e) => {
+      // ปุ่มรีเซ็ตอยู่ในแถวที่กดแล้วเปิดรายการประชุม — ต้องกินเหตุการณ์ก่อน
+      // ไม่งั้นกดปุ่มทีไรก็เด้งออกจากหน้านี้ไปด้วยทุกครั้ง
+      const btn = e.target.closest('.u-reset');
+      if (btn) return resetPassword(btn.dataset.uid, btn.dataset.name);
+      open(e.target.closest('tr.u-row'));
+    };
     table.onkeydown = (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
@@ -958,6 +1013,27 @@ function renderUsers(users, summary) {
       }
     };
   }
+}
+
+/** ออกลิงก์ตั้งรหัสผ่านใหม่ให้ผู้ใช้คนหนึ่ง — แอดมินเท่านั้น.
+ *
+ *  โปรเจกต์นี้ไม่มีช่องทางส่งอีเมล ลิงก์จึงออกมาให้แอดมินส่งต่อเองทางแชท
+ *  เหมือนลิงก์เชิญ — ซึ่งเป็นช่องทางที่ทีมนี้ใช้อยู่จริงอยู่แล้ว
+ */
+async function resetPassword(uid, name) {
+  if (!uid) return;
+  if (!confirm(`ออกลิงก์ตั้งรหัสผ่านใหม่ให้ ${name || 'ผู้ใช้คนนี้'}?`
+    + '\n\nลิงก์เก่าที่ยังไม่ถูกใช้จะใช้ไม่ได้ทันที')) return;
+  try {
+    const out = await api(`/api/admin/users/${encodeURIComponent(uid)}/reset`,
+      jsonPost({}));
+    const link = `${location.origin}/?reset=${encodeURIComponent(out.token)}`;
+    const copied = await copyText(link);
+    showLinkBox(link, `ลิงก์ตั้งรหัสผ่านใหม่ของ ${name || uid}`
+      + ` · ใช้ได้ครั้งเดียว · หมดอายุใน ${out.hours || 24} ชั่วโมง`);
+    banner(copied ? 'คัดลอกลิงก์ตั้งรหัสผ่านให้แล้ว — ส่งให้เจ้าตัวได้เลย'
+      : 'ออกลิงก์แล้ว — เบราว์เซอร์ไม่ให้คัดลอกเอง คัดลอกจากช่องด้านบนได้เลย');
+  } catch (e) { banner(`ออกลิงก์ไม่สำเร็จ: ${e.message}`); }
 }
 
 /** การประชุมของผู้ใช้คนหนึ่ง — แอดมินเท่านั้น (เซิร์ฟเวอร์กันอีกชั้น) */
