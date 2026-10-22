@@ -101,10 +101,11 @@ class TestTheAdminGetsALinkNotABareCode(unittest.TestCase):
         self.assertNotIn("console.log", body)
 
     def test_the_banner_says_what_was_copied(self):
-        # เจาะบรรทัด banner() ตัวที่รายงานผลสำเร็จ — หาทั้งฟังก์ชันจะไปเจอข้อความ
-        # ใน prompt ที่อยู่ด้านบน ซึ่งพูดถึง 14 วันเหมือนกัน (มุตันต์รอดมาแล้วครั้งหนึ่ง)
+        # เจาะบรรทัดข้อความของทางสำเร็จ — หาทั้งฟังก์ชันจะไปเจอข้อความใน prompt
+        # ที่อยู่ด้านบน ซึ่งพูดถึง 14 วันเหมือนกัน (มุตันต์รอดมาแล้วครั้งหนึ่ง)
+        # #101 แยกข้อความสำเร็จ/ล้มเหลวเป็น ternary ข้อความจึงไม่ได้ติดกับ `banner(` แล้ว
         body = code_only(fn("async function inviteMember()"))
-        line = next(l for l in body.split(chr(10)) if "banner(`คัดลอก" in l)
+        line = next(l for l in body.split(chr(10)) if "คัดลอกลิงก์เชิญให้แล้ว" in l)
         self.assertIn("ลิงก์เชิญ", line)
         self.assertIn("14 วัน", line)
 
