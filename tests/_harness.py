@@ -74,6 +74,11 @@ class FakeStore:
 
     def __init__(self) -> None:
         self.sessions: dict[str, dict] = {}          # token -> user dict
+        # ลิงก์ตั้งรหัสผ่านใหม่ (BACKLOG #103) — _resets_ready ตั้งเป็น False ได้
+        # เพื่อจำลองฐานที่ deploy มาก่อน db-init
+        self.resets: dict[str, dict] = {}
+        self._reset_seq = 0
+        self._resets_ready = True
         self.shares: dict[str, dict] = {}             # token -> {"meeting_id", "can_edit"}
         self.meetings: dict[str, dict] = {}            # mid -> meeting (มี "owner_id" ตรงๆ)
         self.jobs: dict[str, dict] = {}                # job_id -> job (+ "spec" ภายใน)
@@ -400,6 +405,51 @@ class FakeStore:
                               "used_at": False, "used_by": None, "expired": False,
                               "max_uses": max(1, int(max_uses or 1)), "used_count": 0}
         return code
+
+    # ---------- ลิงก์ตั้งรหัสผ่านใหม่ (BACKLOG #103) ----------
+
+    RESET_HOURS = 24
+
+    def resets_ready(self) -> bool:
+        """ตั้งเป็น False ได้ในเทสต์ เพื่อจำลองฐานที่ deploy มาก่อน db-init."""
+        return self._resets_ready
+
+    def create_reset(self, user_id: str, created_by: str | None,
+                     hours: int = 24) -> str | None:
+        if not self.resets_ready():
+            return None
+        # ตรง pgstore: ออกใบใหม่แล้วใบเก่าที่ยังไม่ถูกใช้ต้องใช้ไม่ได้อีก
+        for tok, r in list(self.resets.items()):
+            if r["user_id"] == user_id and not r["used"]:
+                del self.resets[tok]
+        # นับขึ้นอย่างเดียว ห้ามอิง len(self.resets) — create_reset ลบใบเก่าทิ้งก่อน
+        # ใบที่ออกทีหลังจึงได้สตริงเดิม แล้วเทสต์ "ใบเก่าใช้ไม่ได้" จะไปทดสอบใบใหม่แทน
+        self._reset_seq += 1
+        token = f"rst-{self._reset_seq}-{user_id}"
+        self.resets[token] = {"user_id": user_id, "created_by": created_by,
+                              "used": False, "expired": False}
+        return token
+
+    def claim_reset(self, token: str) -> dict | None:
+        """ตรง pgstore.claim_reset — ใช้ได้ครั้งเดียว และคืนข้อมูลผู้ใช้มาเลย."""
+        if not token or not self.resets_ready():
+            return None
+        with self._invite_lock:
+            r = self.resets.get(token)
+            if r is None or r["used"] or r["expired"]:
+                return None
+            r["used"] = True
+        u = next((x for x in self.users.values() if x["id"] == r["user_id"]), None)
+        if u is None:
+            return None
+        return {"id": u["id"], "email": u["email"], "name": u.get("name"),
+                "is_admin": u.get("is_admin", False)}
+
+    def drop_sessions_of(self, user_id: str) -> int:
+        gone = [t for t, u in self.sessions.items() if u.get("id") == user_id]
+        for t in gone:
+            del self.sessions[t]
+        return len(gone)
 
     def invites_list(self) -> list[dict]:
         """ตรง pgstore.invites_list — **ไม่มีตัวรหัสในผลลัพธ์** มีแต่ตัวชี้ที่มาจาก hash."""

@@ -38,16 +38,16 @@
 
 <div id="banner" class="banner" hidden></div>
 
-<!-- ลิงก์เชิญที่เพิ่งออก — ต้อง **เห็นด้วยตา** ไม่ใช่อยู่แต่ในคลิปบอร์ด: ถ้าเบราว์เซอร์ไม่ให้
+<!-- ลิงก์ที่เพิ่งออก (เชิญสมาชิก #101 · ตั้งรหัสผ่านใหม่ #103) — ต้อง **เห็นด้วยตา** ไม่ใช่อยู่แต่ในคลิปบอร์ด: ถ้าเบราว์เซอร์ไม่ให้
      คัดลอกอัตโนมัติ (เช่นหน้าเพิ่งเสียโฟกัสจาก prompt ที่ถามจำนวนคน) คนกดเชิญจะไม่เหลืออะไรเลย
      เพราะรหัสถูกเก็บเป็น hash กู้คืนไม่ได้ ต้องออกใบใหม่สถานเดียว (BACKLOG #101) -->
-<div id="invite-box" class="share-box" hidden>
+<div id="linkbox" class="share-box" hidden>
   <div class="share-row">
-    <input id="invite-link" type="text" readonly aria-label="ลิงก์เชิญ">
-    <button id="invite-copy" class="btn btn-sm" type="button">คัดลอก</button>
-    <button id="invite-close" class="btn btn-sm" type="button">ปิด</button>
+    <input id="linkbox-link" type="text" readonly aria-label="ลิงก์เชิญ">
+    <button id="linkbox-copy" class="btn btn-sm" type="button">คัดลอก</button>
+    <button id="linkbox-close" class="btn btn-sm" type="button">ปิด</button>
   </div>
-  <p id="invite-note" class="muted"></p>
+  <p id="linkbox-note" class="muted"></p>
 </div>
 
 <!-- แถบนำทางของมือถือ — เดสก์ท็อปไม่ใช้ เพราะ sidebar กับ panel เห็นพร้อมกันอยู่แล้ว
@@ -109,7 +109,7 @@
       <h2 id="a-title">เข้าสู่ระบบ</h2>
       <p id="a-note" class="muted"></p>
 
-      <label class="field">
+      <label class="field" id="a-email-wrap">
         <span>อีเมล</span>
         <input id="a-email" type="email" autocomplete="username" placeholder="you@company.com">
       </label>
@@ -723,6 +723,8 @@
         <li><b>รหัสเชิญ</b> — แอดมินเท่านั้น · ดูว่าออกไปกี่ใบ ใครใช้ไปแล้ว เหลือโควตาเท่าไร
           และยกเลิกใบที่ไม่ใช้แล้วได้ · <b>ดูตัวรหัสย้อนหลังไม่ได้</b> ระบบเก็บไว้เป็นลายนิ้วมือ
           ไม่ได้เก็บตัวรหัส ลิงก์หายให้ออกใบใหม่</li>
+        <li><b>ผู้ใช้</b> — แอดมินเท่านั้น · เห็นว่าใครสมัครเข้ามาบ้าง และกด
+          <b>รีเซ็ตรหัสผ่าน</b> ให้คนที่ลืมรหัสได้ (ได้ลิงก์มาส่งต่อ ใช้ได้ครั้งเดียว 24 ชั่วโมง)</li>
         <li><b>ออกจากระบบ</b> — อยู่ในเมนูเดียวกัน</li>
         <li>แอดมินเปิด/ปิด <b>การอัดสด</b> ของทั้งระบบได้จากเมนูนี้</li>
       </ul>
@@ -812,6 +814,18 @@
       <details class="help-q">
         <summary>สมัครสมาชิกไม่ได้ ระบบขอรหัสเชิญ</summary>
         <p>ขอลิงก์เชิญจากแอดมินของทีม — แอดมินกด “เชิญสมาชิก” ในเมนูบัญชี ระบบจะกางลิงก์ให้เห็นและคัดลอกให้ กดลิงก์แล้วรหัสเชิญจะถูกเติมให้เอง</p>
+      </details>
+
+      <details class="help-q">
+        <summary>ลืมรหัสผ่าน เข้าไม่ได้</summary>
+        <p>
+          บอกแอดมินของทีม — แอดมินเปิดหน้า <b>ผู้ใช้</b> กด <b>รีเซ็ตรหัสผ่าน</b> ตรงชื่อคุณ
+          แล้วส่งลิงก์ที่ได้มาให้ · เปิดลิงก์แล้วตั้งรหัสใหม่ได้เลย ไม่ต้องกรอกรหัสเก่า
+        </p>
+        <p class="help-note">
+          ลิงก์<b>ใช้ได้ครั้งเดียวและหมดอายุใน 24 ชั่วโมง</b> · พอตั้งรหัสใหม่สำเร็จ
+          อุปกรณ์อื่นที่ค้างล็อกอินอยู่จะถูกเตะออกทั้งหมด ต้องเข้าใหม่ด้วยรหัสใหม่
+        </p>
       </details>
 
       <details class="help-q">

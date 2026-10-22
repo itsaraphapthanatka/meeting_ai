@@ -346,6 +346,102 @@ def invites_have_quota() -> bool:
 INVITE_REF_LEN = 16
 
 
+# ตารางลิงก์ตั้งรหัสผ่านใหม่เกิดทีหลัง — deploy ถึง production ก่อน db-init เสมอ
+# ช่วงนั้นโค้ดต้องไม่ล้มเป็น 500 แต่ต้องบอกได้ว่า "ยังไม่ได้ migrate" (เหมือน #95/#96)
+_resets_ready: bool | None = None
+_resets_checked_at = 0.0
+
+# ลิงก์ตั้งรหัสผ่านมีอายุสั้นกว่าลิงก์เชิญมาก — มันเปิดประตูบัญชีที่มีของอยู่แล้ว
+# ส่วนลิงก์เชิญแค่สร้างบัญชีใหม่ที่ยังว่างเปล่า
+RESET_HOURS = 24
+
+
+def resets_ready() -> bool:
+    """ฐานนี้มีตาราง password_resets แล้วหรือยัง."""
+    global _resets_ready, _resets_checked_at
+    now = time.monotonic()
+    if _resets_ready is True:
+        return True
+    if _resets_ready is False and (now - _resets_checked_at) < _PEAKS_RECHECK_SEC:
+        return False
+    with db.connect() as conn:
+        row = conn.execute(
+            """select count(*) from information_schema.tables
+                where table_schema = 'meeting_ai' and table_name = 'password_resets'"""
+        ).fetchone()
+    _resets_ready = bool(row and row[0] == 1)
+    _resets_checked_at = now
+    return _resets_ready
+
+
+def create_reset(user_id: str, created_by: str | None,
+                 hours: int = RESET_HOURS) -> str | None:
+    """ออกโทเคนตั้งรหัสผ่านใหม่ให้ผู้ใช้คนหนึ่ง — คืน None ถ้าฐานยังไม่มีตาราง.
+
+    ล้างใบเก่าที่ยังไม่ถูกใช้ของคนเดียวกันทิ้งก่อน: ออกใบใหม่แปลว่าใบเก่าไม่ควรใช้ได้
+    อีกแล้ว ไม่งั้นลิงก์ที่เคยส่งผิดคนจะยังเปิดประตูได้จนหมดอายุ
+    """
+    if not resets_ready():
+        return None
+    token = secrets.token_urlsafe(16)
+    with db.connect() as conn:
+        conn.execute(
+            """delete from meeting_ai.password_resets
+                where user_id = %s and used_at is null""",
+            (user_id,),
+        )
+        conn.execute(
+            """insert into meeting_ai.password_resets
+                      (token_hash, user_id, created_by, expires_at)
+               values (%s, %s, %s, %s)""",
+            (_hash(token), user_id, created_by, _now() + timedelta(hours=hours)),
+        )
+    return token
+
+
+def claim_reset(token: str) -> dict | None:
+    """ใช้โทเคนหนึ่งครั้ง แล้วคืนข้อมูลผู้ใช้ — statement เดียว ใครชนะได้คนเดียว.
+
+    บทเรียนเดียวกับ BUG-012: ถ้าแยกเป็น select แล้วค่อย update คนที่ยิงพร้อมกัน
+    ด้วยโทเคนเดียวจะผ่าน select ได้ทุกราย เงื่อนไขทั้งหมด (มีจริง / ยังไม่ถูกใช้ /
+    ยังไม่หมดอายุ) จึงอยู่ใน where ให้ Postgres ล็อกแถวตัดสินเอง
+
+    คืนข้อมูลผู้ใช้มาด้วยเลยใน statement เดียวกัน เพราะ pooler ของ production เป็น
+    transaction mode — ยิงสอง query ต่อหนึ่งคำขอคือสอง round-trip ข้ามทวีป
+    """
+    if not token or not resets_ready():
+        return None
+    with db.connect() as conn:
+        row = conn.execute(
+            """with claimed as (
+                 update meeting_ai.password_resets
+                    set used_at = now()
+                  where token_hash = %s and used_at is null and expires_at > now()
+              returning user_id
+               )
+               select u.id, u.email, u.name, u.is_admin
+                 from meeting_ai.users u join claimed c on c.user_id = u.id""",
+            (_hash(token),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"id": str(row[0]), "email": row[1], "name": row[2], "is_admin": row[3]}
+
+
+def drop_sessions_of(user_id: str) -> int:
+    """เตะทุก session ของผู้ใช้คนนี้ออก — คืนจำนวนที่ถูกลบ.
+
+    ต้องทำทุกครั้งที่รหัสผ่านถูกเปลี่ยน ไม่งั้นการรีเซ็ตรหัสผ่านไม่ได้ตัดคนที่
+    ขโมย session ไปแล้วออกเลย ซึ่งเป็นเหตุผลหลักข้อหนึ่งที่คนรีเซ็ตรหัสผ่าน
+    """
+    with db.connect() as conn:
+        rows = conn.execute(
+            "delete from meeting_ai.sessions where user_id = %s returning token_hash",
+            (user_id,),
+        ).fetchall()
+    return len(rows)
+
+
 def invite_status(used: int, max_uses: int, expires, now) -> str:
     """สถานะของรหัสเชิญหนึ่งใบ — แยกออกมาเป็นฟังก์ชันล้วนเพื่อให้เทสต์เรียกของจริงได้.
 
